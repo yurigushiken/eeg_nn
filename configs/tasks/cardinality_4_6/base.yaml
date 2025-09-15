@@ -1,0 +1,18 @@
+model_name: eegnex
+
+data_raw_dir: "eeg-raw"
+behavior_dir: "data_behavior/behavior_data"
+montage_path: "net/AdultAverageNet128_v1.sfp"
+
+batch_size: 16
+lr: 0.0007
+epochs: 60
+early_stop: 10
+
+f_lo: 1.0
+f_hi: 45.0
+t1_s: 0.6
+cz_step: 3
+target_sfreq: 128
+
+

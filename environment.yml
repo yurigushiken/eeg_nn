@@ -1,0 +1,23 @@
+name: eegnex-env
+channels:
+  - conda-forge
+  - pytorch
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - scipy
+  - pandas
+  - scikit-learn
+  - pyyaml
+  - matplotlib
+  - seaborn
+  - mne>=1.6
+  - pyprep
+  - optuna
+  - pytorch
+  - pip:
+      - mffpy
+      - mne-icalabel
+      - python-picard
+

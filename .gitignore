@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+.ipynb_checkpoints/
+
+# Environments / local configs
+.venv/
+venv/
+env/
+ENV/
+.conda/
+.mne/
+*.env
+.env.*
+
+# IDE / OS
+.vscode/
+.idea/
+*.code-workspace
+.DS_Store
+Thumbs.db
+
+# Build/dist
+build/
+dist/
+.eggs/
+*.egg-info/
+
+# Project data and artifacts
+/eeg-raw/
+/data_behavior/
+/data_behavior_lite/
+/data_preprocessed/
+/cache/
+/results/
+/optuna_studies/
+/temp/
+
+# Large/binary artifacts safeguard
+*.fif
+*.mff
+*.ckpt
+*.pt
+*.pth
+*.onnx
+*.bin
+*.db
+*.sqlite
+*.log
+*.png
+*.pdf
+
+# Allow placeholders/docs to remain
+!.gitkeep
+!*/README.md
+

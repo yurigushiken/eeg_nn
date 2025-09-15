@@ -1,0 +1,74 @@
+# Global defaults merged into task configs
+
+# Training defaults
+seed: 42
+epochs: 120
+early_stop: 20
+inner_val_frac: 0.2
+save_ckpt: true
+
+# Data controls
+crop_ms: null          # e.g., [0, 600] or [50, 200]
+use_channel_list: null # e.g., non_scalp
+include_channels: null # explicit keep-only list (optional)
+
+# Named channel exclusion lists
+channel_lists:
+  non_scalp:
+    - E1
+    - E8
+    - E14
+    - E17
+    - E21
+    - E25
+    - E32
+    - E43
+    - E48
+    - E49
+    - E56
+    - E63
+    - E68
+    - E73
+    - E81
+    - E88
+    - E94
+    - E99
+    - E107
+    - E113
+    - E119
+    - E120
+    - E125
+    - E126
+    - E127
+    - E128
+    - E38
+    - E44
+    - E114
+    - E121
+
+montage_path: "net/AdultAverageNet128_v1.sfp"
+batch_size: 16
+lr: 0.000078
+# NOTE: these are overridden by step1_search.yaml
+max_folds: 24
+random_state: 42
+
+# Preprocessing settings
+prep_line_freqs: [60]         # or [50] in EU
+prep_max_iterations: 4
+prep_ransac: false            # keep false until stable
+prep_ref_exclude: ["Vertex Reference"]  # add any other non-EEG refs if present
+
+# ICA settings
+use_ica: true
+ica_method: picard        # 'picard' | 'infomax' | 'fastica'
+ica_n_components: 0.99    # PCA variance fraction
+ica_hp_for_fit: 1.0       # high-pass for the *fitting copy*
+ica_random_state: 97
+ica_decim: 3              # speed-up (optional)
+ica_labeler: iclabel      # requires mne-icalabel; set '' to disable
+ica_label_threshold: 0.9  # probability cutoff for auto-exclude
+ica_use_eog: true         # also run find_bads_eog
+ica_use_ecg: true         # also run find_bads_ecg
+
+
