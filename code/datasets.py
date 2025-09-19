@@ -101,6 +101,15 @@ class MaterializedEpochsDataset(BaseEEGDataset):
             ep = mne.read_epochs(fp, preload=True, verbose=False)
             # Optional time cropping
             ep = apply_crop_ms(ep, cfg.get("crop_ms"))
+            # Optional channel selection for materialized data (named lists / include / Cz ring)
+            ep = spatial_sample(
+                ep,
+                cfg.get("use_channel_list"),
+                cfg.get("include_channels"),
+                cz_step=cfg.get("cz_step"),
+                cz_name=cfg.get("cz_name", "Cz"),
+                channel_lists=cfg.get("channel_lists"),
+            )
             m = sid_re.search(fp.name)
             if m:
                 ep.metadata["subject"] = int(m.group(1))

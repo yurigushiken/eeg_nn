@@ -1,3 +1,13 @@
+# Choose among multiple preprocessed datasets
+materialized_dir:
+  method: categorical
+  choices:
+    - data_preprocessed/hpf_1.0_lpf_45_baseline-on-example
+    - data_preprocessed/hpf_1.0_lpf_45_baseline-on-example2
+    # - data_preprocessed/hpf_1.0_lpf_40_baseline-on (future)
+
+
+
 # Deeper architecture blocks + spatial window
 filter_2:         { method: int, low: 16, high: 64 }
 kernel_block_4:   { method: int, low: 8,  high: 32 }
@@ -8,3 +18,9 @@ dilation_block_4: { method: int, low: 1,  high: 4 }
 dilation_block_5: { method: int, low: 1,  high: 6 }
 cz_step:          { method: int, low: 0,  high: 5 }  # 0=full scalp; >0=Cz ring
 
+# additions
+filter_1:   { method: int, low: 8, high: 32 }
+drop_prob:  { method: uniform, low: 0.1, high: 0.6 }
+activation: { method: categorical, choices: [elu, relu, gelu] }
+lr:         { method: log_uniform, low: 1.0e-5, high: 1.0e-3 }
+batch_size: { method: categorical, choices: [8, 16, 32] }
