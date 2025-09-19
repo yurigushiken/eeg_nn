@@ -1,0 +1,6 @@
+epochs: 60
+early_stop: 10
+batch_size: 16
+random_state: 42
+save_ckpt: true
+

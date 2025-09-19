@@ -71,9 +71,9 @@ def main():
         # subset_n for speed
         if "subset_n" in ctrl:
             cfg["subset_n"] = int(ctrl["subset_n"])
-        # be lenient during HPO to avoid aborts; allow overriding ICA via YAML
+        # be lenient during HPO to avoid aborts; ensure ICA is enabled by default
         cfg["strict_behavior_align"] = False
-        cfg.setdefault("use_ica", False)
+        cfg["use_ica"] = True
         if args.usable_trials_csv:
             cfg["usable_trials_csv"] = args.usable_trials_csv
         # sample from space

@@ -1,0 +1,13 @@
+mixup_alpha:    { method: uniform, low: 0.0,  high: 0.4 }
+shift_p:        { method: uniform, low: 0.0,  high: 0.5 }
+shift_max_frac: { method: uniform, low: 0.01, high: 0.08 }
+scale_p:        { method: uniform, low: 0.0,  high: 0.3 }
+scale_min:      { method: uniform, low: 0.9,  high: 1.1 }
+scale_max:      { method: uniform, low: 1.0,  high: 1.2 }
+noise_p:        { method: uniform, low: 0.0,  high: 0.5 }
+noise_std:      { method: uniform, low: 0.01, high: 0.05 }
+time_mask_p:    { method: uniform, low: 0.2,  high: 0.5 }
+time_mask_frac: { method: uniform, low: 0.05, high: 0.3 }
+chan_mask_p:    { method: uniform, low: 0.2,  high: 0.7 }
+chan_mask_ratio:{ method: uniform, low: 0.05, high: 0.20 }
+

@@ -185,9 +185,24 @@ class TrainingRunner:
 
             # Plots per fold
             if self.run_dir:
-                fold_title = f"Fold {fold+1} (Subjects: {test_subjects})"
-                plot_confusion(y_true_fold, y_pred_fold, class_names, self.run_dir / f"fold{fold+1}_confusion.png", title=fold_title)
-                plot_curves(tr_hist, va_hist, va_acc_hist, self.run_dir / f"fold{fold+1}_curves.png", title=fold_title)
+                fold_title = (
+                    f"Fold {fold+1} (Subjects: {test_subjects}) · "
+                    f"inner-best macro-F1={best_inner_macro_f1:.2f} · acc={acc:.2f}"
+                )
+                plot_confusion(
+                    y_true_fold,
+                    y_pred_fold,
+                    class_names,
+                    self.run_dir / f"fold{fold+1}_confusion.png",
+                    title=fold_title,
+                )
+                plot_curves(
+                    tr_hist,
+                    va_hist,
+                    va_acc_hist,
+                    self.run_dir / f"fold{fold+1}_curves.png",
+                    title=fold_title,
+                )
 
         # Overall metrics
         mean_acc = float(np.mean(fold_accs)) if fold_accs else 0.0
@@ -202,7 +217,17 @@ class TrainingRunner:
 
         # Overall plot
         if self.run_dir and overall_y_true:
-            plot_confusion(overall_y_true, overall_y_pred, class_names, self.run_dir / "overall_confusion.png", title="Overall Confusion Matrix")
+            overall_title = (
+                f"Overall · inner_mean_macro_f1={float(np.mean(inner_macro_f1s)) if inner_macro_f1s else 0.0:.2f} "
+                f"· mean_acc={mean_acc:.2f}"
+            )
+            plot_confusion(
+                overall_y_true,
+                overall_y_pred,
+                class_names,
+                self.run_dir / "overall_confusion.png",
+                title=overall_title,
+            )
 
         return {
             "mean_acc": mean_acc,

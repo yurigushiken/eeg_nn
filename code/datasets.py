@@ -18,10 +18,11 @@ from .preprocessing.mne_pipeline import (
     remove_noise_and_bads,
     run_ica_if_enabled,
     get_events_and_dict,
-    find_events_safely,
     epoch_raw,
     downsample,
     spatial_sample,
+    apply_crop_ms,
+    apply_event_offset,
     merge_behavior_metadata,
     match_and_reorder_channels,
     unify_and_align_channels,
@@ -47,6 +48,7 @@ def _cfg_fingerprint(cfg: Dict[str, Any]) -> str:
         ("t_min", cfg.get("t_min")),
         ("t_max", cfg.get("t_max")),
         ("t1_s", cfg.get("t1_s")),
+        ("crop_ms", tuple(cfg.get("crop_ms") or []) if cfg.get("crop_ms") else None),
         ("cz_step", cfg.get("cz_step")),
         ("target_sfreq", cfg.get("target_sfreq")),
         ("offset_ms", cfg.get("offset_ms", 17)),
@@ -57,7 +59,7 @@ def _cfg_fingerprint(cfg: Dict[str, Any]) -> str:
         ("qc", qc_tag),
         # Bump when alignment behavior changes materially
         ("align_v", 2),
-        ("prep_v", 1),
+        ("prep_v", 2),
         ("ica_v", 1), # <-- Add this
     ]
     return "_".join([f"{k}={v}" for k, v in keys])
@@ -97,6 +99,8 @@ class MaterializedEpochsDataset(BaseEEGDataset):
         epochs_list = []
         for fp in files:
             ep = mne.read_epochs(fp, preload=True, verbose=False)
+            # Optional time cropping
+            ep = apply_crop_ms(ep, cfg.get("crop_ms"))
             m = sid_re.search(fp.name)
             if m:
                 ep.metadata["subject"] = int(m.group(1))
@@ -201,8 +205,18 @@ class OnTheFlyPreprocDataset(BaseEEGDataset):
             sid = int(m.group(1))
             out_fp = cache_root / f"sub-{sid:02d}_preprocessed-epo.fif"
 
+            # Initialize logging counters defensively
+            events_found = 0
+            n_epochs_initial = 0
             if out_fp.exists():
                 ep = mne.read_epochs(out_fp, preload=True, verbose=False)
+                # Populate counters for logging consistency in cached path
+                try:
+                    events_found = int(len(getattr(ep, 'events', []) or []))
+                except Exception:
+                    events_found = 0
+                n_epochs_initial = len(ep)
+                ch_before = len(ep.ch_names)
             else:
                 mff_path = str(raw_root / subj_dir_name)
                 raw = load_raw_mff(mff_path, montage_path)
@@ -212,17 +226,30 @@ class OnTheFlyPreprocDataset(BaseEEGDataset):
                 bandpass_filter(raw, float(cfg.get("f_lo", 1.0)), float(cfg.get("f_hi", 45.0)))
                 try:
                     events, event_id = get_events_and_dict(raw, keep_labels=cfg.get("keep_event_labels"))
-                except Exception:
-                    events, event_id = find_events_safely(raw)
+                except Exception as _e_ann:
+                    print(f"[subject {sid:02d}] Annotation events error: {_e_ann}. Skipping.")
+                    continue
                 events_found = int(0 if events is None else len(events))
                 if events is None or len(events) == 0:
                     print(f"[subject {sid:02d}] No events found. Skipping.")
                     continue
+                # Optional event offset (e.g., 17 ms)
+                events = apply_event_offset(events, raw, cfg.get("offset_ms", 17))
                 ep = epoch_raw(raw, events, event_id, t_min, t_max)
                 n_epochs_initial = len(ep)
                 if cfg.get("target_sfreq"):
                     downsample(ep, int(cfg.get("target_sfreq")))
-                ep = spatial_sample(ep, cfg.get("use_channel_list"), cfg.get("include_channels"))
+                # Optional time cropping
+                ep = apply_crop_ms(ep, cfg.get("crop_ms"))
+                # Channel selection (supports named lists via channel_lists)
+                ep = spatial_sample(
+                    ep,
+                    cfg.get("use_channel_list"),
+                    cfg.get("include_channels"),
+                    cz_step=cfg.get("cz_step"),
+                    cz_name=cfg.get("cz_name", "Cz"),
+                    channel_lists=cfg.get("channel_lists"),
+                )
                 ep.save(out_fp, overwrite=True)
 
             # Merge subject behavior and align trials

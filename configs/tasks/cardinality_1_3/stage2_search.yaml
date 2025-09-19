@@ -1,0 +1,8 @@
+subset_n: 12
+max_folds: 8
+epochs: 40
+early_stop: 8
+batch_size: 16
+save_ckpt: true
+random_state: 42
+

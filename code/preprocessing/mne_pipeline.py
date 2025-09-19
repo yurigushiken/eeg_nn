@@ -121,58 +121,45 @@ def remove_noise_and_bads(raw: mne.io.Raw, cfg: dict | None = None) -> mne.io.Ra
     line = cfg.get("prep_line_freqs", [60])  # or [50] in EU grids
 
     prep_params = {
-        "ref_chs": ref_chs,          # <-- explicit list, not the string "eeg"
+        "ref_chs": ref_chs,          # explicit list
         "reref_chs": ref_chs,        # same set for re-referencing target
         "line_freqs": line,
         "max_iterations": int(cfg.get("prep_max_iterations", 4)),
     }
+    # Keep default per config; set true in common.yaml if desired
     ransac = bool(cfg.get("prep_ransac", False))
 
-    # Try PREP; if it fails with TooManyBad, fall back to simple average reference
     try:
         prep = PrepPipeline(raw, prep_params, raw.get_montage(), ransac=ransac, random_state=42)
         prep.fit()
+        print(f"[prep] PREP succeeded. Interpolated channels: {prep.interpolated_channels}")
         return prep.raw
-    except ValueError as e:
-        if "TooManyBad" in str(e):
-            print("[prep] PREP robust reference failed (TooManyBad). Falling back to simple average ref.")
-            # Plain EEG average reference as a safe fallback
-            raw.set_eeg_reference("average", projection=False, verbose=False)
-            # Optional: run a quick NoisyChannels pass without RANSAC to mark obvious bads
-            try:
-                from pyprep.find_noisy_channels import NoisyChannels
-                noisy = NoisyChannels(raw, random_state=42)
-                noisy.find_all_bads(ransac=False)
-                
-                bads_dict = noisy.get_bads(as_dict=True)
-                n_eeg = len(eeg_chs)
-                frac_corr = len(bads_dict.get("bad_by_correlation", [])) / max(1, n_eeg)
-                frac_drop = len(bads_dict.get("bad_by_dropout", [])) / max(1, n_eeg)
+    except Exception as e:
+        # Any PREP failure (TooManyBad, RANSAC IndexError, etc.) -> conservative fallback
+        print(f"[prep] PREP failed ({type(e).__name__}: {e}). Using conservative fallback.")
+        raw_fallback = raw.copy()
 
-                # Always include the “reliable” categories:
-                conservative = set().union(
-                    bads_dict.get("bad_by_nan", []),
-                    bads_dict.get("bad_by_flat", []),
-                    bads_dict.get("bad_by_deviation", []),
-                    bads_dict.get("bad_by_hf_noise", []),
-                    bads_dict.get("bad_by_SNR", []),
-                )
+        # 1) Find only the most obviously broken channels (flat/NaN)
+        try:
+            from pyprep.find_noisy_channels import NoisyChannels
+            noisy = NoisyChannels(raw_fallback, random_state=42)
+            noisy.find_bad_by_nan_flat()
+            raw_fallback.info['bads'] = noisy.get_bads()
+        except Exception as e2:
+            print(f"[prep fallback] NoisyChannels nan/flat check failed: {e2}")
+            raw_fallback.info['bads'] = []
 
-                # Only include correlation/dropout if they are not exploding:
-                if frac_corr <= 0.3: # Using a stricter 30% threshold
-                    conservative |= set(bads_dict.get("bad_by_correlation", []))
-                if frac_drop <= 0.3: # Using a stricter 30% threshold
-                    conservative |= set(bads_dict.get("bad_by_dropout", []))
+        # 2) Set average reference, automatically excluding the bads found above
+        if raw_fallback.info['bads']:
+            print(f"[prep fallback] Found sure-bads: {raw_fallback.info['bads']}. Excluding from reference.")
+        raw_fallback.set_eeg_reference("average", projection=False, verbose=False)
 
-                raw.info["bads"] = sorted(list(conservative))
-                if raw.info["bads"]:
-                    print(f"[prep fallback] Interpolating {len(raw.info['bads'])} conservatively-flagged bad channels.")
-                    raw.interpolate_bads(reset_bads=True, mode="accurate", verbose=False)
-            except Exception as e2:
-                print(f"[prep fallback] NoisyChannels failed: {e2}")
-            return raw
-        else:
-            raise
+        # 3) Interpolate the channels that were excluded
+        if raw_fallback.info['bads']:
+            print(f"[prep fallback] Interpolating sure-bads: {raw_fallback.info['bads']}")
+            raw_fallback.interpolate_bads(reset_bads=True, mode="accurate", verbose=False)
+
+        return raw_fallback
 
 
 def load_raw_mff(mff_path: str, montage_path: str):
@@ -221,36 +208,65 @@ def get_events_and_dict(raw, keep_labels=None):
 
 
 def find_events_safely(raw, **kwargs):
-    """Try to extract events from annotations (for EGI MFF), with a fallback to stim channels."""
+    """Deprecated: stim fallback removed for this project. Use annotations only."""
+    events, event_id = mne.events_from_annotations(raw)
+    return events, event_id
+
+
+def spatial_sample(epochs, use_channel_list, include_channels, cz_step=None, cz_name="Cz", channel_lists=None):
+    """Apply optional channel exclusion/inclusion, then optional Cz-centric sampling.
+
+    Order of operations:
+      1) Exclude channels by named list (use_channel_list)
+      2) Keep-only explicit include_channels (if provided)
+      3) Else, optionally apply Cz ring heuristic via cz_step
+    """
+    ep = epochs
+
+    # 1) Exclusion by named list
+    excl_names = []
+    if use_channel_list:
+        if isinstance(use_channel_list, str) and isinstance(channel_lists, dict):
+            excl_names = list(channel_lists.get(use_channel_list, []))
+        elif isinstance(use_channel_list, (list, tuple)):
+            excl_names = list(use_channel_list)
+        elif use_channel_list is True and isinstance(channel_lists, dict) and "non_scalp" in channel_lists:
+            excl_names = list(channel_lists.get("non_scalp", []))
+    if excl_names:
+        drop = [ch for ch in excl_names if ch in ep.ch_names]
+        if drop:
+            ep = ep.copy().drop_channels(drop)
+
+    # 2) Keep-only explicit include list
+    if include_channels:
+        wanted = [ch for ch in include_channels if ch in ep.ch_names]
+        if wanted:
+            picks = mne.pick_channels(ep.ch_names, include=wanted, ordered=True)
+            ep = ep.copy().pick(picks).reorder_channels(wanted)
+        return ep
+
+    # 3) Optional Cz-based spatial sampling
+    step = int(cz_step or 0)
+    if step > 0:
+        return spatial_sample_epochs(ep, step, cz_name=cz_name)
+    return ep
+
+
+def apply_crop_ms(epochs: mne.Epochs, crop_ms):
+    """Crop epochs to a time window in milliseconds, if provided.
+
+    crop_ms: [start_ms, end_ms] or None
+    """
+    if not crop_ms:
+        return epochs
     try:
-        events, event_id = mne.events_from_annotations(raw)
-        # MNE might return a lot of hierarchical event IDs, we only care about the base ones
-        # e.g. 'stim/left/1' becomes '1'. This is a heuristic.
-        for key, value in list(event_id.items()):
-            if '/' in key:
-                new_key = key.split('/')[-1]
-                if new_key not in event_id:
-                    event_id[new_key] = value
-                del event_id[key]
-        return events, event_id
-    except Exception as e:
-        print(f"[events] Could not find events from annotations ({e}). Falling back to find_events on stim channel.")
-        # Fallback for systems that actually use a stim channel
-        events = mne.find_events(raw, **kwargs)
-        return events, None
-
-
-def spatial_sample(epochs, use_channel_list, include_channels, cz_step=None, cz_name="Cz"):
-    use_list = bool(use_channel_list) and include_channels
-    if use_list:
-        wanted = [ch for ch in include_channels if ch in epochs.ch_names]
-        if not wanted:
-            return epochs
-        picks = mne.pick_channels(epochs.ch_names, include=wanted, ordered=True)  # ordered keeps 'wanted' order
-        ep2 = epochs.copy().pick(picks).reorder_channels(wanted)
-        return ep2
-    step = int(cz_step or 3)
-    return spatial_sample_epochs(epochs, step, cz_name=cz_name)
+        start_ms, end_ms = float(crop_ms[0]), float(crop_ms[1])
+    except Exception:
+        return epochs
+    tmin = start_ms / 1000.0
+    tmax = end_ms / 1000.0
+    print(f"[crop] Applying time cropping from {start_ms:.0f}ms to {end_ms:.0f}ms ({tmin:.3f}s to {tmax:.3f}s)")
+    return epochs.copy().crop(tmin=tmin, tmax=tmax, include_tmax=True)
 
 
 def find_events(raw):
@@ -307,6 +323,31 @@ def epoch_raw(raw, events, event_id, t_min, t_max):
 
 def average_reference(epochs):
     epochs.set_eeg_reference('average', projection=True)
+
+
+def apply_event_offset(events: np.ndarray | None, raw: mne.io.Raw, offset_ms: float | int | None):
+    """Shift event onsets by offset_ms relative to raw, in milliseconds.
+
+    Positive values move events later; negative values move earlier.
+    """
+    if events is None or len(events) == 0:
+        return events
+    try:
+        off = float(offset_ms or 0.0)
+    except Exception:
+        off = 0.0
+    if off == 0.0:
+        return events
+    sfreq = float(raw.info.get('sfreq', 0.0) or 0.0)
+    if sfreq <= 0:
+        return events
+    shift = int(round(off * sfreq / 1000.0))
+    if shift == 0:
+        return events
+    ev = events.copy()
+    ev[:, 0] = np.clip(ev[:, 0] + shift, 0, int(raw.n_times) - 1)
+    print(f"[events] Applied offset of {off:.1f} ms ({shift} samples) to event onsets.")
+    return ev
 
 def downsample(epochs, target_sfreq: float):
     if float(epochs.info['sfreq']) != float(target_sfreq):

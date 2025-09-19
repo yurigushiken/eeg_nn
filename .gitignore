@@ -51,6 +51,9 @@ dist/
 *.log
 *.png
 *.pdf
+*.set
+*.txt
+*.csv
 
 # Allow placeholders/docs to remain
 !.gitkeep

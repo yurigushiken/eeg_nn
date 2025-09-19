@@ -56,7 +56,7 @@ random_state: 42
 # Preprocessing settings
 prep_line_freqs: [60]         # or [50] in EU
 prep_max_iterations: 4
-prep_ransac: false            # keep false until stable
+prep_ransac: true             # enable RANSAC by default (can be overridden)
 prep_ref_exclude: ["Vertex Reference"]  # add any other non-EEG refs if present
 
 # ICA settings

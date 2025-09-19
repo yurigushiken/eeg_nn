@@ -1,0 +1,10 @@
+# Deeper architecture blocks + spatial window
+filter_2:         { method: int, low: 16, high: 64 }
+kernel_block_4:   { method: int, low: 8,  high: 32 }
+kernel_block_5:   { method: int, low: 8,  high: 32 }
+avg_pool_block4:  { method: int, low: 2,  high: 6 }
+avg_pool_block5:  { method: int, low: 4,  high: 10 }
+dilation_block_4: { method: int, low: 1,  high: 4 }
+dilation_block_5: { method: int, low: 1,  high: 6 }
+cz_step:          { method: int, low: 0,  high: 5 }  # 0=full scalp; >0=Cz ring
+

@@ -15,7 +15,10 @@ early_stop: 10
 f_lo: 1.0
 f_hi: 45.0
 t1_s: 0.6
-cz_step: 3
+cz_step: 0
 target_sfreq: 125
+
+# Cleaning
+use_ica: true
 
 
