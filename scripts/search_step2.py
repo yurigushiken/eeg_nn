@@ -60,9 +60,6 @@ def main():
         # freeze preproc/net/train (already set by base + step1 best merged offline into base if desired)
         # set materialized_dir so dataset loads .fif directly
         cfg["materialized_dir"] = args.materialized
-        cfg.pop("data_raw_dir", None)
-        cfg.pop("behavior_dir", None)
-        cfg.pop("subset_n", None)
         # be lenient during HPO to avoid aborts
         cfg["strict_behavior_align"] = False
         # sample augmentation-only

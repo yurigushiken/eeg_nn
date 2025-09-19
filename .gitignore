@@ -29,6 +29,7 @@ dist/
 *.egg-info/
 
 # Project data and artifacts
+/(archive)/
 /eeg-raw/
 /data_behavior/
 /data_behavior_lite/

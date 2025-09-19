@@ -3,7 +3,6 @@ materialized_dir:
   method: categorical
   choices:
     - data_preprocessed/hpf_1.0_lpf_45_baseline-on-example
-    - data_preprocessed/hpf_1.0_lpf_45_baseline-on-example2
     # - data_preprocessed/hpf_1.0_lpf_40_baseline-on (future)
 
 

@@ -233,6 +233,14 @@ for subject_id in subject_ids_in_folder:
             final_epochs = epochs_with_metadata
             print(f"  Keeping all {len(final_epochs)} trials.")
 
+        # --- NEW: Attach 3D montage so Cz-ring (cz_step) can work downstream ---
+        try:
+            from mne.channels import read_custom_montage
+            mont = read_custom_montage("net/AdultAverageNet128_v1.sfp")
+            final_epochs.set_montage(mont, match_case=False, match_alias=True, on_missing="ignore")
+        except Exception as _e_mont:
+            print(f"[montage] skip ({_e_mont})")
+
         output_filename = f"sub-{subject_id}_preprocessed-epo.fif"
         output_path = os.path.join(output_dir, output_filename)
         final_epochs.save(output_path, overwrite=True, verbose=False)

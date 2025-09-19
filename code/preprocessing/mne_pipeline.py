@@ -354,31 +354,40 @@ def downsample(epochs, target_sfreq: float):
         epochs.resample(target_sfreq, npad='auto')
 
 def spatial_sample_epochs(epochs, c_step: int, cz_name: str = "Cz"):
+    """Select a Cz-centric ring of channels based on montage 3D positions.
+
+    Heuristic: map c_step to a fraction of channels to keep around Cz.
+    Falls back to no-op if positions or Cz are unavailable.
+    """
     chs = epochs.ch_names
-    if cz_name not in chs:
+    if cz_name not in chs or int(c_step or 0) <= 0:
         return epochs
-    # Build simple ring selection based on geodesic distance approximated by montage positions
+
     montage = epochs.get_montage()
     if montage is None:
         return epochs
-    pos = {name: loc for name, loc in zip(montage.ch_names, montage.get_positions()['ch_pos'].values())}
-    if cz_name not in pos:
+    try:
+        positions = montage.get_positions() or {}
+        pos_dict = positions.get("ch_pos", {}) if isinstance(positions, dict) else {}
+    except Exception:
+        pos_dict = {}
+    if not isinstance(pos_dict, dict) or cz_name not in pos_dict:
         return epochs
-    cz_pos = np.array(pos[cz_name])
+
+    cz_pos = np.array(pos_dict.get(cz_name))
     dists = []
-    for name in epochs.ch_names:
-        p = pos.get(name)
+    for name in chs:
+        p = pos_dict.get(name)
         if p is None:
             d = np.inf
         else:
             d = np.linalg.norm(cz_pos - np.array(p))
         dists.append((name, d))
     dists_sorted = sorted(dists, key=lambda x: x[1])
-    # Map c_step to a fraction of channels to include (heuristic):
-    frac = min(1.0, max(0.1, c_step * 0.2))
-    k = int(round(len(dists_sorted) * frac))
-    keep = [name for name, _ in dists_sorted[:max(1, k)]]
-    drop = [ch for ch in epochs.ch_names if ch not in keep]
+    frac = min(1.0, max(0.1, int(c_step) * 0.2))
+    k = max(1, int(round(len(dists_sorted) * frac)))
+    keep = [name for name, _ in dists_sorted[:k]]
+    drop = [ch for ch in chs if ch not in keep]
     if drop:
         epochs = epochs.copy().drop_channels(drop)
     return epochs
