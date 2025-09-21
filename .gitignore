@@ -33,8 +33,10 @@ dist/
 /eeg-raw/
 /data_behavior/
 /data_behavior_lite/
+/data_input_from_happe/
 /data_preprocessed/
 /cache/
+/reference_files/
 /results/
 /optuna_studies/
 /temp/

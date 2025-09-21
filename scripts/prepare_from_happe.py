@@ -2,47 +2,77 @@
 
 import os
 import re
+import argparse
 import pandas as pd
 import mne
 import numpy as np
 from sklearn.preprocessing import LabelEncoder
 
-# --- 1. CONFIGURATION ---
-PROCESS_ACC_ONLY = False  # <-- Set to False to run all trials
+"""
+Convert HAPPE .set outputs to materialized MNE .fif epochs with behavioral metadata.
 
-# --- PATHS ---
+Now supports CLI flags to process one or multiple dataset roots in a single run.
+Example:
+  python -X utf8 -u scripts/prepare_from_happe.py \
+    --dataset-root data_input_from_happe/hpf_1.0_lpf_35_baseline-off \
+    --dataset-root data_input_from_happe/hpf_1.0_lpf_35_baseline-on
+"""
+
+# --- 1. CONFIGURATION (defaults; can be overridden by CLI) ---
+PROCESS_ACC_ONLY = False  # default: keep all trials
+
+# --- CONSTANT PATHS ---
 BEHAVIORAL_DATA_DIR = os.path.join("data_behavior", "data_UTF8")
 
-# Choose one HAPPE dataset root to convert (edit this line per dataset variant)
-DATASET_ROOT = os.path.join("data_input_from_happe", "hpf_1.0_lpf_45_baseline-on-example")
 
-# Resolve HAPPE subfolders for this dataset
-_proc_dirs = [d for d in os.listdir(DATASET_ROOT) if d.lower().startswith("5 - processed")]
-if not _proc_dirs:
-    raise FileNotFoundError(f"No '5 - processed*' folder found under {DATASET_ROOT}")
-HAPPE_SET_DIR = os.path.join(DATASET_ROOT, _proc_dirs[0])
+def _discover_happe_dirs(dataset_root: str):
+    """Return (set_dir, usable_trials_csv_path) for a given HAPPE dataset root."""
+    proc_dirs = [d for d in os.listdir(dataset_root) if d.lower().startswith("5 - processed")]
+    if not proc_dirs:
+        raise FileNotFoundError(f"No '5 - processed*' folder found under {dataset_root}")
+    happe_set_dir = os.path.join(dataset_root, proc_dirs[0])
 
-_qc_dirs = [d for d in os.listdir(DATASET_ROOT) if d.lower().startswith("6 - quality_assessment_outputs")]
-if not _qc_dirs:
-    raise FileNotFoundError(f"No '6 - quality_assessment_outputs*' folder found under {DATASET_ROOT}")
-_qc_dir = os.path.join(DATASET_ROOT, _qc_dirs[0])
+    qc_dirs = [d for d in os.listdir(dataset_root) if d.lower().startswith("6 - quality_assessment_outputs")]
+    if not qc_dirs:
+        raise FileNotFoundError(f"No '6 - quality_assessment_outputs*' folder found under {dataset_root}")
+    qc_dir = os.path.join(dataset_root, qc_dirs[0])
 
-# Pick the QC CSV (date-stamped)
-_qc_csvs = [f for f in os.listdir(_qc_dir) if f.lower().endswith(".csv") and f.lower().startswith("happe_dataqc")]
-if not _qc_csvs:
-    raise FileNotFoundError(f"No HAPPE_dataQC*.csv found under {_qc_dir}")
-HAPPE_USABLE_TRIALS_FILE = os.path.join(_qc_dir, _qc_csvs[0])
+    qc_csvs = [f for f in os.listdir(qc_dir) if f.lower().endswith(".csv") and f.lower().startswith("happe_dataqc")]
+    if not qc_csvs:
+        raise FileNotFoundError(f"No HAPPE_dataQC*.csv found under {qc_dir}")
+    qc_csvs.sort()
+    happe_usable_trials_file = os.path.join(qc_dir, qc_csvs[0])
 
-# Output goes to data_preprocessed/<dataset_tag> (no 'V2' suffix)
-BASE_OUTPUT_DIR = os.path.join("data_preprocessed")
-dataset_tag = os.path.basename(DATASET_ROOT)
-output_dir = os.path.join(BASE_OUTPUT_DIR, dataset_tag)
-os.makedirs(output_dir, exist_ok=True)
-print(f"--- Outputting to: {output_dir} ---")
+    return happe_set_dir, happe_usable_trials_file
 
-# --- 2. LOAD MASTER USABLE TRIAL LIST ---
-usable_trials_df = pd.read_csv(HAPPE_USABLE_TRIALS_FILE)
-usable_trials_df.rename(columns={usable_trials_df.columns[0]: 'SessionInfo'}, inplace=True)      
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Convert HAPPE .set to .fif with metadata")
+    parser.add_argument(
+        "--dataset-root",
+        dest="dataset_roots",
+        nargs="+",
+        default=None,
+        help=(
+            "One or more HAPPE dataset roots containing '5 - processed' and "
+            "'6 - quality_assessment_outputs' subfolders. If omitted, uses the "
+            "default example: data_input_from_happe/hpf_1.0_lpf_45_baseline-on-example"
+        ),
+    )
+    parser.add_argument(
+        "--output-root",
+        dest="output_root",
+        default="data_preprocessed",
+        help="Root directory where per-dataset outputs will be written",
+    )
+    parser.add_argument(
+        "--acc-only",
+        dest="acc_only",
+        action="store_true",
+        help="If set, keep only accurate trials (Target.ACC == 1)",
+    )
+    return parser.parse_args()
+
 
 # --- 3. PRE-SCAN FOR ALL LABELS TO CREATE A GLOBAL ENCODER ---
 print("--- Pass 1: Scanning for all unique labels ---")
@@ -52,7 +82,7 @@ subject_ids_in_folder = sorted([re.search(r'(?:Subject|Subj)(\d+)', f).group(1).
 for subject_id in subject_ids_in_folder:
     try:
         behavioral_file = os.path.join(BEHAVIORAL_DATA_DIR, f"Subject{subject_id}.csv")
-        behavioral_df = pd.read_csv(behavioral_file, on_bad_lines='warn', low_memory=False)      
+        behavioral_df = pd.read_csv(behavioral_file, on_bad_lines='warn', low_memory=False)
         behavioral_df['transition_label'] = behavioral_df['CellNumber'].astype(str)
         all_labels.update(behavioral_df['transition_label'].dropna().unique())
     except Exception as e:
@@ -68,6 +98,7 @@ print("-" * 50)
 SMALL_SET = {1, 2, 3}
 LARGE_SET = {4, 5, 6}
 
+
 def direction_label(cond):
     try:
         s = str(int(cond)).zfill(2)
@@ -77,6 +108,7 @@ def direction_label(cond):
     if prime == target:
         return "NC"
     return "I" if prime < target else "D"
+
 
 def transition_category(cond):
     try:
@@ -96,6 +128,7 @@ def transition_category(cond):
         return "dLS"
     return pd.NA
 
+
 def size_category(cond):
     try:
         s = str(int(cond)).zfill(2)
@@ -113,144 +146,162 @@ def size_category(cond):
 # --- END NEW HELPERS ---
 
 
-# --- 4. MAIN PROCESSING LOOP ---
-print("\n--- Pass 2: Processing and saving individual subjects ---")
-for subject_id in subject_ids_in_folder:
-    try:
-        print(f"Processing Subject {subject_id}...")
+def process_dataset(dataset_root: str, output_root: str):
+    print(f"\n=== DATASET: {dataset_root} ===")
+    happe_set_dir, happe_usable_trials_file = _discover_happe_dirs(dataset_root)
 
-        # --- FIX: Robustly find the .set file for 45Hz data ---
-        candidate_paths = [
-            os.path.join(HAPPE_SET_DIR, f"Subject{subject_id}.set"),
-            os.path.join(HAPPE_SET_DIR, f"subject{subject_id}_processed.set"),
-            os.path.join(HAPPE_SET_DIR, f"subject{int(subject_id)}_processed.set"),
-        ]
-        set_file_path = next((p for p in candidate_paths if os.path.exists(p)), None)
-        if set_file_path is None:
-            raise FileNotFoundError(
-                f"Could not find .set for Subject {subject_id} in {HAPPE_SET_DIR}. "
-                f"Tried: {', '.join(os.path.basename(p) for p in candidate_paths)}"
-            )
-        epochs = mne.io.read_epochs_eeglab(set_file_path, verbose=False)
+    # Output goes to data_preprocessed/<dataset_tag>
+    dataset_tag = os.path.basename(dataset_root)
+    output_dir = os.path.join(output_root, dataset_tag)
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"--- Outputting to: {output_dir} ---")
 
-        # --- FIX: Robustly find subject row in new QC file ---
-        subject_id_int = int(subject_id)
-        pattern = re.compile(fr"subject0*{subject_id_int}(?:\\.mff|_processed\\.set)?", re.IGNORECASE)
-        subject_rows = usable_trials_df[usable_trials_df['SessionInfo'].str.match(pattern, na=False)]
-        if subject_rows.empty:
-            raise ValueError(f"No usable-trials row found for subject {subject_id} in {HAPPE_USABLE_TRIALS_FILE}")
-        subject_row = subject_rows.iloc[0]
-        raw_keep = str(subject_row['Kept_Segs_Indxs']).strip()
-        if raw_keep.lower() == 'all':
-            kept_indices_1based = None  # Will expand after Trial_Continuous is created
-        else:
-            kept_indices_1based = [int(i.strip()) for i in raw_keep.split(',') if i.strip().isdigit()]
+    # Load QC usable trials table
+    usable_trials_df = pd.read_csv(happe_usable_trials_file)
+    usable_trials_df.rename(columns={usable_trials_df.columns[0]: 'SessionInfo'}, inplace=True)
 
-        behavioral_file = os.path.join(BEHAVIORAL_DATA_DIR, f"Subject{subject_id}.csv")
-        behavioral_df = pd.read_csv(behavioral_file, on_bad_lines='warn', low_memory=False)      
-
-        non_practice_mask = behavioral_df['Procedure[Block]'] != "Practiceproc"
-        behavioral_df.loc[non_practice_mask, 'Trial_Continuous'] = np.arange(1, non_practice_mask.sum() + 1)
-
-        behavioral_df['transition_label'] = behavioral_df['CellNumber'].astype(str)
-
-        if kept_indices_1based is None:
-            kept_indices_1based = behavioral_df.loc[non_practice_mask, 'Trial_Continuous'].astype(int).tolist()
-        behavioral_df_filtered = behavioral_df[behavioral_df['Trial_Continuous'].isin(kept_indices_1based)].copy()
-
-        # --- FINAL FIX: Remove trials with Condition == 99 ---
-        # A boolean mask is created from the 'CellNumber' column (which serves as 'Condition').
-        # This MUST be done after the HAPPE alignment but before the main length check.
-        valid_condition_mask = behavioral_df_filtered['CellNumber'].astype(str) != '99'
-        
-        # The mask is applied to BOTH the epochs object and the behavioral dataframe.
-        # This keeps them perfectly synchronized.
-        epochs = epochs[valid_condition_mask]
-        behavioral_df_filtered = behavioral_df_filtered[valid_condition_mask]
-        # --- END FINAL FIX ---
-
-        # --- FIX: Create a unified accuracy column from all Target*.ACC columns ---
-        acc_cols = [col for col in behavioral_df_filtered.columns if 'ACC' in col and 'Target' in col and 'OverallAcc' not in col]
-        if acc_cols:
-            # Convert all found acc columns to numeric, coercing errors
-            for col in acc_cols:
-                behavioral_df_filtered[col] = pd.to_numeric(behavioral_df_filtered[col], errors='coerce')
-            
-            # Create the unified column by filling NaNs from one column with values from the next
-            unified_acc = behavioral_df_filtered[acc_cols[0]]
-            for i in range(1, len(acc_cols)):
-                unified_acc = unified_acc.fillna(behavioral_df_filtered[acc_cols[i]])
-            behavioral_df_filtered['unified_ACC'] = unified_acc
-        else:
-            # Fallback if no Target*.ACC columns are found, use the original column
-            behavioral_df_filtered['unified_ACC'] = behavioral_df_filtered['Target.ACC']
-        # --- END FIX ---
-
-        if len(epochs) != len(behavioral_df_filtered):
-            raise ValueError(f"FATAL MISMATCH for Subject {subject_id}: Num epochs ({len(epochs)}) != Num behavioral trials ({len(behavioral_df_filtered)}).")
-
-        # --- FIX: Create simplified metadata to match trainer expectations ---
-        # 1. Create the descriptive columns that were in V1
-        behavioral_df_filtered['direction'] = behavioral_df_filtered['CellNumber'].apply(direction_label)
-        behavioral_df_filtered['change_group'] = behavioral_df_filtered['CellNumber'].apply(transition_category)
-        behavioral_df_filtered['size'] = behavioral_df_filtered['CellNumber'].apply(size_category)
-        
-        # 2. Build the final metadata dataframe with specific columns and names
-        final_metadata = pd.DataFrame({
-            'SubjectID': subject_id,
-            'Block': behavioral_df_filtered['Block'],
-            'Trial': behavioral_df_filtered['Trial'],
-            'Procedure': behavioral_df_filtered['Procedure[Block]'],
-            'Condition': behavioral_df_filtered['CellNumber'],
-            'Target.ACC': behavioral_df_filtered['unified_ACC'],
-            'Target.RT': behavioral_df_filtered['Target.RT'],
-            'Trial_Continuous': behavioral_df_filtered['Trial_Continuous'],
-            'direction': behavioral_df_filtered['direction'],
-            'change_group': behavioral_df_filtered['change_group'],
-            'size': behavioral_df_filtered['size']
-        })
-        # --- END METADATA FIX ---
-
-        encoded_labels = global_le.transform(behavioral_df_filtered['transition_label'])
-        events_from_metadata = np.array([
-            np.arange(len(behavioral_df_filtered)),
-            np.zeros(len(behavioral_df_filtered), int),
-            encoded_labels
-        ]).T
-
-        event_id = {label: i for i, label in enumerate(global_le.classes_)}
-
-        epochs_with_metadata = mne.EpochsArray(
-            epochs.get_data(), info=epochs.info, events=events_from_metadata,
-            tmin=epochs.tmin, event_id=None, metadata=final_metadata
-        )
-
-        if PROCESS_ACC_ONLY:
-            # Filter using the new final_metadata table
-            final_epochs = epochs_with_metadata[epochs_with_metadata.metadata['Target.ACC'] == 1]
-            print(f"  Keeping {len(final_epochs)} accurate trials.")
-        else:
-            final_epochs = epochs_with_metadata
-            print(f"  Keeping all {len(final_epochs)} trials.")
-
-        # --- NEW: Attach 3D montage so Cz-ring (cz_step) can work downstream ---
+    # --- MAIN PROCESSING LOOP ---
+    print("\n--- Pass 2: Processing and saving individual subjects ---")
+    for subject_id in subject_ids_in_folder:
         try:
-            from mne.channels import read_custom_montage
-            mont = read_custom_montage("net/AdultAverageNet128_v1.sfp")
-            final_epochs.set_montage(mont, match_case=False, match_alias=True, on_missing="ignore")
-        except Exception as _e_mont:
-            print(f"[montage] skip ({_e_mont})")
+            print(f"Processing Subject {subject_id}...")
 
-        output_filename = f"sub-{subject_id}_preprocessed-epo.fif"
-        output_path = os.path.join(output_dir, output_filename)
-        final_epochs.save(output_path, overwrite=True, verbose=False)
+            # Find the .set file for this subject
+            candidate_paths = [
+                os.path.join(happe_set_dir, f"Subject{subject_id}.set"),
+                os.path.join(happe_set_dir, f"subject{subject_id}_processed.set"),
+                os.path.join(happe_set_dir, f"subject{int(subject_id)}_processed.set"),
+            ]
+            set_file_path = next((p for p in candidate_paths if os.path.exists(p)), None)
+            if set_file_path is None:
+                raise FileNotFoundError(
+                    f"Could not find .set for Subject {subject_id} in {happe_set_dir}. "
+                    f"Tried: {', '.join(os.path.basename(p) for p in candidate_paths)}"
+                )
+            epochs = mne.io.read_epochs_eeglab(set_file_path, verbose=False)
 
-        print(f"  -> Saved to {output_path}")
+            # Find subject row in QC file
+            subject_id_int = int(subject_id)
+            pattern = re.compile(fr"subject0*{subject_id_int}(?:\\.mff|_processed\\.set)?", re.IGNORECASE)
+            subject_rows = usable_trials_df[usable_trials_df['SessionInfo'].str.match(pattern, na=False)]
+            if subject_rows.empty:
+                raise ValueError(f"No usable-trials row found for subject {subject_id} in {happe_usable_trials_file}")
+            subject_row = subject_rows.iloc[0]
+            raw_keep = str(subject_row['Kept_Segs_Indxs']).strip()
+            if raw_keep.lower() == 'all':
+                kept_indices_1based = None  # expand after Trial_Continuous is created
+            else:
+                kept_indices_1based = [int(i.strip()) for i in raw_keep.split(',') if i.strip().isdigit()]
 
-    except Exception as e:
-        import traceback
-        print(f"!!! FAILED for subject {subject_id}: {e}")
-        traceback.print_exc()
-        continue
+            behavioral_file = os.path.join(BEHAVIORAL_DATA_DIR, f"Subject{subject_id}.csv")
+            behavioral_df = pd.read_csv(behavioral_file, on_bad_lines='warn', low_memory=False)
 
-print("\n--- DATA PREPARATION COMPLETE ---")
+            non_practice_mask = behavioral_df['Procedure[Block]'] != "Practiceproc"
+            behavioral_df.loc[non_practice_mask, 'Trial_Continuous'] = np.arange(1, non_practice_mask.sum() + 1)
+
+            behavioral_df['transition_label'] = behavioral_df['CellNumber'].astype(str)
+
+            if kept_indices_1based is None:
+                kept_indices_1based = behavioral_df.loc[non_practice_mask, 'Trial_Continuous'].astype(int).tolist()
+            behavioral_df_filtered = behavioral_df[behavioral_df['Trial_Continuous'].isin(kept_indices_1based)].copy()
+
+            # Remove trials with Condition == 99
+            valid_condition_mask = behavioral_df_filtered['CellNumber'].astype(str) != '99'
+            epochs = epochs[valid_condition_mask]
+            behavioral_df_filtered = behavioral_df_filtered[valid_condition_mask]
+
+            # Create unified accuracy column from all Target*.ACC columns
+            acc_cols = [col for col in behavioral_df_filtered.columns if 'ACC' in col and 'Target' in col and 'OverallAcc' not in col]
+            if acc_cols:
+                for col in acc_cols:
+                    behavioral_df_filtered[col] = pd.to_numeric(behavioral_df_filtered[col], errors='coerce')
+                unified_acc = behavioral_df_filtered[acc_cols[0]]
+                for i in range(1, len(acc_cols)):
+                    unified_acc = unified_acc.fillna(behavioral_df_filtered[acc_cols[i]])
+                behavioral_df_filtered['unified_ACC'] = unified_acc
+            else:
+                behavioral_df_filtered['unified_ACC'] = behavioral_df_filtered['Target.ACC']
+
+            if len(epochs) != len(behavioral_df_filtered):
+                raise ValueError(
+                    f"FATAL MISMATCH for Subject {subject_id}: Num epochs ({len(epochs)}) != "
+                    f"Num behavioral trials ({len(behavioral_df_filtered)})."
+                )
+
+            # Build final metadata expected by downstream trainer
+            behavioral_df_filtered['direction'] = behavioral_df_filtered['CellNumber'].apply(direction_label)
+            behavioral_df_filtered['change_group'] = behavioral_df_filtered['CellNumber'].apply(transition_category)
+            behavioral_df_filtered['size'] = behavioral_df_filtered['CellNumber'].apply(size_category)
+
+            final_metadata = pd.DataFrame({
+                'SubjectID': subject_id,
+                'Block': behavioral_df_filtered['Block'],
+                'Trial': behavioral_df_filtered['Trial'],
+                'Procedure': behavioral_df_filtered['Procedure[Block]'],
+                'Condition': behavioral_df_filtered['CellNumber'],
+                'Target.ACC': behavioral_df_filtered['unified_ACC'],
+                'Target.RT': behavioral_df_filtered['Target.RT'],
+                'Trial_Continuous': behavioral_df_filtered['Trial_Continuous'],
+                'direction': behavioral_df_filtered['direction'],
+                'change_group': behavioral_df_filtered['change_group'],
+                'size': behavioral_df_filtered['size']
+            })
+
+            encoded_labels = global_le.transform(behavioral_df_filtered['transition_label'])
+            events_from_metadata = np.array([
+                np.arange(len(behavioral_df_filtered)),
+                np.zeros(len(behavioral_df_filtered), int),
+                encoded_labels
+            ]).T
+
+            _ = {label: i for i, label in enumerate(global_le.classes_)}
+
+            epochs_with_metadata = mne.EpochsArray(
+                epochs.get_data(), info=epochs.info, events=events_from_metadata,
+                tmin=epochs.tmin, event_id=None, metadata=final_metadata
+            )
+
+            if PROCESS_ACC_ONLY:
+                final_epochs = epochs_with_metadata[epochs_with_metadata.metadata['Target.ACC'] == 1]
+                print(f"  Keeping {len(final_epochs)} accurate trials.")
+            else:
+                final_epochs = epochs_with_metadata
+                print(f"  Keeping all {len(final_epochs)} trials.")
+
+            # Attach 3D montage so Cz-ring (cz_step) can work downstream
+            try:
+                from mne.channels import read_custom_montage
+                mont = read_custom_montage("net/AdultAverageNet128_v1.sfp")
+                final_epochs.set_montage(mont, match_case=False, match_alias=True, on_missing="ignore")
+            except Exception as _e_mont:
+                print(f"[montage] skip ({_e_mont})")
+
+            output_filename = f"sub-{subject_id}_preprocessed-epo.fif"
+            output_path = os.path.join(output_dir, output_filename)
+            final_epochs.save(output_path, overwrite=True, verbose=False)
+
+            print(f"  -> Saved to {output_path}")
+
+        except Exception as e:
+            import traceback
+            print(f"!!! FAILED for subject {subject_id}: {e}")
+            traceback.print_exc()
+            continue
+
+    print("\n--- DATA PREPARATION COMPLETE ---")
+
+
+if __name__ == "__main__":
+    args = parse_args()
+
+    if args.acc_only:
+        PROCESS_ACC_ONLY = True
+
+    dataset_roots = args.dataset_roots or [
+        os.path.join("data_input_from_happe", "hpf_1.0_lpf_45_baseline-on-example")
+    ]
+
+    for root in dataset_roots:
+        process_dataset(root, args.output_root)
+
+

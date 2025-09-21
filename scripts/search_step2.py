@@ -31,7 +31,8 @@ def main():
     ap.add_argument("--task", required=True)
     ap.add_argument("--cfg", required=True)
     ap.add_argument("--space", required=True)
-    ap.add_argument("--materialized", required=True, help="folder with sub-XX_preprocessed-epo.fif (from Step 1 best)")
+    ap.add_argument("--materialized", required=False, default=None,
+                    help="Optional: folder with sub-XX_preprocessed-epo.fif. If omitted, uses materialized_dir from space or base.yaml")
     ap.add_argument("--trials", type=int, default=24)
     ap.add_argument("--db", type=str, default=None)
     ap.add_argument("--study", type=str, default=None, help="Custom Optuna study name/tag")
@@ -57,9 +58,6 @@ def main():
     def suggest(trial: optuna.Trial) -> Dict[str, Any]:
         cfg = dict(common)
         cfg.update(load_yaml(proj_root / "configs" / "tasks" / task / "base.yaml"))
-        # freeze preproc/net/train (already set by base + step1 best merged offline into base if desired)
-        # set materialized_dir so dataset loads .fif directly
-        cfg["materialized_dir"] = args.materialized
         # be lenient during HPO to avoid aborts
         cfg["strict_behavior_align"] = False
         # sample augmentation-only
@@ -73,6 +71,12 @@ def main():
                 cfg[k] = trial.suggest_int(k, spec["low"], spec["high"]) 
             elif m == "categorical":
                 cfg[k] = trial.suggest_categorical(k, spec["choices"]) 
+        # materialized_dir precedence: space > CLI > base.yaml
+        if not cfg.get("materialized_dir"):
+            if args.materialized:
+                cfg["materialized_dir"] = args.materialized
+        if not cfg.get("materialized_dir"):
+            raise ValueError("materialized_dir is required; set it via space YAML choices, base.yaml default, or pass --materialized")
         cfg["task"] = task
         cfg["model_name"] = cfg.get("model_name", "eegnex")
         seed_everything(cfg.get("seed"))
