@@ -27,12 +27,13 @@ def load_yaml(p: Path) -> Dict[str, Any]:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Step 2 TPE: augmentation-only (fixed preproc)")
+    ap = argparse.ArgumentParser(description="Generic Optuna TPE search driver")
+    ap.add_argument("--stage", required=True, choices=["step1", "step2", "step3"], help="Naming and output routing only")
     ap.add_argument("--task", required=True)
     ap.add_argument("--cfg", required=True)
     ap.add_argument("--space", required=True)
     ap.add_argument("--materialized", required=False, default=None,
-                    help="Optional: folder with sub-XX_preprocessed-epo.fif. If omitted, uses materialized_dir from space or base.yaml")
+                    help="Optional dataset dir. If omitted, uses materialized_dir from space or base.yaml")
     ap.add_argument("--trials", type=int, default=24)
     ap.add_argument("--db", type=str, default=None)
     ap.add_argument("--study", type=str, default=None, help="Custom Optuna study name/tag")
@@ -46,7 +47,8 @@ def main():
     engine_run = engine_registry.get("eeg")
     label_fn = task_registry.get(task)
 
-    study_name = args.study if args.study else f"step2_{task}"
+    default_study = f"{args.stage}_{task}"
+    study_name = args.study if args.study else default_study
     if args.db:
         storage = args.db
     else:
@@ -57,10 +59,13 @@ def main():
 
     def suggest(trial: optuna.Trial) -> Dict[str, Any]:
         cfg = dict(common)
+        # Start from base.yaml
         cfg.update(load_yaml(proj_root / "configs" / "tasks" / task / "base.yaml"))
+        # Merge control YAML passed via --cfg (epochs, early_stop, batch_size, etc.)
+        cfg.update(ctrl or {})
         # be lenient during HPO to avoid aborts
         cfg["strict_behavior_align"] = False
-        # sample augmentation-only
+        # sample hyperparameters defined in space YAML
         for k, spec in space.items():
             m = spec.get("method")
             if m == "uniform":
@@ -82,7 +87,7 @@ def main():
         seed_everything(cfg.get("seed"))
 
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        run_dir = proj_root / "results" / "optuna" / study_name / f"{ts}_{task}_eeg_step2_t{trial.number:03d}"
+        run_dir = proj_root / "results" / "optuna" / study_name / f"{ts}_{task}_eeg_{args.stage}_t{trial.number:03d}"
         run_dir.mkdir(parents=True, exist_ok=True)
         cfg["run_dir"] = str(run_dir)
 
@@ -95,12 +100,13 @@ def main():
     study.optimize(suggest, n_trials=args.trials, show_progress_bar=False)
     best = study.best_trial
     best_payload = {"value": best.value, "params": best.params}
-    out_dir = proj_root / "results" / "optuna_studies" / task / "step2"
+    out_dir = proj_root / "results" / "optuna_studies" / task / args.stage
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "best.json").write_text(json.dumps(best_payload, indent=2))
-    print("Step2 best:", best_payload)
+    print(f"{args.stage.capitalize()} best:", best_payload)
 
 if __name__ == "__main__":
     main()
+
 
 

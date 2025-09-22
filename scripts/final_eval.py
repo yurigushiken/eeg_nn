@@ -41,7 +41,7 @@ def main():
     if args.use_best:
         # Look in multiple canonical locations for best.json
         candidates = []
-        for stage in ("step1", "step2", "finalist"):
+        for stage in ("step1", "step2", "step3", "finalist"):
             candidates.append(proj_root / "results" / "optuna_studies" / args.task / stage / "best.json")
         optuna_root = proj_root / "results" / "optuna"
         if optuna_root.exists():

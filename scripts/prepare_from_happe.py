@@ -282,6 +282,15 @@ def process_dataset(dataset_root: str, output_root: str):
 
             print(f"  -> Saved to {output_path}")
 
+            # Also export per-subject metadata to CSV for manual verification
+            try:
+                metadata_csv_filename = f"sub-{subject_id}_preprocessed-epo_metadata.csv"
+                metadata_csv_path = os.path.join(output_dir, metadata_csv_filename)
+                final_epochs.metadata.to_csv(metadata_csv_path, index=False)
+                print(f"  -> Wrote metadata CSV to {metadata_csv_path}")
+            except Exception as _e_csv:
+                print(f"[csv] failed to write metadata for subject {subject_id} ({_e_csv})")
+
         except Exception as e:
             import traceback
             print(f"!!! FAILED for subject {subject_id}: {e}")

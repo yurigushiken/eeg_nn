@@ -37,7 +37,7 @@ class TrainingRunner:
             return p
         return None
 
-    def _make_loaders(self, dataset, y_all, groups, tr_idx, va_idx):
+    def _make_loaders(self, dataset, y_all, groups, tr_idx, va_idx, aug_transform=None):
         # Inner subject-aware split
         inner_val_frac = float(self.cfg.get("inner_val_frac", 0.2))
         # Fallback for tiny training sets: avoid failing splits
@@ -59,7 +59,8 @@ class TrainingRunner:
 
         dataset_tr = copy.copy(dataset)
         dataset_eval = copy.copy(dataset)
-        dataset_tr.set_transform(None)
+        # Train: apply augmentation; Eval/Test: no augmentation
+        dataset_tr.set_transform(aug_transform)
         dataset_eval.set_transform(None)
 
         num_workers = 0  # safest on Windows
@@ -92,6 +93,9 @@ class TrainingRunner:
         inner_accs: List[float] = []
         inner_macro_f1s: List[float] = []
 
+        # Prepare augmentation transform once
+        aug_transform = aug_builder(self.cfg, dataset) if aug_builder else None
+
         for fold, (tr_idx, va_idx) in enumerate(fold_iter):
             if self.cfg.get("max_folds") is not None and fold >= int(self.cfg["max_folds"]):
                 break
@@ -99,7 +103,7 @@ class TrainingRunner:
             fold_split_info.append({"fold": fold+1, "test_subjects": test_subjects})
             print(f"[fold {fold+1}] test_subjects={test_subjects} n_tr={len(tr_idx)} n_te={len(va_idx)}", flush=True)
 
-            tr_ld, va_ld, te_ld, inner_tr_idx = self._make_loaders(dataset, y_all, groups, tr_idx, va_idx)
+            tr_ld, va_ld, te_ld, inner_tr_idx = self._make_loaders(dataset, y_all, groups, tr_idx, va_idx, aug_transform=aug_transform)
 
             model = model_builder(self.cfg, num_cls).to(DEVICE)
             opt = torch.optim.AdamW(model.parameters(), lr=float(self.cfg.get("lr", 7e-4)), weight_decay=float(self.cfg.get("weight_decay", 0.0)))
@@ -123,8 +127,20 @@ class TrainingRunner:
                     yb_gpu = yb.to(DEVICE)
                     xb_gpu = xb.to(DEVICE) if not isinstance(xb, (list, tuple)) else [t.to(DEVICE) for t in xb]
                     xb_gpu = input_adapter(xb_gpu) if input_adapter else xb_gpu
-                    opt.zero_grad(); out = model(xb_gpu) if not isinstance(xb_gpu, (list, tuple)) else model(*xb_gpu)
-                    loss = loss_fn(out.float(), yb_gpu)
+                    opt.zero_grad()
+
+                    # Optional mixup
+                    mixup_alpha = float(self.cfg.get("mixup_alpha", 0.0) or 0.0)
+                    if mixup_alpha > 0.0 and isinstance(xb_gpu, torch.Tensor) and xb_gpu.size(0) > 1:
+                        lam = np.random.beta(mixup_alpha, mixup_alpha)
+                        perm = torch.randperm(xb_gpu.size(0), device=xb_gpu.device)
+                        xb_mix = lam * xb_gpu + (1.0 - lam) * xb_gpu[perm]
+                        out = model(xb_mix)
+                        yb_perm = yb_gpu[perm]
+                        loss = lam * loss_fn(out.float(), yb_gpu) + (1.0 - lam) * loss_fn(out.float(), yb_perm)
+                    else:
+                        out = model(xb_gpu) if not isinstance(xb_gpu, (list, tuple)) else model(*xb_gpu)
+                        loss = loss_fn(out.float(), yb_gpu)
                     loss.backward(); opt.step(); train_loss += loss.item()
                 train_loss /= max(1, len(tr_ld)); tr_hist.append(train_loss)
 
