@@ -1,5 +1,5 @@
-subset_n: 12
-max_folds: 8
+# subset_n: 12
+max_folds: null
 epochs: 40
 early_stop: 8
 batch_size: 16

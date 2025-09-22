@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 from pathlib import Path
+from utils.reporting import create_consolidated_reports
 
 
 def write_summary(run_dir: Path, summary: dict, task: str, engine: str):
@@ -53,5 +54,12 @@ def write_summary(run_dir: Path, summary: dict, task: str, engine: str):
     out_fp_txt = run_dir / f"report_{task}_{engine}.txt"
     out_fp_txt.write_text("\n".join(report_lines))
     print(f"  [summary] done · mean_acc={summary.get('mean_acc', 0.0):.2f}%")
+
+    # Generate consolidated HTML and PDF reports
+    try:
+        print("\n--- Generating Consolidated Reports ---")
+        create_consolidated_reports(run_dir, summary, task, engine)
+    except Exception as e:
+        print(f" !! ERROR generating consolidated reports: {e}")
 
 

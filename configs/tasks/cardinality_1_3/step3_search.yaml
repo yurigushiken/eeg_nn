@@ -1,6 +1,6 @@
-epochs: 60
-early_stop: 10
+max_folds: null
+epochs: 40
+early_stop: 8
 batch_size: 16
-random_state: 42
 save_ckpt: true
-
+random_state: 42

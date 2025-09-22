@@ -5,6 +5,22 @@ materialized_dir:
   choices:
     - data_preprocessed/hpf_1.0_lpf_35_baseline-off
     - data_preprocessed/hpf_1.0_lpf_35_baseline-on
+    - data_preprocessed/hpf_1.0_lpf_40_baseline-off
+    - data_preprocessed/hpf_1.0_lpf_40_baseline-on
+    - data_preprocessed/hpf_1.0_lpf_45_baseline-off
+    - data_preprocessed/hpf_1.0_lpf_45_baseline-on
+    - data_preprocessed/hpf_1.5_lpf_35_baseline-off
+    - data_preprocessed/hpf_1.5_lpf_35_baseline-on
+    - data_preprocessed/hpf_1.5_lpf_40_baseline-off
+    - data_preprocessed/hpf_1.5_lpf_40_baseline-on
+    - data_preprocessed/hpf_1.5_lpf_45_baseline-off
+    - data_preprocessed/hpf_1.5_lpf_45_baseline-on
+    - data_preprocessed/hpf_2.0_lpf_35_baseline-off
+    - data_preprocessed/hpf_2.0_lpf_35_baseline-on
+    - data_preprocessed/hpf_2.0_lpf_40_baseline-off
+    - data_preprocessed/hpf_2.0_lpf_40_baseline-on
+    - data_preprocessed/hpf_2.0_lpf_45_baseline-off
+    - data_preprocessed/hpf_2.0_lpf_45_baseline-on
 
 # === COMMON SECTION: CORE ARCHITECTURE WIDTHS ===
 filter_1:         { method: int, low: 8,  high: 32 }
@@ -21,7 +37,7 @@ dilation_block_4: { method: int, low: 1,  high: 4 }
 # dilation_block_5: { method: int, low: 1,  high: 6 }    # tuned in Step 2
 
 # === COMMON SECTION: SPATIAL WINDOWING ===
-cz_step:          { method: int, low: 0,  high: 5 }  # 0=full scalp; >0=Cz ring
+# cz_step:          { method: int, low: 1,  high: 5 }  # disabled: using non_scalp list by default
 
 # === COMMON SECTION: OPTIMIZATION / REGULARIZATION (BIG LEVERS) ===
 activation: { method: categorical, choices: [elu, relu, gelu] }

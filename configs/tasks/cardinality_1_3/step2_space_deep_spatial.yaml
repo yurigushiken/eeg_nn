@@ -20,7 +20,7 @@ avg_pool_block5:    { method: int, low: 4,  high: 10 }
 dilation_block_5:   { method: int, low: 1,  high: 6 }
 
 # === COMMON SECTION: SPATIAL WINDOWING ===
-# cz_step:          { method: int, low: 0,  high: 5 }  # 0=full scalp; >0=Cz ring
+# cz_step:          { method: int, low: 1,  high: 5 }  # disabled: using non_scalp list by default
 
 # === COMMON SECTION: OPTIMIZATION / REGULARIZATION (BIG LEVERS) ===
 # activation: { method: categorical, choices: [elu, relu, gelu] }
