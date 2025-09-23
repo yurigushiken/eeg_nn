@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from utils.reporting import create_consolidated_reports
+import yaml
 
 
 def write_summary(run_dir: Path, summary: dict, task: str, engine: str):
@@ -10,6 +11,16 @@ def write_summary(run_dir: Path, summary: dict, task: str, engine: str):
     # Write raw JSON summary
     out_fp_json = run_dir / f"summary_{task}_{engine}.json"
     out_fp_json.write_text(json.dumps(summary, indent=2))
+
+    # Also write resolved config (hyper) as YAML for easy reuse
+    try:
+        hyper = summary.get("hyper") or {}
+        if isinstance(hyper, dict):
+            out_fp_yaml = run_dir / "resolved_config.yaml"
+            out_fp_yaml.write_text(yaml.safe_dump(hyper, sort_keys=False))
+    except Exception:
+        # keep summary generation resilient
+        pass
     
     # --- Build and Write Detailed TXT Report ---
     report_lines = []

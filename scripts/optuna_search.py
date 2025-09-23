@@ -30,7 +30,9 @@ def main():
     ap = argparse.ArgumentParser(description="Generic Optuna TPE search driver")
     ap.add_argument("--stage", required=True, choices=["step1", "step2", "step3"], help="Naming and output routing only")
     ap.add_argument("--task", required=True)
-    ap.add_argument("--cfg", required=True)
+    # Support both styles: --base (preferred) and --cfg (overlay). Either/both are allowed.
+    ap.add_argument("--base", required=False, help="Base YAML config (defaults to configs/tasks/<task>/base.yaml if omitted)")
+    ap.add_argument("--cfg", required=False, help="Optional overlay YAML (e.g., stage controller or winners)")
     ap.add_argument("--space", required=True)
     ap.add_argument("--materialized", required=False, default=None,
                     help="Optional dataset dir. If omitted, uses materialized_dir from space or base.yaml")
@@ -41,7 +43,9 @@ def main():
 
     task = args.task
     common = load_yaml(proj_root / "configs" / "common.yaml")
-    ctrl = load_yaml(Path(args.cfg))
+    base_path = Path(args.base) if args.base else (proj_root / "configs" / "tasks" / task / "base.yaml")
+    base_cfg = load_yaml(base_path)
+    ctrl = load_yaml(Path(args.cfg)) if args.cfg else {}
     space = load_yaml(Path(args.space))
 
     engine_run = engine_registry.get("eeg")
@@ -55,13 +59,23 @@ def main():
         db_path = proj_root / "optuna_studies" / f"{study_name}.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         storage = f"sqlite:///{db_path.as_posix()}"
-    study = optuna.create_study(direction="maximize", study_name=study_name, storage=storage, load_if_exists=True)
+    # Enable TPE sampling and median pruning (prunes after warmup steps)
+    sampler = optuna.samplers.TPESampler(seed=42)
+    pruner = optuna.pruners.MedianPruner(n_warmup_steps=10)
+    study = optuna.create_study(
+        direction="maximize",
+        study_name=study_name,
+        storage=storage,
+        load_if_exists=True,
+        sampler=sampler,
+        pruner=pruner,
+    )
 
     def suggest(trial: optuna.Trial) -> Dict[str, Any]:
         cfg = dict(common)
-        # Start from base.yaml
-        cfg.update(load_yaml(proj_root / "configs" / "tasks" / task / "base.yaml"))
-        # Merge control YAML passed via --cfg (epochs, early_stop, batch_size, etc.)
+        # Start from base (explicit --base or task base.yaml)
+        cfg.update(base_cfg or {})
+        # Optional overlay (controller or winners)
         cfg.update(ctrl or {})
         # be lenient during HPO to avoid aborts
         cfg["strict_behavior_align"] = False
@@ -91,12 +105,15 @@ def main():
         run_dir.mkdir(parents=True, exist_ok=True)
         cfg["run_dir"] = str(run_dir)
 
+        # Pass the live Optuna trial for pruning inside the training loop
+        cfg["optuna_trial"] = trial
         summary_raw = engine_run(cfg, label_fn)
         summary = {"run_id": ts, "dataset_dir": cfg.get("materialized_dir"), **summary_raw, "study": study_name, "trial_id": trial.number, "hyper": {k:v for k,v in cfg.items() if k!="run_dir"}}
         write_summary(run_dir, summary, task, "eeg")
         obj = summary.get("inner_mean_macro_f1") or summary.get("inner_mean_acc") or 0.0
         return float(obj)
 
+    print(f"[optuna] Sampler=TPE, Pruner=Median(n_warmup_steps=10)", flush=True)
     study.optimize(suggest, n_trials=args.trials, show_progress_bar=False)
     best = study.best_trial
     best_payload = {"value": best.value, "params": best.params}

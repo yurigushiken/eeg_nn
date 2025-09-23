@@ -21,7 +21,9 @@ def parse_args():
     p = argparse.ArgumentParser(description="Train EEGNeX on a given task/engine pair.")
     p.add_argument("--task", required=True)
     p.add_argument("--engine", required=True, choices=list(engine_registry.ENGINES.keys()))
-    p.add_argument("--cfg", help="Base YAML config file (defaults to configs/tasks/<task>/base.yaml)")
+    # Support both styles: --base (preferred) and optional overlay --cfg
+    p.add_argument("--base", help="Base YAML config file (defaults to configs/tasks/<task>/base.yaml)")
+    p.add_argument("--cfg", help="Optional overlay YAML with overrides (e.g., winners or controller knobs)")
     p.add_argument("--set", nargs="*", metavar="KEY=VAL", help="Override any hyper-parameter.")
     p.add_argument("--run-xai", action='store_true')
     return p.parse_args()
@@ -30,10 +32,17 @@ def build_config(args) -> Dict[str, Any]:
     common_yaml = Path("configs") / "common.yaml"
     cfg = yaml.safe_load(common_yaml.read_text()) if common_yaml.exists() else {}
 
-    base_yaml = Path(args.cfg) if args.cfg else (Path("configs") / "tasks" / args.task / "base.yaml")
+    base_yaml = Path(args.base) if args.base else (Path("configs") / "tasks" / args.task / "base.yaml")
     if base_yaml.exists():
-        task_cfg = yaml.safe_load(base_yaml.read_text()) or {}
-        cfg.update(task_cfg)
+        base_cfg = yaml.safe_load(base_yaml.read_text()) or {}
+        cfg.update(base_cfg)
+
+    # Optional overlay
+    if args.cfg:
+        overlay_yaml = Path(args.cfg)
+        if overlay_yaml.exists():
+            overlay_cfg = yaml.safe_load(overlay_yaml.read_text()) or {}
+            cfg.update(overlay_cfg)
 
     if args.set:
         for kv in args.set:

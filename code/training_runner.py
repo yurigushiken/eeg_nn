@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader, Subset
 from sklearn.model_selection import LeaveOneGroupOut, GroupShuffleSplit
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import f1_score, classification_report
+import optuna
 
 from utils.plots import plot_confusion, plot_curves
 
@@ -96,6 +97,9 @@ class TrainingRunner:
         # Prepare augmentation transform once
         aug_transform = aug_builder(self.cfg, dataset) if aug_builder else None
 
+        # Global step counter for Optuna pruning (increments every epoch across folds)
+        global_step = 0
+
         for fold, (tr_idx, va_idx) in enumerate(fold_iter):
             if self.cfg.get("max_folds") is not None and fold >= int(self.cfg["max_folds"]):
                 break
@@ -164,6 +168,20 @@ class TrainingRunner:
                     val_macro_f1 = f1_score(y_true_ep, y_pred_ep, average='macro') * 100
                 except Exception:
                     val_macro_f1 = 0.0
+
+                # Optuna pruning: report inner-val accuracy per epoch and allow pruning
+                if optuna_trial is not None:
+                    global_step += 1
+                    try:
+                        optuna_trial.report(val_acc, global_step)
+                        if optuna_trial.should_prune():
+                            print(f"  [prune] Trial pruned at epoch {epoch} of fold {fold+1}.", flush=True)
+                            raise optuna.exceptions.TrialPruned()
+                    except optuna.exceptions.TrialPruned:
+                        raise
+                    except Exception:
+                        # Ignore reporting errors without stopping training
+                        pass
                 va_hist.append(val_loss); va_acc_hist.append(val_acc)
                 sched.step(val_loss)
 
