@@ -61,8 +61,7 @@ def main():
     all_accs = []
     all_summaries = []
     ts_root = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-    # enforce strict for final eval
-    cfg_base["strict_behavior_align"] = True
+    # strict behavior alignment is always enforced by default now (no flag needed)
     for i in range(args.seeds):
         cfg = dict(cfg_base)
         cfg["seed"] = int(cfg_base.get("seed", 42)) + i

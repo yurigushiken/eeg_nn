@@ -9,7 +9,10 @@ This repository implements a streamlined EEG decoding pipeline aligned with the 
 
 ### Key ideas
 - Preprocessing is performed externally with HAPPE; we convert EEGLAB `.set` to `.fif` once with `scripts/prepare_from_happe.py`.
-- Optuna search runs directly on materialized `.fif` via `scripts/optuna_search.py` with a `--stage` flag.
+- Optuna search runs directly on materialized `.fif` via `scripts/optuna_search.py` with a `--stage` flag; we use TPE with MedianPruner (warmup=10) and per‑epoch pruning.
+- Behavior alignment is strict by default; any epochs↔behavior mismatch raises and aborts.
+- Default channel policy excludes non‑scalp channels (`use_channel_list: non_scalp`). The Cz‑ring knob (`cz_step`) is disabled by default.
+- Every run writes `resolved_config.yaml` in its run directory for reproducibility and re‑use.
 - Final evaluation can average across ≥10 seeds and generate XAI reports.
 
 ## Repository layout
@@ -35,6 +38,10 @@ This repository implements a streamlined EEG decoding pipeline aligned with the 
   - optuna_search.py — Unified Optuna TPE driver (Stage 1/2/3 via --stage)
   - search_finalist.py — optional finalist tuner (joint sensitive params)
   - final_eval.py — multi‑seed final evaluation and consolidated reporting
+  - run_xai_analysis.py — per‑fold attributions and consolidated XAI HTML/PDF
+- results/optuna/
+  - refresh_optuna_summaries.py — per‑study CSV (sorted by inner_mean_macro_f1 desc) and plots
+  - refresh_optuna_summaries.bat — convenience wrapper on Windows
 - data directories (git‑ignored):
   - eeg-raw/subjectXX.mff
   - data_behavior/behavior_data/SubjectXX.csv
@@ -52,13 +59,32 @@ This repository implements a streamlined EEG decoding pipeline aligned with the 
 python scripts/prepare_from_happe.py
 ```
 
+1a) Single LOSO run (optional)
+```powershell
+python -X utf8 -u train.py `
+  --task cardinality_1_3 `
+  --engine eeg `
+  --base  configs/tasks/cardinality_1_3/base.yaml `
+  --run-xai
+```
+
+Run a single LOSO with an Optuna winner:
+```powershell
+python -X utf8 -u train.py `
+  --task cardinality_1_3 `
+  --engine eeg `
+  --base configs/tasks/cardinality_1_3/resolved_config.yaml `
+  --run-xai
+```
+
 2) Optuna search on materialized `.fif` (choose stage)
 ```powershell
 # Step 1 (architecture/spatial/big levers)
 python -X utf8 -u scripts/optuna_search.py `
   --stage step1 `
   --task cardinality_1_3 `
-  --cfg  configs/tasks/cardinality_1_3/step1_search.yaml `
+  --base  configs/tasks/cardinality_1_3/base.yaml `
+  --cfg   configs/tasks/cardinality_1_3/step1_search.yaml `
   --space configs/tasks/cardinality_1_3/step1_space_deep_spatial.yaml `
   --trials 48
 
@@ -66,7 +92,8 @@ python -X utf8 -u scripts/optuna_search.py `
 python -X utf8 -u scripts/optuna_search.py `
   --stage step2 `
   --task cardinality_1_3 `
-  --cfg  configs/tasks/cardinality_1_3/step2_search.yaml `
+  --base  configs/tasks/cardinality_1_3/base.yaml `
+  --cfg   configs/tasks/cardinality_1_3/step2_search.yaml `
   --space configs/tasks/cardinality_1_3/step2_space_deep_spatial.yaml `
   --trials 48
 
@@ -74,7 +101,8 @@ python -X utf8 -u scripts/optuna_search.py `
 python -X utf8 -u scripts/optuna_search.py `
   --stage step3 `
   --task cardinality_1_3 `
-  --cfg  configs/tasks/cardinality_1_3/step3_search.yaml `
+  --base  configs/tasks/cardinality_1_3/base.yaml `
+  --cfg   configs/tasks/cardinality_1_3/step3_search.yaml `
   --space configs/tasks/cardinality_1_3/step3_space_aug.yaml `
   --trials 48
 ```
@@ -89,14 +117,16 @@ python scripts/final_eval.py `
 
 ## Preprocessing details
 - HAPPE produces cleaned `.set` per subject. `prepare_from_happe.py` aligns behavior, removes `Condition==99`, encodes labels, attaches montage, and saves per‑subject `.fif`.
-- Optional at train time: `crop_ms`, `use_channel_list`, `include_channels`, `cz_step` (Cz‑centric ring on 3D montage).
+- Default at train time: `use_channel_list: non_scalp`. The Cz‑ring (`cz_step`) heuristic is disabled by default (can be re‑enabled by adding it to YAML). You can still set `crop_ms` and/or explicit `include_channels`.
 
 ## Reproducibility
 - LOSO outer split; inner subject‑aware validation split
 - `seed`, `random_state`, and cache fingerprinting to keep trials consistent.
 - Final multi‑seed evaluation recommended (≥10 seeds).
+- Optuna uses TPE sampling and a Median Pruner (10 warmup epochs); per‑epoch inner‑val accuracy is reported for pruning.
 
 ## Commands cheat‑sheet
 - Convert: `python scripts/prepare_from_happe.py`
 - Search (unified): `python scripts/optuna_search.py --stage step1|step2|step3 ...`
 - Final eval: `python scripts/final_eval.py ...`
+- Refresh Optuna summaries: `results\optuna\refresh_optuna_summaries.bat`

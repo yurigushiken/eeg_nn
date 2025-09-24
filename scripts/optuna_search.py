@@ -77,8 +77,6 @@ def main():
         cfg.update(base_cfg or {})
         # Optional overlay (controller or winners)
         cfg.update(ctrl or {})
-        # be lenient during HPO to avoid aborts
-        cfg["strict_behavior_align"] = False
         # sample hyperparameters defined in space YAML
         for k, spec in space.items():
             m = spec.get("method")
@@ -108,7 +106,17 @@ def main():
         # Pass the live Optuna trial for pruning inside the training loop
         cfg["optuna_trial"] = trial
         summary_raw = engine_run(cfg, label_fn)
-        summary = {"run_id": ts, "dataset_dir": cfg.get("materialized_dir"), **summary_raw, "study": study_name, "trial_id": trial.number, "hyper": {k:v for k,v in cfg.items() if k!="run_dir"}}
+        # Remove non-serializable runtime objects before persisting
+        cfg.pop("optuna_trial", None)
+        safe_hyper = {k: v for k, v in cfg.items() if k not in {"run_dir", "optuna_trial"}}
+        summary = {
+            "run_id": ts,
+            "dataset_dir": cfg.get("materialized_dir"),
+            **summary_raw,
+            "study": study_name,
+            "trial_id": trial.number,
+            "hyper": safe_hyper,
+        }
         write_summary(run_dir, summary, task, "eeg")
         obj = summary.get("inner_mean_macro_f1") or summary.get("inner_mean_acc") or 0.0
         return float(obj)

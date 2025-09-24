@@ -1,37 +1,16 @@
-# === COMMON SECTION: DATASET CHOICE ===
-# materialized_dir:
-#   method: categorical
-#   choices:
-#     - data_preprocessed/hpf_1.0_lpf_35_baseline-off
-#     - data_preprocessed/hpf_1.0_lpf_35_baseline-on
+# === REFINEMENT & STABILITY KNOBS (For Step 2) ===
+# NOTE: This search should be run AFTER choosing the single best dataset
+# and fixing the best parameters found in the Step 1 search.
 
-# === COMMON SECTION: CORE ARCHITECTURE WIDTHS ===
-# filter_1:         { method: int, low: 8,  high: 32 }
-# filter_2:         { method: int, low: 16, high: 64 }
-
-# === COMMON SECTION: LATE-BLOCK KERNEL SIZES ===
-# kernel_block_4:   { method: int, low: 8,  high: 32 }
-# kernel_block_5:   { method: int, low: 8,  high: 32 }
-
-# === COMMON SECTION: POOLING / DILATION ===
-# avg_pool_block4:  { method: int, low: 2,  high: 6 }
-# dilation_block_4: { method: int, low: 1,  high: 4 }
+# Late-block pooling / dilation
 avg_pool_block5:    { method: int, low: 4,  high: 10 }
 dilation_block_5:   { method: int, low: 1,  high: 6 }
 
-# === COMMON SECTION: SPATIAL WINDOWING ===
-# cz_step:          { method: int, low: 1,  high: 5 }  # disabled: using non_scalp list by default
+# Finer architectural details
+depth_multiplier:   { method: int, low: 1, high: 3 }      # ADDED: Important architectural knob
+kernel_block_1_2:   { method: int, low: 16, high: 64 }
 
-# === COMMON SECTION: OPTIMIZATION / REGULARIZATION (BIG LEVERS) ===
-# activation: { method: categorical, choices: [elu, relu, gelu] }
-# lr:         { method: log_uniform, low: 2.0e-4, high: 1.5e-3 }
-# batch_size: { method: categorical, choices: [8, 16, 32] }
-# drop_prob:  { method: uniform, low: 0.2, high: 0.7 }
-
-# === COMMON SECTION: REFINEMENT / STABILITY KNOBS ===
-depth_multiplier:   { method: int,         low: 1,      high: 3 }
-kernel_block_1_2:   { method: int,         low: 16,     high: 64 }
-max_norm_conv:      { method: uniform,     low: 0.5,    high: 2.0 }
-max_norm_linear:    { method: uniform,     low: 0.1,    high: 0.5 }
-weight_decay:       { method: log_uniform, low: 1.0e-6, high: 1.0e-2 }
-scheduler_patience: { method: int,         low: 3,      high: 8 }
+# Advanced regularization
+max_norm_conv:      { method: uniform, low: 0.5, high: 2.5 }   # Expanded range slightly
+max_norm_linear:    { method: uniform, low: 0.1, high: 0.8 }   # Expanded range slightly
+scheduler_patience: { method: int, low: 3, high: 8 }

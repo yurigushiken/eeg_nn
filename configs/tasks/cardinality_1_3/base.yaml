@@ -3,13 +3,13 @@ model_name: eegnex
 # Data sources (relative)
 materialized_dir: "data_preprocessed/hpf_1.0_lpf_45_baseline-on-example"
 
-crop_ms: [50, 250]               # e.g., [0, 600]
+crop_ms: [0, 496]               # e.g., [0, 496]
 use_channel_list: non_scalp      # e.g., non_scalp
 
 # Training
-batch_size: 16
+batch_size: 8
 lr: 0.0007
-epochs: 60
+epochs: 40
 early_stop: 10
 
 

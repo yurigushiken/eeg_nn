@@ -412,14 +412,11 @@ def merge_behavior_metadata(epochs, behavior_df: pd.DataFrame, strict: bool = Tr
     # Remove Condition == 99
     valid_mask = df['CellNumber'].astype(str) != '99'
     df = df[valid_mask].copy()
-    # Align lengths; optionally strict
+    # Align lengths; strictly enforced
     if len(epochs) != len(df):
-        if strict:
-            raise ValueError(f"Length mismatch after preprocessing vs behavior filtering: epochs={len(epochs)} vs behavior={len(df)}. Aborting.")
-        # Best-effort alignment for smoke tests: crop both to the minimum length
-        n = min(len(epochs), len(df))
-        epochs = epochs[:n]
-        df = df.iloc[:n].reset_index(drop=True)
+        raise ValueError(
+            f"Length mismatch after preprocessing vs behavior filtering: epochs={len(epochs)} vs behavior={len(df)}."
+        )
 
     df['unified_ACC'] = _unify_acc_columns(df)
 

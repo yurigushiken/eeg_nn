@@ -6,6 +6,7 @@ import sys
 import yaml
 from pathlib import Path
 from typing import Dict, Any
+import subprocess
 
 proj_root = Path(__file__).resolve().parent
 code_dir = proj_root / "code"
@@ -59,6 +60,8 @@ def main():
     args = parse_args()
     cfg = build_config(args)
     cfg["task"] = args.task
+    # Record engine in cfg so downstream reports/XAI can reference it
+    cfg["engine"] = args.engine
 
     seed_everything(cfg.get("seed"))
 
@@ -72,13 +75,24 @@ def main():
     cfg["run_dir"] = str(run_dir)
 
     summary_raw = engine_run(cfg, label_fn)
+    ds_dir = cfg.get("materialized_dir") or cfg.get("dataset_dir")
     summary = {
         "run_id": run_id,
-        "dataset_dir": cfg.get("dataset_dir"),
+        "dataset_dir": ds_dir,
         **summary_raw,
         "hyper": {k: v for k, v in cfg.items() if k not in {"dataset_dir", "run_dir"}},
     }
     write_summary(run_dir, summary, args.task, args.engine)
+
+    # Optionally run XAI analysis on the completed run
+    if args.run_xai:
+        try:
+            print("\n--- Running XAI analysis on completed run ---", flush=True)
+            script_path = proj_root / "scripts" / "run_xai_analysis.py"
+            cmd = [sys.executable, "-X", "utf8", "-u", str(script_path), "--run-dir", str(run_dir)]
+            subprocess.run(cmd, check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"XAI analysis failed: {e}")
 
 if __name__ == "__main__":
     main()
