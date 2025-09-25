@@ -6,6 +6,7 @@ import json
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 from sklearn.model_selection import LeaveOneGroupOut, GroupShuffleSplit, GroupKFold
 from sklearn.utils.class_weight import compute_class_weight
@@ -14,11 +15,34 @@ import optuna
 
 from utils.plots import plot_confusion, plot_curves
 
+"""
+Training/evaluation orchestration with nested, subject-aware cross-validation.
+
+Outer CV:
+  - GroupKFold when cfg['n_folds'] is set (subject-aware K-way)
+  - LOSO when 'n_folds' is absent or null
+
+Inner CV:
+  - Strict GroupKFold with cfg['inner_n_folds'] (≥2), per outer split (subject-aware)
+  - Early stopping on inner validation loss; pruning reports inner macro‑F1 (robust to imbalance)
+
+Evaluation:
+  - For each outer split, predictions on the held-out subjects are obtained via
+    an ensemble over inner K models (mean of softmax), improving stability.
+  - Metrics returned include fold accuracies, overall macro/weighted F1, and
+    inner means across folds.
+
+Data handling and leakage guards:
+  - Augmentation is applied to training only; validation/test have no transforms.
+  - Class weights are computed from the inner-train labels only to balance loss.
+  - Inner folds are split strictly by subject groups to avoid any leakage.
+"""
+
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def _seed_worker(worker_id):
-    # Deterministic DataLoader workers
+    # Deterministic DataLoader workers (ensures per-worker RNG reproducibility)
     worker_seed = torch.initial_seed() % 2**32
     np.random.seed(worker_seed)
 
@@ -64,11 +88,11 @@ class TrainingRunner:
 
         dataset_tr = copy.copy(dataset)
         dataset_eval = copy.copy(dataset)
-        # Train: apply augmentation; Eval/Test: no augmentation
+        # Train: apply augmentation; Eval/Test: no augmentation (prevents leakage)
         dataset_tr.set_transform(aug_transform)
         dataset_eval.set_transform(None)
 
-        num_workers = 0  # safest on Windows
+        num_workers = 0  # safest on Windows; avoids multiprocessing pitfalls
         g = torch.Generator()
         if self.cfg.get("seed") is not None:
             g.manual_seed(int(self.cfg["seed"]))
@@ -82,7 +106,7 @@ class TrainingRunner:
         y_all = dataset.get_all_labels()
         num_cls = len(class_names)
 
-        # Split strategy: n_folds (GroupKFold) or LOSO
+        # Split strategy: n_folds (GroupKFold) or LOSO (subject-wise)
         if self.cfg.get('n_folds'):
             k = int(self.cfg['n_folds'])
             gkf_outer = GroupKFold(n_splits=k)
@@ -98,7 +122,7 @@ class TrainingRunner:
         inner_accs: List[float] = []
         inner_macro_f1s: List[float] = []
 
-        # Prepare augmentation transform once
+        # Prepare augmentation transform once (stateless transform expected)
         aug_transform = aug_builder(self.cfg, dataset) if aug_builder else None
 
         # Global step counter for Optuna pruning (increments every epoch across folds)
@@ -138,6 +162,7 @@ class TrainingRunner:
                 model = model_builder(self.cfg, num_cls).to(DEVICE)
                 opt = torch.optim.AdamW(model.parameters(), lr=float(self.cfg.get("lr", 7e-4)), weight_decay=float(self.cfg.get("weight_decay", 0.0)))
                 sched = torch.optim.lr_scheduler.ReduceLROnPlateau(opt, mode='min', patience=int(self.cfg.get("scheduler_patience", 5)))
+                # Class weights computed from inner-train only (no leakage)
                 cls_w = compute_class_weight("balanced", classes=np.arange(num_cls), y=y_all[inner_tr_abs])
                 loss_fn = nn.CrossEntropyLoss(torch.tensor(cls_w, dtype=torch.float32, device=DEVICE))
 
@@ -159,7 +184,7 @@ class TrainingRunner:
                         xb_gpu = input_adapter(xb_gpu) if input_adapter else xb_gpu
                         opt.zero_grad()
 
-                        # Optional mixup
+                        # Optional mixup: only for tensor inputs with batch_size>1
                         mixup_alpha = float(self.cfg.get("mixup_alpha", 0.0) or 0.0)
                         if mixup_alpha > 0.0 and isinstance(xb_gpu, torch.Tensor) and xb_gpu.size(0) > 1:
                             lam = np.random.beta(mixup_alpha, mixup_alpha)
@@ -195,7 +220,7 @@ class TrainingRunner:
                     except Exception:
                         val_macro_f1 = 0.0
 
-                    # Optuna pruning: report inner-val accuracy per epoch and allow pruning
+                    # Optuna pruning: report inner-val macro-F1 per epoch and allow pruning
                     if optuna_trial is not None:
                         global_step += 1
                         try:
@@ -239,22 +264,35 @@ class TrainingRunner:
             inner_accs.append(inner_mean_acc_this_outer)
             inner_macro_f1s.append(inner_mean_macro_f1_this_outer)
 
-            # Select best inner model for outer test evaluation
+            # Select best inner model for plotting curves (ensemble used for test predictions)
             if inner_results_this_outer:
                 best_inner_result = max(inner_results_this_outer, key=lambda r: r["best_inner_macro_f1"])  # tie-breaker arbitrary
 
-            # Test with best inner model
-            model = model_builder(self.cfg, num_cls).to(DEVICE)
-            if best_inner_result and best_inner_result["best_state"] is not None:
-                model.load_state_dict(best_inner_result["best_state"])
-            model.eval(); correct=0; total=0; y_true_fold=[]; y_pred_fold=[]
+            # Test with ensemble of inner models (mean softmax over K inner models)
+            correct=0; total=0; y_true_fold=[]; y_pred_fold=[]
             with torch.no_grad():
                 for xb, yb in (te_ld_shared if te_ld_shared is not None else []):
                     yb_gpu = yb.to(DEVICE)
                     xb_gpu = xb.to(DEVICE) if not isinstance(xb, (list, tuple)) else [t.to(DEVICE) for t in xb]
                     xb_gpu = input_adapter(xb_gpu) if input_adapter else xb_gpu
-                    out = model(xb_gpu) if not isinstance(xb_gpu, (list, tuple)) else model(*xb_gpu)
-                    preds = out.argmax(1).cpu()
+
+                    accum_probs = None
+                    for r in inner_results_this_outer:
+                        state = r.get("best_state")
+                        if state is None:
+                            continue
+                        model = model_builder(self.cfg, num_cls).to(DEVICE)
+                        model.load_state_dict(state)
+                        model.eval()
+                        out = model(xb_gpu) if not isinstance(xb_gpu, (list, tuple)) else model(*xb_gpu)
+                        probs = F.softmax(out.float(), dim=1).cpu()
+                        if accum_probs is None:
+                            accum_probs = probs
+                        else:
+                            accum_probs += probs
+                    if accum_probs is None:
+                        continue
+                    preds = accum_probs.argmax(1)
                     correct += (preds == yb).sum().item(); total += yb.size(0)
                     y_true_fold.extend(yb.tolist()); y_pred_fold.extend(preds.tolist())
             acc = 100.0 * correct / max(1, total)
@@ -262,7 +300,7 @@ class TrainingRunner:
             overall_y_true.extend(y_true_fold); overall_y_pred.extend(y_pred_fold)
             print(f"[fold {fold+1}] acc={acc:.2f} inner_mean_acc={inner_mean_acc_this_outer:.2f} inner_mean_macro_f1={inner_mean_macro_f1_this_outer:.2f}", flush=True)
 
-            # Plots per fold (use best inner fold histories)
+            # Plots per fold (use best inner fold histories for curves; ensemble guides predictions)
             if self.run_dir and best_inner_result:
                 fold_title = (
                     f"Fold {fold+1} (Subjects: {test_subjects}) · "
@@ -283,26 +321,7 @@ class TrainingRunner:
                     title=fold_title,
                 )
 
-            # Plots per fold
-            if self.run_dir:
-                fold_title = (
-                    f"Fold {fold+1} (Subjects: {test_subjects}) · "
-                    f"inner-best macro-F1={best_inner_macro_f1:.2f} · acc={acc:.2f}"
-                )
-                plot_confusion(
-                    y_true_fold,
-                    y_pred_fold,
-                    class_names,
-                    self.run_dir / f"fold{fold+1}_confusion.png",
-                    title=fold_title,
-                )
-                plot_curves(
-                    tr_hist,
-                    va_hist,
-                    va_acc_hist,
-                    self.run_dir / f"fold{fold+1}_curves.png",
-                    title=fold_title,
-                )
+            # (Removed duplicate plots block; using best inner fold histories above)
 
         # Overall metrics
         mean_acc = float(np.mean(fold_accs)) if fold_accs else 0.0
@@ -315,7 +334,7 @@ class TrainingRunner:
             macro_f1 = weighted_f1 = 0.0
             class_report_str = "Error generating classification report."
 
-        # Overall plot
+        # Overall plot (confusion across all outer test predictions)
         if self.run_dir and overall_y_true:
             overall_title = (
                 f"Overall · inner_mean_macro_f1={float(np.mean(inner_macro_f1s)) if inner_macro_f1s else 0.0:.2f} "

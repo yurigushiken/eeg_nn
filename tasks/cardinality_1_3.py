@@ -1,3 +1,6 @@
+"""Task: classify landing digit among {1,2,3} for same-digit pairs (11,22,33).
+Label function returns strings '1','2','3'; non-target conditions become NaN.
+"""
 import numpy as np
 import pandas as pd
 

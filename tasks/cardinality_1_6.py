@@ -1,12 +1,13 @@
-"""Task: classify landing digit among {4,5,6} for same-digit pairs (44,55,66).
-Label function returns strings '4','5','6'; non-target conditions become NaN.
+"""Task: classify landing digit among {1,2,3,4,5,6} for same-digit pairs.
+Label function returns strings '1'..'6'; non-target conditions become NaN.
 """
 import numpy as np
 import pandas as pd
 
 __all__ = ["label_fn", "CONDITIONS"]
 
-CONDITIONS = [44, 55, 66]
+# Six-class cardinality (digits 1–6), ERP-style coding
+CONDITIONS = [11, 22, 33, 44, 55, 66]
 
 def label_fn(meta: pd.DataFrame):
     cond_int = meta["Condition"].astype(int)
@@ -14,5 +15,7 @@ def label_fn(meta: pd.DataFrame):
     valid = cond_int.isin(CONDITIONS)
     out = landing_digit.where(valid, other=np.nan)
     return out.apply(lambda x: str(int(x)) if pd.notna(x) else np.nan)
+
+
 
 

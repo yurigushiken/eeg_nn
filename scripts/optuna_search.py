@@ -21,6 +21,23 @@ from utils.summary import write_summary
 
 import optuna
 
+"""
+Unified Optuna TPE search driver.
+
+Per-trial config layering (in this order):
+  common.yaml → base.yaml (or resolved) → optional --cfg overlay → sampled --space
+
+Objective and pruning:
+  - The engine/runner returns a summary with nested-CV metrics. The Optuna objective
+    is the averaged inner macro‑F1 across inner folds and outer folds. We report
+    per-epoch inner macro‑F1 to the pruner (MedianPruner) to terminate weak trials early.
+
+Artifacts per trial (results/optuna/<study>/<timestamp>_...):
+  - summary.json (metrics + hyper)
+  - resolved_config.yaml (frozen hyperparameters + bookkeeping)
+  - plots for folds + overall
+"""
+
 
 def load_yaml(p: Path) -> Dict[str, Any]:
     return yaml.safe_load(p.read_text()) if p.exists() else {}
@@ -77,7 +94,7 @@ def main():
         cfg.update(base_cfg or {})
         # Optional overlay (controller or winners)
         cfg.update(ctrl or {})
-        # sample hyperparameters defined in space YAML
+        # Sample hyperparameters defined in space YAML
         for k, spec in space.items():
             m = spec.get("method")
             if m == "uniform":
@@ -89,6 +106,8 @@ def main():
             elif m == "categorical":
                 cfg[k] = trial.suggest_categorical(k, spec["choices"]) 
         # materialized_dir precedence: space > CLI > base.yaml
+        # Rationale: search spaces may enumerate candidate datasets; CLI wins if set;
+        # base.yaml is a default of last resort for convenience.
         if not cfg.get("materialized_dir"):
             if args.materialized:
                 cfg["materialized_dir"] = args.materialized
@@ -118,6 +137,7 @@ def main():
             "hyper": safe_hyper,
         }
         write_summary(run_dir, summary, task, "eeg")
+        # Optimize nested-CV inner mean macro-F1
         obj = summary.get("inner_mean_macro_f1") or summary.get("inner_mean_acc") or 0.0
         return float(obj)
 

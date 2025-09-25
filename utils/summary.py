@@ -4,15 +4,30 @@ from pathlib import Path
 from utils.reporting import create_consolidated_reports
 import yaml
 
+"""
+Summary writer: persists metrics/artifacts for a single run.
+
+Writes into the run directory:
+- summary_TASK_ENGINE.json (raw dict)
+- resolved_config.yaml (frozen hyperparameters for reproducibility)
+- report_TASK_ENGINE.txt (human-readable summary)
+Then calls create_consolidated_reports to generate HTML/PDF summaries.
+
+Resiliency: failures in any artifact generation step should not crash runs.
+"""
+
 
 def write_summary(run_dir: Path, summary: dict, task: str, engine: str):
-    """Write summary JSON and a detailed TXT report."""
+    """Write summary JSON, resolved YAML, TXT report, and HTML/PDF.
+
+    Keep this resilient: a failure in one artifact should not block others.
+    """
     
     # Write raw JSON summary
     out_fp_json = run_dir / f"summary_{task}_{engine}.json"
     out_fp_json.write_text(json.dumps(summary, indent=2))
 
-    # Also write resolved config (hyper) as YAML for easy reuse
+    # Also write resolved config (hyper) as YAML for easy reuse (omit env/path keys)
     try:
         hyper = summary.get("hyper") or {}
         if isinstance(hyper, dict):
@@ -54,7 +69,7 @@ def write_summary(run_dir: Path, summary: dict, task: str, engine: str):
         report_lines.append(summary["classification_report"])
         report_lines.append("")
 
-    # Hyperparameters
+    # Hyperparameters (flat listing for quick inspection)
     report_lines.append("--- Hyperparameters ---")
     if summary.get("hyper"):
         for key, value in summary["hyper"].items():
@@ -66,7 +81,7 @@ def write_summary(run_dir: Path, summary: dict, task: str, engine: str):
     out_fp_txt.write_text("\n".join(report_lines))
     print(f"  [summary] done · mean_acc={summary.get('mean_acc', 0.0):.2f}%")
 
-    # Generate consolidated HTML and PDF reports
+    # Generate consolidated HTML and PDF reports (PDF optional via Playwright)
     try:
         print("\n--- Generating Consolidated Reports ---")
         create_consolidated_reports(run_dir, summary, task, engine)

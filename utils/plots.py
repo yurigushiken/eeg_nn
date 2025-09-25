@@ -3,6 +3,11 @@
 All engines (CNN, Hybrid, ViT, …) should import these helpers so that every
 run produces visually identical artefacts.
 
+Design notes:
+- Headless backend (Agg) prevents GUI popups and improves Windows stability.
+- Confusion matrix uses black diagonal and orange plurality highlight per row to
+  match legacy visuals and improve at-a-glance interpretability.
+
 plot_confusion(...)
 plot_curves(...)
 """
@@ -80,7 +85,7 @@ def plot_confusion(
         vmax=vmax,
     )
 
-    # Manual annotation layer
+    # Manual annotation layer: percent values in each cell
     for r in range(cm_perc.shape[0]):
         row_total = cm[r].sum()
         for c in range(cm_perc.shape[1]):
@@ -89,7 +94,7 @@ def plot_confusion(
             col = "white" if perc > vmax * 0.5 else "black"
             ax.text(c + 0.5, r + 0.5, label, ha="center", va="center", color=col, fontsize=annot_fontsize)
 
-    # Diagonal in black and row plurality in orange
+    # Diagonal in black and row plurality in orange (legacy visual language)
     for r in range(len(class_names)):
         ax.add_patch(Rectangle((r, r), 1, 1, fill=False, edgecolor="black", lw=2))
         if cm[r].sum() > 0:
@@ -103,7 +108,7 @@ def plot_confusion(
     if title:
         ax.set_title(title)
 
-    # Optional hyper-params on left
+    # Optional hyper-params on left (monospace, dynamic left margin)
     if hyper_lines:
         max_len = max(len(s) for s in hyper_lines)
         left_margin = min(0.5, 0.15 + max_len * 0.006)

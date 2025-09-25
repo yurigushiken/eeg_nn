@@ -1,3 +1,13 @@
+"""
+XAI utilities built on Captum's Integrated Gradients.
+
+Notes:
+- Models may expect (B, C, T) but datasets yield (B, 1, C, T); SqueezeAndForward wraps
+  the forward call to avoid changing model code.
+- We attribute only correctly predicted samples to focus explanations on agreements.
+- Attribution magnitudes are relative to the model's decision function and are not causal.
+"""
+
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -32,6 +42,11 @@ def compute_and_plot_attributions(
 ):
     """
     Computes and saves the average attribution map and summary for a model on a given test set.
+
+    Implementation notes:
+    - Uses Integrated Gradients with input gradients, batching internally per fold.
+    - Filters to correct predictions for attribution to align inspection with success cases.
+    - Saves .npy array and heatmap for reuse by the grand-average report.
     """
     # Ensure the model is in evaluation mode
     model.eval()

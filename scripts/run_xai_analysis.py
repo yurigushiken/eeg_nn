@@ -1,3 +1,21 @@
+"""
+Per-run XAI analysis for EEG models.
+
+Flow:
+- Load run summary (summary_*.json) and merge with common.yaml for plotting knobs
+- Rebuild the dataset for channel names, sfreq, and time axis (ms)
+- For each outer fold: rebuild the model and load the best checkpoint, compute IG attributions
+  on correctly predicted test samples, and save per-fold heatmaps and .npy arrays
+- Compute a grand average across folds; analyze top-K channels globally and around top temporal peaks
+- Generate a consolidated HTML report (and optional PDF if Playwright is installed)
+
+Notes:
+- We attribute only correctly predicted samples to focus on what the model 
+  explains when it is right. Attribution scores are model-relative saliency,
+  not causal effects.
+- Playwright is optional; enable via "playwright install" to emit PDFs.
+"""
+
 import argparse
 import re
 import json
@@ -266,10 +284,10 @@ def main():
     full_dataset = RawEEGDataset(cfg_for_dataset, label_fn)
     num_classes = len(full_dataset.class_names)
 
-    # --- NEW (IA Recommended): Get final channel names and sfreq from the dataset ---
+    # Get final channel names and sfreq from the dataset (single source of truth)
     ch_names = full_dataset.channel_names
     sfreq = full_dataset.sfreq
-    # --- CORRECTED: Use dataset as single source of truth for time axis ---
+    # Use dataset as single source of truth for time axis
     times_ms = full_dataset.times_ms
 
     # --- Build a clean plotting Info object from scratch ---
@@ -283,7 +301,7 @@ def main():
     xai_output_dir = args.run_dir / "xai_analysis"
     xai_output_dir.mkdir(exist_ok=True)
 
-    # 5. Find all checkpoints and run XAI
+    # 5. Find all checkpoints and run XAI (skip folds without a matching ckpt)
     checkpoints = sorted(list(args.run_dir.glob("fold_*_best.ckpt")))
     if not checkpoints:
         sys.exit("No .ckpt files found in the run directory. Was save_ckpt=true set?")
@@ -300,7 +318,7 @@ def main():
 
         print(f"\n--- Processing Fold {fold_num} (Subjects: {fold_info['test_subjects']}) ---")
         
-        # Rebuild model and load weights
+        # Rebuild model and load weights for this fold
         model = RAW_EEG_MODELS[cfg["model_name"]](
             cfg, num_classes, C=full_dataset.num_channels, T=full_dataset.time_points
         ).to(DEVICE)
@@ -325,7 +343,7 @@ def main():
 
     print("\n--- XAI Analysis Complete ---")
     
-    # --- NEW: Summarization Step ---
+    # Summarization step: aggregate fold attributions to grand average
     print("\n--- Generating Grand Average Summary and Report ---")
 
     # 1. Load all attribution .npy files
@@ -340,7 +358,7 @@ def main():
     # 2. Compute Grand Average
     grand_average = np.mean(all_attributions, axis=0)
 
-    # --- NEW (IA Recommended): Add assertion for safety ---
+    # Sanity check: info_for_plot and data channel counts must match
     n_info = len(info_for_plot["ch_names"])
     n_data = grand_average.shape[0]
     if n_info != n_data:
@@ -392,7 +410,7 @@ def main():
         top_ch_indices_window = np.argsort(mean_ch_attr_window)[::-1][:top_k]
         top_ch_names_window = [ch_names[i] for i in top_ch_indices_window]
         
-        # 4. Generate and save a topoplot for this window
+        # 4. Generate and save a topoplot for this window, labeling top-K channels
         topo_path_window = xai_output_dir / f"peak_{i+1}_topoplot.png"
         fig, ax = plt.subplots(figsize=(6, 6))
         mask = np.zeros(len(ch_names), dtype='bool')

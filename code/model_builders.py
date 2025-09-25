@@ -3,6 +3,21 @@ from typing import Dict, Any
 
 import torch.nn as nn
 
+"""
+Model builders and augmentation utilities for raw EEG.
+
+We wrap external implementations (e.g., Braindecode EEGNeX) behind small
+builder functions that translate cfg keys into model constructor arguments.
+
+References:
+- EEGNeX (Braindecode models): see Braindecode docs and the associated papers
+  for architectural details; here we expose the key hyper-parameters via cfg.
+
+Notes on shapes:
+- Models typically expect inputs shaped (B, C, T). Our datasets yield (B, 1, C, T)
+  and the engine applies a squeeze adapter where appropriate to keep interfaces simple.
+"""
+
 try:
     from braindecode.models import EEGNeX as BD_EEGNeX
 except Exception:
@@ -10,6 +25,21 @@ except Exception:
 
 
 def build_eegnex(cfg: Dict[str, Any], num_classes: int, C: int, T: int) -> nn.Module:
+    """Build an EEGNeX model from cfg.
+
+    Key cfg→constructor mappings (defaults in parentheses):
+      - activation ('elu'): one of {'elu','relu','leaky_relu','gelu','celu','silu'}
+      - depth_multiplier (2): channel expansion factor per block
+      - filter_1 (8), filter_2 (32): base conv feature sizes
+      - kernel_block_1_2 (32), kernel_block_4 (16), kernel_block_5 (16): kernel widths
+      - avg_pool_block4 (4), avg_pool_block5 (8): temporal pooling factors
+      - dilation_block_4 (2), dilation_block_5 (4): dilations in later blocks
+      - drop_prob (0.5): dropout probability
+      - max_norm_conv (1.0), max_norm_linear (0.25): weight max-norm constraints
+
+    Shapes:
+      - n_chans=C, n_times=T, n_outputs=num_classes
+    """
     if BD_EEGNeX is None:
         raise ImportError("Braindecode EEGNeX not available. Install braindecode>=1.1.0.")
 
@@ -46,11 +76,22 @@ def build_eegnex(cfg: Dict[str, Any], num_classes: int, C: int, T: int) -> nn.Mo
 
 
 def squeeze_input_adapter(x):
-    # (B,1,C,T) -> (B,C,T)
+    # (B,1,C,T) -> (B,C,T). Used by engines for models that expect squeezed inputs.
     return x.squeeze(1)
 
 
 def build_raw_eeg_aug(cfg: Dict[str, Any], T: int):
+    """Create a stateless train-time augmentation transform based on cfg.
+
+    The returned callable expects a single-example tensor of shape (1,C,T) and
+    applies random time shift, scaling, Gaussian noise, time masking, and channel
+    masking according to probabilities in cfg. Returning None means no-op.
+
+    Scientific note:
+    - All transforms here are applied at train time only (dataset.set_transform on train split);
+      validation/test data remain unaugmented to avoid leakage. Mixup (if enabled) is handled
+      inside the training loop.
+    """
     import torch
     import random
     from typing import Callable

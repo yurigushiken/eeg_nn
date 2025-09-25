@@ -10,6 +10,7 @@ def _register(name: str):
 for _name in (
     "cardinality_1_3",
     "cardinality_4_6",
+    "cardinality_1_6",
     "landing_digit_1_3_within_small_and_cardinality",
     "landing_digit_4_6_within_large_and_cardinality",
 ):

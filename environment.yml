@@ -17,6 +17,9 @@ dependencies:
   - optuna
   - pytorch
   - pip:
+      - braindecode>=1.1.0
+      - captum
+      - playwright
       - mffpy
       - mne-icalabel
       - python-picard

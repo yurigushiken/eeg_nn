@@ -20,6 +20,20 @@ from utils.seeding import seed_everything
 from utils.summary import write_summary
 
 
+"""
+Final evaluation with multi-seed and optional XAI
+
+Summary:
+- Runs repeated LOSO/GroupKFold evaluations across a sequence of seeds
+- Optionally merges best.json payloads (if --use-best) from known locations with "last wins"
+- Writes per-seed run directories under results/runs and an aggregate JSON with mean/std
+
+Notes:
+- Strict behavior alignment is enforced by the dataset loader; mismatches raise early.
+- LOSO vs GroupKFold is determined by the provided config (n_folds present → GroupKFold).
+"""
+
+
 def load_yaml(p: Path) -> Dict[str, Any]:
     return yaml.safe_load(p.read_text()) if p.exists() else {}
 
@@ -37,7 +51,7 @@ def main():
     base = load_yaml(Path(args.cfg))
     cfg_base = dict(common); cfg_base.update(base)
 
-    # Merge best params if requested
+    # Merge best params if requested (last wins when keys overlap)
     if args.use_best:
         # Look in multiple canonical locations for best.json
         candidates = []
@@ -75,7 +89,7 @@ def main():
         all_summaries.append(summary)
         all_accs.append(summary.get("mean_acc", 0.0))
 
-    # Aggregate
+    # Aggregate seed metrics (mean/std over mean_acc)
     agg = {
         "seeds": args.seeds,
         "seed_mean_acc": float(sum(all_accs)/len(all_accs)) if all_accs else 0.0,

@@ -1,3 +1,6 @@
+"""Task: landing digit 4–6 within large set with cardinality control.
+Allowed conditions: [44,54,64,45,55,65,46,56,66]. Labels are '4','5','6'.
+"""
 import numpy as np
 import pandas as pd
 

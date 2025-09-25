@@ -11,7 +11,11 @@ def generate_html_report(
     overall_plot_path: Path,
     banner_html: str = "",
 ) -> str:
-    """Generates a self-contained HTML report from run artifacts."""
+    """Generates a self-contained HTML report from run artifacts.
+
+    Images are embedded as base64 to keep the HTML portable across machines.
+    Missing images are handled gracefully.
+    """
 
     def embed_image(image_path: Path) -> str:
         """Reads an image and returns a base64 encoded string for embedding."""
@@ -78,8 +82,13 @@ def generate_html_report(
 
 
 def create_consolidated_reports(run_dir: Path, summary: Dict, task: str, engine: str):
-    """
-    Generate an HTML report and try to produce a PDF via Playwright.
+    """Generate consolidated HTML report and (optionally) a PDF using Playwright.
+
+    The report includes:
+    - Text summary banner (with optional crop/include-channel banners)
+    - Per-fold plots grid and overall confusion matrix
+    - Optional subtitle extracted from task metadata (e.g., CONDITIONS)
+    PDF generation is best-effort and skipped if Playwright is not installed.
     """
     task_title = re.sub(r"(?<=\d)_(?=\d)", "-", task)
     report_title = f"Run Report: {task_title} ({engine})"

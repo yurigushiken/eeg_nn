@@ -11,11 +11,20 @@ from sklearn.preprocessing import LabelEncoder
 """
 Convert HAPPE .set outputs to materialized MNE .fif epochs with behavioral metadata.
 
-Now supports CLI flags to process one or multiple dataset roots in a single run.
+Supports CLI flags to process one or multiple dataset roots in a single run.
 Example:
   python -X utf8 -u scripts/prepare_from_happe.py \
     --dataset-root data_input_from_happe/hpf_1.0_lpf_35_baseline-off \
     --dataset-root data_input_from_happe/hpf_1.0_lpf_35_baseline-on
+
+Inputs:
+- HAPPE EEGLAB .set files under a per-dataset "5 - processed" directory
+- HAPPE QC CSV under "6 - quality_assessment_outputs" used to keep usable trials
+- Behavior CSVs under data_behavior/data_UTF8/SubjectXX.csv
+
+Outputs:
+- data_preprocessed/<dataset>/sub-XX_preprocessed-epo.fif (with metadata)
+- data_preprocessed/<dataset>/sub-XX_preprocessed-epo_metadata.csv
 """
 
 # --- 1. CONFIGURATION (defaults; can be overridden by CLI) ---
@@ -26,7 +35,10 @@ BEHAVIORAL_DATA_DIR = os.path.join("data_behavior", "data_UTF8")
 
 
 def _discover_happe_dirs(dataset_root: str):
-    """Return (set_dir, usable_trials_csv_path) for a given HAPPE dataset root."""
+    """Return (set_dir, usable_trials_csv_path) for a given HAPPE dataset root.
+
+    Expects child folders named like '5 - processed*' and '6 - quality_assessment_outputs*'.
+    """
     proc_dirs = [d for d in os.listdir(dataset_root) if d.lower().startswith("5 - processed")]
     if not proc_dirs:
         raise FileNotFoundError(f"No '5 - processed*' folder found under {dataset_root}")
@@ -75,6 +87,7 @@ def parse_args():
 
 
 # --- 3. PRE-SCAN FOR ALL LABELS TO CREATE A GLOBAL ENCODER ---
+# Ensures event codes are consistent across subjects when saving MNE events
 print("--- Pass 1: Scanning for all unique labels ---")
 all_labels = set()
 subject_ids_in_folder = sorted([re.search(r'(?:Subject|Subj)(\d+)', f).group(1).zfill(2) for f in os.listdir(BEHAVIORAL_DATA_DIR) if re.search(r'(?:Subject|Subj)(\d+)', f)])
@@ -166,7 +179,7 @@ def process_dataset(dataset_root: str, output_root: str):
         try:
             print(f"Processing Subject {subject_id}...")
 
-            # Find the .set file for this subject
+            # Find the .set file for this subject (support a few common naming variants)
             candidate_paths = [
                 os.path.join(happe_set_dir, f"Subject{subject_id}.set"),
                 os.path.join(happe_set_dir, f"subject{subject_id}_processed.set"),
@@ -211,6 +224,7 @@ def process_dataset(dataset_root: str, output_root: str):
             behavioral_df_filtered = behavioral_df_filtered[valid_condition_mask]
 
             # Create unified accuracy column from all Target*.ACC columns
+            # Rationale: spreadsheets may have multiple ACC columns; we coalesce left-to-right
             acc_cols = [col for col in behavioral_df_filtered.columns if 'ACC' in col and 'Target' in col and 'OverallAcc' not in col]
             if acc_cols:
                 for col in acc_cols:
@@ -228,7 +242,7 @@ def process_dataset(dataset_root: str, output_root: str):
                     f"Num behavioral trials ({len(behavioral_df_filtered)})."
                 )
 
-            # Build final metadata expected by downstream trainer
+            # Build final metadata expected by downstream trainer (see README Data model)
             behavioral_df_filtered['direction'] = behavioral_df_filtered['CellNumber'].apply(direction_label)
             behavioral_df_filtered['change_group'] = behavioral_df_filtered['CellNumber'].apply(transition_category)
             behavioral_df_filtered['size'] = behavioral_df_filtered['CellNumber'].apply(size_category)
@@ -268,7 +282,7 @@ def process_dataset(dataset_root: str, output_root: str):
                 final_epochs = epochs_with_metadata
                 print(f"  Keeping all {len(final_epochs)} trials.")
 
-            # Attach 3D montage so Cz-ring (cz_step) can work downstream
+            # Attach 3D montage so Cz-ring (cz_step) can work downstream (best-effort)
             try:
                 from mne.channels import read_custom_montage
                 mont = read_custom_montage("net/AdultAverageNet128_v1.sfp")

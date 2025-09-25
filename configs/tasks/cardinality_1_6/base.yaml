@@ -13,5 +13,3 @@ epochs: 40
 early_stop: 10
 inner_n_folds: 5
 n_folds: 6
-
-

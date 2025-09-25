@@ -17,8 +17,22 @@ from .preprocessing.mne_pipeline import (
     apply_crop_ms,
 )
 
+"""
+Datasets for materialized EEG epochs.
 
-# On-the-fly preprocessing removed; only materialized .fif is supported.
+We read per-subject .fif epoch files with attached metadata, standardize channels
+across subjects, apply optional time cropping and channel selection, then build
+arrays suitable for PyTorch.
+
+Notes:
+- On-the-fly preprocessing is intentionally removed to ensure reproducibility;
+  set cfg['materialized_dir'] to a prepared dataset directory produced by
+  `scripts/prepare_from_happe.py`.
+- The label function maps trial metadata → string labels, which are encoded via
+  LabelEncoder to integers for model training.
+- Final tensor shapes: X is (N, 1, C, T) in microvolts; y is (N,). Channel names
+  and time axis (ms) are stored for downstream plotting/XAI.
+"""
 
 
 class BaseEEGDataset(Dataset):
@@ -43,7 +57,17 @@ class BaseEEGDataset(Dataset):
 
 
 class MaterializedEpochsDataset(BaseEEGDataset):
-    """Reads .fif epochs with metadata, derives labels via label_fn."""
+    """Reads .fif epochs with metadata, derives labels via label_fn.
+
+    Expects files like sub-XX_preprocessed-epo.fif inside cfg['materialized_dir'].
+    Builds tensors X (N, 1, C, T) and y (N,) and exposes groups and class_names.
+
+    Channel alignment:
+    - Channels are intersected across subjects and reordered to a canonical order
+      to ensure identical C dimension for all examples (CNNs require consistent
+      channel order across subjects).
+    - Times are validated to be consistent across subjects and converted to ms.
+    """
     def __init__(self, cfg: Dict[str, Any], label_fn: Callable):
         super().__init__()
         self.cfg = cfg
@@ -70,7 +94,8 @@ class MaterializedEpochsDataset(BaseEEGDataset):
             if m:
                 ep.metadata["subject"] = int(m.group(1))
             epochs_list.append(ep)
-        # Ensure identical channel set & order across all Epochs
+        # Ensure identical channel set & order across all Epochs (align subjects)
+        # Rationale: downstream models require fixed channel dimensions and order
         if len(epochs_list) > 1:
             base = epochs_list[0].ch_names
             common = [ch for ch in base if all(ch in ep.ch_names for ep in epochs_list)]
@@ -84,6 +109,7 @@ class MaterializedEpochsDataset(BaseEEGDataset):
                 aligned.append(ep2)
             epochs_list = aligned
         # Instead of concatenating Epochs (which is strict), build arrays/metadata manually
+        # This avoids MNE concat constraints while preserving trial-level metadata
         times0 = epochs_list[0].times
         for i, ep in enumerate(epochs_list[1:], 1):
             if not np.allclose(ep.times, times0):
@@ -93,7 +119,7 @@ class MaterializedEpochsDataset(BaseEEGDataset):
         X_np = np.concatenate(X_np_list, axis=0)
         md_all = pd.concat(md_list, ignore_index=True)
 
-        # Apply label function to concatenated metadata and filter
+        # Apply label function to concatenated metadata and filter invalid rows
         md_all["__y"] = label_fn(md_all)
         mask = md_all["__y"].notna().to_numpy()
         if mask.sum() != len(md_all):
@@ -101,7 +127,7 @@ class MaterializedEpochsDataset(BaseEEGDataset):
             md_all = md_all.loc[mask].reset_index(drop=True)
 
         # Build tensors (using the manually concatenated arrays / metadata)
-        X = X_np * 1e6  # V->µV
+        X = X_np * 1e6  # V->µV for interpretability and numerical stability
         X_t = torch.from_numpy(X).float().unsqueeze(1)
         le = LabelEncoder()
         y_t = torch.from_numpy(le.fit_transform(md_all["__y"]).astype(np.int64))
@@ -136,6 +162,7 @@ class MaterializedEpochsDataset(BaseEEGDataset):
 
 
 def make_dataset(cfg: Dict[str, Any], label_fn: Callable):
+    # On-the-fly preprocessing removed by design; require materialized_dir
     if not cfg.get("materialized_dir"):
         raise ValueError("materialized_dir is required; on-the-fly preprocessing has been removed.")
     return MaterializedEpochsDataset(cfg, label_fn)
