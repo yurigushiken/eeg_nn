@@ -1,0 +1,57 @@
+seed: 42
+epochs: 40
+early_stop: 8
+inner_val_frac: 0.2
+save_ckpt: true
+batch_size: 16
+lr: 0.00010157924380408273
+crop_ms:
+- 0
+- 496
+use_channel_list: non_scalp
+include_channels: null
+channel_lists:
+  non_scalp:
+  - E1
+  - E8
+  - E14
+  - E17
+  - E21
+  - E25
+  - E32
+  - E38
+  - E44
+  - E49
+  - E56
+  - E63
+  - E68
+  - E73
+  - E81
+  - E88
+  - E94
+  - E99
+  - E107
+  - E113
+  - E114
+  - E119
+  - E120
+  - E121
+  - E125
+  - E126
+  - E127
+  - E128
+cz_step: 0
+model_name: eegnex
+materialized_dir: data_preprocessed/hpf_2.0_lpf_35_baseline-off
+max_folds: null
+random_state: 42
+filter_1: 21
+filter_2: 64
+kernel_block_4: 32
+kernel_block_5: 20
+avg_pool_block4: 2
+dilation_block_4: 2
+activation: elu
+drop_prob: 0.5345273663488181
+weight_decay: 7.949573022801015e-05
+task: cardinality_1_3

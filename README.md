@@ -1,7 +1,7 @@
 conda activate eegnex-env
 
 ## Overview
-This repository implements a streamlined EEG decoding pipeline aligned with the protocol of Borra et al. (2024/2025), adapted to our Numbers‑Cognition EEG study. We run a three‑step Optuna search (Step 3 augmentations optional) and evaluate with LOSO and multi‑seed reporting. The project focuses on four tasks:
+This repository implements a streamlined EEG decoding pipeline aligned with the protocol of Borra et al. (2024/2025), adapted to our Numbers‑Cognition EEG study. We run a three‑step Optuna search (Step 3 augmentations optional) and evaluate with subject‑aware CV (GroupKFold or LOSO) and multi‑seed reporting. The project focuses on four tasks:
 - cardinality_1_3
 - cardinality_4_6
 - landing_digit_1_3_within_small_and_cardinality
@@ -9,7 +9,7 @@ This repository implements a streamlined EEG decoding pipeline aligned with the 
 
 ### Key ideas
 - Preprocessing is performed externally with HAPPE; we convert EEGLAB `.set` to `.fif` once with `scripts/prepare_from_happe.py`.
-- Optuna search runs directly on materialized `.fif` via `scripts/optuna_search.py` with a `--stage` flag; we use TPE with MedianPruner (warmup=10) and per‑epoch pruning.
+- Optuna search runs directly on materialized `.fif` via `scripts/optuna_search.py` with a `--stage` flag; we use TPE with MedianPruner (warmup=10) and per‑epoch pruning on inner macro‑F1.
 - Behavior alignment is strict by default; any epochs↔behavior mismatch raises and aborts.
 - Default channel policy excludes non‑scalp channels (`use_channel_list: non_scalp`). The Cz‑ring knob (`cz_step`) is disabled by default.
 - Every run writes `resolved_config.yaml` in its run directory for reproducibility and re‑use.
@@ -19,7 +19,7 @@ This repository implements a streamlined EEG decoding pipeline aligned with the 
 - code/
   - preprocessing/mne_pipeline.py — spatial sampling (Cz ring), time cropping, channel alignment helpers
   - datasets.py — materialized `.fif` loader, channel unification
-  - training_runner.py — LOSO with inner subject‑aware split, plots, summaries
+  - training_runner.py — GroupKFold (outer) or LOSO; strict inner subject‑aware K‑fold; plots and summaries
   - model_builders.py — EEGNeX builder and train‑time augmentations
 - engines/eeg.py — engine wrapper for raw‑EEG models (EEGNeX)
 - tasks/ — label functions per task
@@ -120,10 +120,17 @@ python scripts/final_eval.py `
 - Default at train time: `use_channel_list: non_scalp`. The Cz‑ring (`cz_step`) heuristic is disabled by default (can be re‑enabled by adding it to YAML). You can still set `crop_ms` and/or explicit `include_channels`.
 
 ## Reproducibility
-- LOSO outer split; inner subject‑aware validation split
+- Outer split: `GroupKFold` when `n_folds` is set; otherwise `LOSO`.
+- Strict inner subject‑aware K‑fold: set `inner_n_folds` (≥2). If infeasible (too few unique subjects), the run raises with a clear error.
 - `seed`, `random_state`, and cache fingerprinting to keep trials consistent.
 - Final multi‑seed evaluation recommended (≥10 seeds).
-- Optuna uses TPE sampling and a Median Pruner (10 warmup epochs); per‑epoch inner‑val accuracy is reported for pruning.
+- Optuna uses TPE sampling and a Median Pruner (10 warmup epochs); per‑epoch inner‑val macro‑F1 is reported for pruning. The Optuna objective is the averaged inner macro‑F1 across inner folds and outer folds.
+
+### Configuration knobs
+- `configs/tasks/<task>/base.yaml`:
+  - `n_folds`: number of outer folds (uses GroupKFold). If omitted, uses LOSO.
+  - `inner_n_folds`: number of inner folds (must be ≥2). Strictly enforced; insufficient subjects → error.
+  - `epochs`, `early_stop`, `batch_size`, `lr`, etc. apply to each inner fold training.
 
 ## Commands cheat‑sheet
 - Convert: `python scripts/prepare_from_happe.py`
