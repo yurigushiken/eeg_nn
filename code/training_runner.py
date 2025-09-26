@@ -74,34 +74,15 @@ class TrainingRunner:
         inner_tr_idx_override=None,
         inner_va_idx_override=None,
     ):
-        # Inner subject-aware split (supports explicit overrides for inner K-fold)
-        if inner_tr_idx_override is not None and inner_va_idx_override is not None:
-            inner_tr_idx = np.array(inner_tr_idx_override)
-            inner_va_idx = np.array(inner_va_idx_override)
-        else:
-            inner_val_frac = float(self.cfg.get("inner_val_frac", 0.2))
-            # Fallback for tiny training sets: avoid failing splits
-            if len(tr_idx) < 2 or len(np.unique(groups[tr_idx])) < 2:
-                inner_tr_idx = tr_idx
-                inner_va_idx = tr_idx
-            else:
-                try:
-                    gss_inner = GroupShuffleSplit(
-                        n_splits=1,
-                        test_size=inner_val_frac,
-                        random_state=self.cfg.get("random_state"),
-                    )
-                    inner_tr_rel, inner_va_rel = next(
-                        gss_inner.split(np.zeros(len(tr_idx)), y_all[tr_idx], groups[tr_idx])
-                    )
-                    inner_tr_idx = tr_idx[inner_tr_rel]
-                    inner_va_idx = tr_idx[inner_va_rel]
-                except Exception:
-                    # Deterministic 80/20 split by index as last resort
-                    n = len(tr_idx)
-                    k = max(1, int(round(n * (1.0 - inner_val_frac))))
-                    inner_tr_idx = tr_idx[:k]
-                    inner_va_idx = tr_idx[k:] if k < n else tr_idx[:k]
+        # Require explicit inner indices for scientific clarity and determinism.
+        # All callers (inner K-fold and refit) must pass overrides.
+        if inner_tr_idx_override is None or inner_va_idx_override is None:
+            raise ValueError(
+                "Explicit inner index overrides are required for _make_loaders. "
+                "Provide inner_tr_idx_override and inner_va_idx_override."
+            )
+        inner_tr_idx = np.array(inner_tr_idx_override)
+        inner_va_idx = np.array(inner_va_idx_override)
 
         dataset_tr = copy.copy(dataset)
         dataset_eval = copy.copy(dataset)
@@ -436,26 +417,19 @@ class TrainingRunner:
                         y_true_fold.extend(yb.tolist())
                         y_pred_fold.extend(preds.tolist())
             elif mode == "refit":
-                # Refit a single model on the full outer-train set (optionally with a small subject-aware val)
+                # Refit a single model on the full outer-train set (optionally with a small deterministic grouped val)
                 refit_val_frac = float(self.cfg.get("refit_val_frac", 0.0) or 0.0)
                 do_val = refit_val_frac > 0.0 and len(np.unique(groups[tr_idx])) >= 2
 
                 if do_val:
-                    try:
-                        gss_refit = GroupShuffleSplit(
-                            n_splits=1, test_size=refit_val_frac, random_state=self.cfg.get("random_state")
-                        )
-                        inner_tr_rel, inner_va_rel = next(
-                            gss_refit.split(np.zeros(len(tr_idx)), y_all[tr_idx], groups[tr_idx])
-                        )
-                        refit_tr_abs = tr_idx[inner_tr_rel]
-                        refit_va_abs = tr_idx[inner_va_rel]
-                    except Exception:
-                        # Fallback: 90/10 split by index as deterministic last resort
-                        n = len(tr_idx)
-                        k = max(1, int(round(n * (1.0 - refit_val_frac))))
-                        refit_tr_abs = tr_idx[:k]
-                        refit_va_abs = tr_idx[k:] if k < n else tr_idx[:k]
+                    # Use deterministic GroupKFold with fixed K; pick first split
+                    refit_val_k = int(self.cfg.get("refit_val_k", 5))
+                    gkf_refit = GroupKFold(n_splits=max(2, refit_val_k))
+                    inner_tr_rel, inner_va_rel = next(
+                        gkf_refit.split(np.zeros(len(tr_idx)), y_all[tr_idx], groups[tr_idx])
+                    )
+                    refit_tr_abs = tr_idx[inner_tr_rel]
+                    refit_va_abs = tr_idx[inner_va_rel]
                 else:
                     refit_tr_abs = tr_idx
                     refit_va_abs = tr_idx  # sentinel; we will skip early stopping
