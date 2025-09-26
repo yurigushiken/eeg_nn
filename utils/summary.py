@@ -58,9 +58,13 @@ def write_summary(run_dir: Path, summary: dict, task: str, engine: str):
     report_lines.append("--- Fold Breakdown ---")
     if summary.get("fold_splits"):
         for i, split in enumerate(summary["fold_splits"]):
-            acc = summary["fold_accuracies"][i] if i < len(summary.get("fold_accuracies", [])) else "N/A"
+            acc = summary["fold_accuracies"][i] if i < len(summary.get("fold_accuracies", [])) else None
             subjects = ", ".join(map(str, split['test_subjects']))
-            report_lines.append(f"  Fold {split['fold']:02d} | Test Subjects: [{subjects}] | Accuracy: {acc:.2f}%")
+            if isinstance(acc, (int, float)):
+                acc_str = f"{acc:.2f}%"
+            else:
+                acc_str = "N/A"
+            report_lines.append(f"  Fold {split['fold']:02d} | Test Subjects: [{subjects}] | Accuracy: {acc_str}")
     report_lines.append("")
 
     # Classification Report
