@@ -91,8 +91,24 @@ def main():
     engine_run = engine_registry.get(args.engine)
 
     run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-    ds_tag = Path(cfg.get("dataset_dir", "raw")).name
-    run_dir = Path("results") / "runs" / f"{run_id}_{args.task}_{args.engine}_{ds_tag}"
+    # Prefer materialized_dir for dataset tag; omit tag if not set (avoid default 'raw')
+    materialized = cfg.get("materialized_dir") or cfg.get("dataset_dir")
+    ds_tag = Path(materialized).name if materialized else None
+    # Append crop_ms to run directory name for traceability when provided
+    crop = cfg.get("crop_ms")
+    crop_tag = None
+    if isinstance(crop, (list, tuple)) and len(crop) == 2:
+        try:
+            a, b = int(crop[0]), int(crop[1])
+            crop_tag = f"crop_ms_{a}_{b}"
+        except Exception:
+            pass
+    parts = [run_id, args.task, args.engine]
+    if ds_tag:
+        parts.append(ds_tag)
+    if crop_tag:
+        parts.append(crop_tag)
+    run_dir = Path("results") / "runs" / ("_".join(parts))
     run_dir.mkdir(parents=True, exist_ok=True)
     cfg["run_dir"] = str(run_dir)
 

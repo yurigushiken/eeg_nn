@@ -301,19 +301,30 @@ def main():
     xai_output_dir = args.run_dir / "xai_analysis"
     xai_output_dir.mkdir(exist_ok=True)
 
-    # 5. Find all checkpoints and run XAI (skip folds without a matching ckpt)
-    checkpoints = sorted(list(args.run_dir.glob("fold_*_best.ckpt")))
-    if not checkpoints:
-        sys.exit("No .ckpt files found in the run directory. Was save_ckpt=true set?")
+    # 5. Resolve per-fold checkpoints and run XAI
+    # Resolution order (documented for users):
+    # 1) fold_XX_refit_best.ckpt  → when outer_eval_mode=refit was used
+    # 2) fold_XX_best.ckpt         → legacy single-best (older runs)
+    # 3) fold_XX_inner_YY_best.ckpt→ fallback to an inner-fold model if the above are absent
+    def _resolve_ckpt_for_fold(run_dir: Path, fold_num: int) -> Path | None:
+        # Prefer refit, then legacy single best, then any inner-best (fallback)
+        candidates = [
+            run_dir / f"fold_{fold_num:02d}_refit_best.ckpt",
+            run_dir / f"fold_{fold_num:02d}_best.ckpt",
+        ]
+        for c in candidates:
+            if c.exists():
+                return c
+        inners = sorted(run_dir.glob(f"fold_{fold_num:02d}_inner_*_best.ckpt"))
+        return inners[0] if inners else None
 
-    print(f"Found {len(checkpoints)} checkpoints. Starting XAI analysis...")
+    print("Starting XAI analysis...")
 
     for fold_info in fold_splits:
         fold_num = fold_info["fold"]
-        ckpt_path = args.run_dir / f"fold_{fold_num:02d}_best.ckpt"
-        
-        if not ckpt_path.exists():
-            print(f"--- Skipping Fold {fold_num}: Checkpoint not found ---")
+        ckpt_path = _resolve_ckpt_for_fold(args.run_dir, fold_num)
+        if not ckpt_path:
+            print(f"--- Skipping Fold {fold_num}: no matching checkpoint (refit/single/inner) ---")
             continue
 
         print(f"\n--- Processing Fold {fold_num} (Subjects: {fold_info['test_subjects']}) ---")

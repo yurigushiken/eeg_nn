@@ -1,0 +1,76 @@
+seed: 42
+epochs: 40
+early_stop: 8
+inner_val_frac: 0.2
+save_ckpt: true
+batch_size: 8
+lr: 0.0003076422272400437
+crop_ms:
+- 50
+- 250
+use_channel_list: non_scalp
+include_channels: null
+channel_lists:
+  non_scalp:
+  - E1
+  - E8
+  - E14
+  - E17
+  - E21
+  - E25
+  - E32
+  - E38
+  - E44
+  - E49
+  - E56
+  - E63
+  - E68
+  - E73
+  - E81
+  - E88
+  - E94
+  - E99
+  - E107
+  - E113
+  - E114
+  - E119
+  - E120
+  - E121
+  - E125
+  - E126
+  - E127
+  - E128
+cz_step: 0
+model_name: eegnex
+materialized_dir: data_preprocessed/hpf_1.5_lpf_40_baseline-off
+inner_n_folds: 5
+n_folds: null
+max_folds: null
+random_state: 42
+filter_1: 24
+filter_2: 47
+kernel_block_4: 31
+kernel_block_5: 28
+avg_pool_block4: 4
+dilation_block_4: 2
+activation: elu
+drop_prob: 0.5572317068862541
+weight_decay: 2.348227956767814e-05
+task: cardinality_1_3
+avg_pool_block5: 7
+dilation_block_5: 5
+depth_multiplier: 3
+kernel_block_1_2: 62
+max_norm_conv: 1.8037331015563571
+max_norm_linear: 0.5026456467706909
+scheduler_patience: 8
+
+# Outer test evaluation mode:
+# - ensemble: average softmax across inner K models (default, variance-reducing)
+# - refit: refit one model on outer-train (optionally with a small val split) and test once
+outer_eval_mode: refit
+# Optional refit controls (used only if outer_eval_mode: refit)
+refit_val_frac: 0.0       # 0.0 → train on all outer-train; no early stopping
+refit_early_stop: 10
+
+

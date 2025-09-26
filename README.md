@@ -16,6 +16,7 @@ This repository implements a streamlined EEG decoding pipeline aligned with the 
 - Every run writes `resolved_config.yaml` in its run directory for reproducibility and re‑use.
 - Final evaluation can average across ≥10 seeds and generate XAI reports.
 - Outer test predictions use an inner‑fold ensemble (mean of softmax across inner K models) for stability; plots use the best inner fold’s curves.
+ - Alternatively, set `outer_eval_mode: refit` to refit one model on the full outer‑train (optional subject‑aware val via `refit_val_frac`) before testing; both modes are YAML‑switchable.
 
 ### Entry points (when to use what)
 - `train.py`: Single run for a given task/engine using layered configs; ideal for validating a resolved YAML and optionally running XAI on completion (`--run-xai`).
@@ -87,6 +88,14 @@ python -X utf8 -u train.py `
 ```
 
 1b) Single LOSO run for 6‑class task
+1c) Single LOSO run with outer refit (no early stop during refit)
+```powershell
+python -X utf8 -u train.py `
+  --task cardinality_1_3 `
+  --engine eeg `
+  --base  configs/tasks/cardinality_1_3/resolved_config.yaml `
+  --set n_folds=null outer_eval_mode=refit refit_val_frac=0.0
+```
 ```powershell
 python -X utf8 -u train.py `
   --task cardinality_1_6 `
@@ -164,6 +173,7 @@ for ($i=0; $i -lt 10; $i++) {
 - `seed`, `random_state`, and cache fingerprinting to keep trials consistent.
 - Final multi‑seed evaluation recommended (≥10 seeds).
 - Optuna uses TPE sampling and a Median Pruner (10 warmup epochs); per‑epoch inner‑val macro‑F1 is reported for pruning. The Optuna objective is the averaged inner macro‑F1 across inner folds and outer folds.
+ - XAI checkpoint resolution order per fold: `fold_XX_refit_best.ckpt` → `fold_XX_best.ckpt` → first `fold_XX_inner_YY_best.ckpt`.
 
 Tip: To force LOSO in any run that has a resolved config with `n_folds`, either set `n_folds: null` inside the YAML, or pass `--set n_folds=null` on the CLI.
 
@@ -183,6 +193,10 @@ Tip: To force LOSO in any run that has a resolved config with `n_folds`, either 
 - Search (unified): `python scripts/optuna_search.py --stage step1|step2|step3 ...`
 - Final eval: `python scripts/final_eval.py ...`
 - Refresh Optuna summaries: `results\optuna\refresh_optuna_summaries.bat`
+ - Run XAI on a completed run directory:
+```powershell
+python -X utf8 -u scripts/run_xai_analysis.py --run-dir "results\runs\<run_dir_name>"
+```
 
 ## update github example: 
 PS D:\eeg_nn> conda activate eegnex-env

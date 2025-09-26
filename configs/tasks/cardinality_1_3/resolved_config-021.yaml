@@ -57,6 +57,11 @@ drop_prob: 0.5739178365874346
 task: cardinality_1_3
 
 
+# Outer-fold evaluation mode: 'ensemble' (mean softmax over inner models) or 'refit'
+# Refit trains one model on the full outer-train (optionally with small val) before testing
+outer_eval_mode: refit
+refit_val_frac: 0.0
+refit_early_stop: 10
 
 # subset_n: 12
 max_folds: null
