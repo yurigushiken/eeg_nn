@@ -15,10 +15,6 @@ inner_n_folds: 5
 n_folds: 6
 
 
-# Outer test evaluation mode:
-# - ensemble: average softmax across inner K models (default, variance-reducing)
-# - refit: refit one model on outer-train (optionally with a small val split) and test once
-outer_eval_mode: ensemble
-# Optional refit controls (used only if outer_eval_mode: refit)
-refit_val_frac: 0.0       # 0.0 → train on all outer-train; no early stopping
-refit_early_stop: 10
+# --- Refit Mode Controls (only used if outer_eval_mode: refit) ---
+refit_val_k: 0            # 0 → train on all outer-train (no early stop); set >=2 for deterministic GroupKFold val
+refit_early_stop: 10      # Patience for refit early stopping (if val is enabled)

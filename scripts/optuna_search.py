@@ -77,7 +77,8 @@ def main():
         db_path.parent.mkdir(parents=True, exist_ok=True)
         storage = f"sqlite:///{db_path.as_posix()}"
     # Enable TPE sampling and median pruning (prunes after warmup steps)
-    sampler = optuna.samplers.TPESampler(seed=42)
+    seed = int(common.get("seed", common.get("random_state", 42)))
+    sampler = optuna.samplers.TPESampler(seed=seed)
     pruner = optuna.pruners.MedianPruner(n_warmup_steps=10)
     study = optuna.create_study(
         direction="maximize",

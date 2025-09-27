@@ -12,7 +12,7 @@ from torch.utils.data import Dataset
 import mne
 from sklearn.preprocessing import LabelEncoder
 
-from .preprocessing.mne_pipeline import (
+from .preprocessing.epoch_utils import (
     spatial_sample,
     apply_crop_ms,
 )

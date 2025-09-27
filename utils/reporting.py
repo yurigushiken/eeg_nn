@@ -103,8 +103,9 @@ def create_consolidated_reports(run_dir: Path, summary: Dict, task: str, engine:
     except Exception:
         pass
     
-    fold_plots = sorted(run_dir.glob("fold*_*.png"))
-    overall_plot = run_dir / "overall_confusion.png"
+    plots_dir = run_dir / "plots"
+    fold_plots = sorted(plots_dir.glob("fold*_*.png")) if plots_dir.exists() else sorted(run_dir.glob("fold*_*.png"))
+    overall_plot = (plots_dir / "overall_confusion.png") if (plots_dir / "overall_confusion.png").exists() else (run_dir / "overall_confusion.png")
 
     txt_report_path = run_dir / f"report_{task}_{engine}.txt"
     try:
@@ -140,7 +141,15 @@ def create_consolidated_reports(run_dir: Path, summary: Dict, task: str, engine:
         pass
     banner_html = "\n".join(banner_lines)
 
-    banner_with_subtitle = "\n".join([s for s in [subtitle_html, banner_html] if s])
+    # Add evaluation mode and folds to the banner if available
+    try:
+        outer_mode = hyper.get("outer_eval_mode", "ensemble")
+        n_folds = hyper.get("n_folds")
+        inner_k = hyper.get("inner_n_folds")
+        eval_line = f"<div class=\"eval-banner\"><pre><strong>Eval Mode: {outer_mode} | Outer folds: {n_folds if n_folds is not None else 'LOSO'} | Inner K: {inner_k}</strong></pre></div>"
+    except Exception:
+        eval_line = ""
+    banner_with_subtitle = "\n".join([s for s in [subtitle_html, banner_html, eval_line] if s])
     html_content = generate_html_report(run_dir, report_title, txt_content, fold_plots, overall_plot, banner_html=banner_with_subtitle)
     html_output_path = run_dir / "consolidated_report.html"
     html_output_path.write_text(html_content, encoding='utf-8')

@@ -70,7 +70,7 @@ scheduler_patience: 8
 # - refit: refit one model on outer-train (optionally with a small val split) and test once
 outer_eval_mode: refit
 # Optional refit controls (used only if outer_eval_mode: refit)
-refit_val_frac: 0.0       # 0.0 → train on all outer-train; no early stopping
+refit_val_k: 0            # 0 → train on all outer-train; set >=2 to enable deterministic GroupKFold val
 refit_early_stop: 10
 
 

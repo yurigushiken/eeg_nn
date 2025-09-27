@@ -2,6 +2,9 @@ from __future__ import annotations
 from typing import Dict, Callable, List
 
 import copy
+import json
+import hashlib
+import csv
 import numpy as np
 import torch
 import torch.nn as nn
@@ -13,6 +16,7 @@ from sklearn.metrics import f1_score, classification_report
 import optuna
 
 from utils.plots import plot_confusion, plot_curves
+import random
 
 """
 Training/evaluation orchestration with nested, subject-aware cross-validation.
@@ -44,8 +48,10 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def _seed_worker(worker_id):
     # Deterministic DataLoader workers (ensures per-worker RNG reproducibility)
-    worker_seed = torch.initial_seed() % 2**32
+    worker_seed = (torch.initial_seed() + worker_id) % 2**32
+    random.seed(worker_seed)
     np.random.seed(worker_seed)
+    torch.manual_seed(worker_seed)
 
 
 class TrainingRunner:
@@ -126,8 +132,16 @@ class TrainingRunner:
         aug_builder,
         input_adapter=None,
         optuna_trial=None,
+        labels_override: np.ndarray | None = None,
+        predefined_splits: List[dict] | None = None,
     ):
-        y_all = dataset.get_all_labels()
+        # Labels (optionally overridden, e.g., for permutation testing)
+        if labels_override is not None:
+            y_all = np.asarray(labels_override)
+            # Ensure dataset uses the overridden labels consistently
+            dataset.y = torch.from_numpy(y_all.astype(np.int64))
+        else:
+            y_all = dataset.get_all_labels()
         num_cls = len(class_names)
 
         # Log effective randomness controls for reproducibility assurance
@@ -140,13 +154,24 @@ class TrainingRunner:
         except Exception:
             pass
 
-        # Split strategy: n_folds (GroupKFold) or LOSO (subject-wise)
-        if self.cfg.get("n_folds"):
-            k = int(self.cfg["n_folds"])
-            gkf_outer = GroupKFold(n_splits=k)
-            fold_iter = gkf_outer.split(np.zeros(len(dataset)), y_all, groups)
+        # Precompute outer fold index pairs
+        outer_pairs: List[tuple] = []
+        if predefined_splits:
+            for rec in predefined_splits:
+                outer_pairs.append((np.array(rec["outer_train_idx"]), np.array(rec["outer_test_idx"])))
         else:
-            fold_iter = LeaveOneGroupOut().split(np.zeros(len(dataset)), y_all, groups)
+            if self.cfg.get("n_folds"):
+                k = int(self.cfg["n_folds"])
+                gkf_outer = GroupKFold(n_splits=k)
+                outer_pairs = [
+                    (np.array(tr), np.array(te))
+                    for tr, te in gkf_outer.split(np.zeros(len(dataset)), y_all, groups)
+                ]
+            else:
+                outer_pairs = [
+                    (np.array(tr), np.array(te))
+                    for tr, te in LeaveOneGroupOut().split(np.zeros(len(dataset)), y_all, groups)
+                ]
 
         fold_accs: List[float] = []
         fold_split_info: List[dict] = []
@@ -154,6 +179,8 @@ class TrainingRunner:
         overall_y_pred: List[int] = []
         inner_accs: List[float] = []
         inner_macro_f1s: List[float] = []
+        # Per-outer-fold macro-F1 for aggregates and CSV
+        fold_macro_f1s: List[float] = []
 
         # Prepare augmentation transform once (stateless transform expected)
         aug_transform = aug_builder(self.cfg, dataset) if aug_builder else None
@@ -161,10 +188,24 @@ class TrainingRunner:
         # Global step counter for Optuna pruning (increments every epoch across folds)
         global_step = 0
 
-        for fold, (tr_idx, va_idx) in enumerate(fold_iter):
+        # Record all split indices for auditability
+        outer_folds_record: List[dict] = []
+        # Accumulate learning curves (all inner folds across all outer folds)
+        learning_curve_rows: List[dict] = []
+        # Accumulate per-outer-fold evaluation rows
+        outer_metrics_rows: List[dict] = []
+        # Accumulate per-trial out-of-fold test predictions
+        test_pred_rows: List[dict] = []
+
+        for fold, (tr_idx, va_idx) in enumerate(outer_pairs):
             if self.cfg.get("max_folds") is not None and fold >= int(self.cfg["max_folds"]):
                 break
             test_subjects = np.unique(groups[va_idx]).tolist()
+            # Assert no subject leakage between outer train and test
+            train_subjects = np.unique(groups[tr_idx]).tolist()
+            overlap = set(train_subjects).intersection(set(test_subjects))
+            if overlap:
+                raise AssertionError(f"Subject leakage detected in outer fold {fold+1}: {sorted(list(overlap))}")
             fold_split_info.append({"fold": fold + 1, "test_subjects": test_subjects})
             print(
                 f"[fold {fold+1}] test_subjects={test_subjects} n_tr={len(tr_idx)} n_te={len(va_idx)}",
@@ -186,12 +227,49 @@ class TrainingRunner:
             best_inner_result = None
             te_ld_shared = None
 
-            gkf_inner = GroupKFold(n_splits=inner_k)
-            for inner_fold, (inner_tr_rel, inner_va_rel) in enumerate(
-                gkf_inner.split(np.zeros(len(tr_idx)), y_all[tr_idx], groups[tr_idx])
-            ):
-                inner_tr_abs = tr_idx[inner_tr_rel]
-                inner_va_abs = tr_idx[inner_va_rel]
+            # Prepare record for this outer fold
+            fold_record = {
+                "fold": int(fold + 1),
+                "outer_train_idx": [int(i) for i in tr_idx.tolist()],
+                "outer_test_idx": [int(i) for i in va_idx.tolist()],
+                "outer_train_subjects": [int(s) for s in np.unique(groups[tr_idx]).tolist()],
+                "outer_test_subjects": [int(s) for s in np.unique(groups[va_idx]).tolist()],
+                "inner_splits": [],
+            }
+
+            # Determine inner splits (predefined or computed)
+            predefined_inner = None
+            if predefined_splits and fold < len(predefined_splits):
+                predefined_inner = predefined_splits[fold].get("inner_splits")
+
+            if predefined_inner:
+                inner_iter = [
+                    (np.array(sp["inner_train_idx"]), np.array(sp["inner_val_idx"]))
+                    for sp in predefined_inner
+                ]
+            else:
+                gkf_inner = GroupKFold(n_splits=inner_k)
+                inner_iter = [
+                    (tr_idx[np.array(inner_tr_rel)], tr_idx[np.array(inner_va_rel)])
+                    for inner_tr_rel, inner_va_rel in gkf_inner.split(
+                        np.zeros(len(tr_idx)), y_all[tr_idx], groups[tr_idx]
+                    )
+                ]
+
+            for inner_fold, (inner_tr_abs, inner_va_abs) in enumerate(inner_iter):
+                # Inner split leakage guard
+                tr_subj = set(np.unique(groups[inner_tr_abs]).tolist())
+                va_subj = set(np.unique(groups[inner_va_abs]).tolist())
+                if tr_subj.intersection(va_subj):
+                    raise AssertionError(
+                        f"Subject leakage detected in inner fold {inner_fold+1} of outer {fold+1}: {sorted(list(tr_subj.intersection(va_subj)))}"
+                    )
+                # Record inner split indices for this outer fold
+                fold_record["inner_splits"].append({
+                    "inner_fold": int(inner_fold + 1),
+                    "inner_train_idx": [int(i) for i in inner_tr_abs.tolist()],
+                    "inner_val_idx": [int(i) for i in inner_va_abs.tolist()],
+                })
 
                 tr_ld, va_ld, te_ld, _ = self._make_loaders(
                     dataset,
@@ -219,6 +297,14 @@ class TrainingRunner:
                     "balanced", classes=np.arange(num_cls), y=y_all[inner_tr_abs]
                 )
                 loss_fn = nn.CrossEntropyLoss(torch.tensor(cls_w, dtype=torch.float32, device=DEVICE))
+                # Save class weights once per inner fold
+                try:
+                    if self.run_dir:
+                        cw_path = self.run_dir / f"fold_{fold+1:02d}_inner_{inner_fold+1:02d}_class_weights.json"
+                        cw_payload = {str(i): float(w) for i, w in enumerate(cls_w)}
+                        cw_path.write_text(json.dumps(cw_payload, indent=2))
+                except Exception:
+                    pass
 
                 best_val = float("inf")
                 best_state = None
@@ -336,10 +422,9 @@ class TrainingRunner:
                         best_inner_acc = val_acc
                         best_state = copy.deepcopy(model.state_dict())
                         if self.run_dir and self.cfg.get("save_ckpt", True):
-                            torch.save(
-                                model.state_dict(),
-                                self.run_dir / f"fold_{fold+1:02d}_inner_{inner_fold+1:02d}_best.ckpt",
-                            )
+                            ckpt_dir = self.run_dir / "ckpt"
+                            ckpt_dir.mkdir(parents=True, exist_ok=True)
+                            torch.save(model.state_dict(), ckpt_dir / f"fold_{fold+1:02d}_inner_{inner_fold+1:02d}_best.ckpt")
                     if patience >= int(self.cfg.get("early_stop", 10)):
                         break
                     if epoch % 5 == 0:
@@ -390,6 +475,7 @@ class TrainingRunner:
             if mode == "ensemble":
                 # Ensemble of inner models (mean softmax over K inner models)
                 with torch.no_grad():
+                    pos = 0
                     for xb, yb in (te_ld_shared if te_ld_shared is not None else []):
                         yb_gpu = yb.to(DEVICE)
                         xb_gpu = xb.to(DEVICE) if not isinstance(xb, (list, tuple)) else [t.to(DEVICE) for t in xb]
@@ -416,6 +502,32 @@ class TrainingRunner:
                         total += yb.size(0)
                         y_true_fold.extend(yb.tolist())
                         y_pred_fold.extend(preds.tolist())
+
+                        # Append per-trial predictions for mixed-effects modeling
+                        probs_norm = accum_probs / accum_probs.sum(dim=1, keepdim=True)
+                        bsz = yb.size(0)
+                        for j in range(bsz):
+                            abs_idx = int(va_idx[pos + j])
+                            subj_id = int(groups[abs_idx])
+                            true_lbl = int(yb[j].item())
+                            pred_lbl = int(preds[j].item())
+                            probs_vec = probs_norm[j].tolist()
+                            p_true = float(probs_vec[true_lbl]) if 0 <= true_lbl < len(probs_vec) else 0.0
+                            logp_true = float(np.log(max(p_true, 1e-12)))
+                            test_pred_rows.append({
+                                "outer_fold": int(fold + 1),
+                                "trial_index": abs_idx,
+                                "subject_id": subj_id,
+                                "true_label_idx": true_lbl,
+                                "true_label_name": str(class_names[true_lbl]) if 0 <= true_lbl < len(class_names) else "",
+                                "pred_label_idx": pred_lbl,
+                                "pred_label_name": str(class_names[pred_lbl]) if 0 <= pred_lbl < len(class_names) else "",
+                                "correct": int(1 if pred_lbl == true_lbl else 0),
+                                "p_trueclass": p_true,
+                                "logp_trueclass": logp_true,
+                                "probs": json.dumps(probs_vec),
+                            })
+                        pos += bsz
             elif mode == "refit":
                 # Refit a single model on the full outer-train set (optionally with a small deterministic grouped val)
                 refit_val_frac = float(self.cfg.get("refit_val_frac", 0.0) or 0.0)
@@ -456,6 +568,14 @@ class TrainingRunner:
                     "balanced", classes=np.arange(num_cls), y=y_all[refit_tr_abs]
                 )
                 loss_fn = nn.CrossEntropyLoss(torch.tensor(cls_w, dtype=torch.float32, device=DEVICE))
+                # Save class weights for refit
+                try:
+                    if self.run_dir:
+                        cw_path = self.run_dir / f"fold_{fold+1:02d}_refit_class_weights.json"
+                        cw_payload = {str(i): float(w) for i, w in enumerate(cls_w)}
+                        cw_path.write_text(json.dumps(cw_payload, indent=2))
+                except Exception:
+                    pass
 
                 best_val = float("inf")
                 best_state = None
@@ -515,7 +635,9 @@ class TrainingRunner:
 
                 # Save refit model checkpoint if requested
                 if self.run_dir and self.cfg.get("save_ckpt", True):
-                    torch.save(model.state_dict(), self.run_dir / f"fold_{fold+1:02d}_refit_best.ckpt")
+                    ckpt_dir = self.run_dir / "ckpt"
+                    ckpt_dir.mkdir(parents=True, exist_ok=True)
+                    torch.save(model.state_dict(), ckpt_dir / f"fold_{fold+1:02d}_refit_best.ckpt")
 
                 with torch.no_grad():
                     for xb, yb in te_ld_refit:
@@ -523,15 +645,67 @@ class TrainingRunner:
                         xb_gpu = xb.to(DEVICE) if not isinstance(xb, (list, tuple)) else [t.to(DEVICE) for t in xb]
                         xb_gpu = input_adapter(xb_gpu) if input_adapter else xb_gpu
                         out = model(xb_gpu) if not isinstance(xb_gpu, (list, tuple)) else model(*xb_gpu)
-                        preds = out.argmax(1).cpu()
+                        logits = out.float().cpu()
+                        probs = F.softmax(logits, dim=1)
+                        preds = logits.argmax(1)
                         correct += (preds == yb).sum().item()
                         total += yb.size(0)
                         y_true_fold.extend(yb.tolist())
                         y_pred_fold.extend(preds.tolist())
+                        # Append per-trial predictions
+                        bsz = yb.size(0)
+                        # Track absolute indices by scanning va_idx in order
+                        # We don't have batch sampler indices here; approximate by advancing sequentially
+                        # Note: te_ld_refit iterates over Subset(va_idx) sequentially with shuffle=False
+                        start = len(y_true_fold) - bsz
+                        for j in range(bsz):
+                            abs_idx = int(va_idx[start + j])
+                            subj_id = int(groups[abs_idx])
+                            true_lbl = int(yb[j].item())
+                            pred_lbl = int(preds[j].item())
+                            probs_vec = probs[j].tolist()
+                            p_true = float(probs_vec[true_lbl]) if 0 <= true_lbl < len(probs_vec) else 0.0
+                            logp_true = float(np.log(max(p_true, 1e-12)))
+                            test_pred_rows.append({
+                                "outer_fold": int(fold + 1),
+                                "trial_index": abs_idx,
+                                "subject_id": subj_id,
+                                "true_label_idx": true_lbl,
+                                "true_label_name": str(class_names[true_lbl]) if 0 <= true_lbl < len(class_names) else "",
+                                "pred_label_idx": pred_lbl,
+                                "pred_label_name": str(class_names[pred_lbl]) if 0 <= pred_lbl < len(class_names) else "",
+                                "correct": int(1 if pred_lbl == true_lbl else 0),
+                                "p_trueclass": p_true,
+                                "logp_trueclass": logp_true,
+                                "probs": json.dumps(probs_vec),
+                            })
             else:
                 raise ValueError(f"Unknown outer_eval_mode={mode}; use 'ensemble' or 'refit'")
 
             acc = 100.0 * correct / max(1, total)
+            # Per-fold macro F1 and optional per-class F1
+            try:
+                macro_f1_fold = (
+                    f1_score(y_true_fold, y_pred_fold, average="macro") * 100 if y_true_fold else 0.0
+                )
+                per_class_f1 = (
+                    f1_score(y_true_fold, y_pred_fold, average=None).tolist() if y_true_fold else None
+                )
+            except Exception:
+                macro_f1_fold = 0.0
+                per_class_f1 = None
+            fold_macro_f1s.append(macro_f1_fold)
+            # Record outer-fold row
+            outer_metrics_rows.append({
+                "outer_fold": int(fold + 1),
+                "test_subjects": ",".join(map(str, test_subjects)),
+                "n_test_trials": int(len(y_true_fold)),
+                "acc": float(acc),
+                "macro_f1": float(macro_f1_fold),
+                "acc_std": "",
+                "macro_f1_std": "",
+                "per_class_f1": json.dumps(per_class_f1) if per_class_f1 is not None else "",
+            })
             fold_accs.append(acc)
             overall_y_true.extend(y_true_fold)
             overall_y_pred.extend(y_pred_fold)
@@ -542,6 +716,8 @@ class TrainingRunner:
 
             # Plots per fold (use best inner fold histories for curves; ensemble/refit guides predictions)
             if self.run_dir and best_inner_result:
+                plots_dir = self.run_dir / "plots"
+                plots_dir.mkdir(parents=True, exist_ok=True)
                 fold_title = (
                     f"Fold {fold+1} (Subjects: {test_subjects}) · "
                     f"inner-mean macro-F1={inner_mean_macro_f1_this_outer:.2f} · acc={acc:.2f}"
@@ -550,16 +726,19 @@ class TrainingRunner:
                     y_true_fold,
                     y_pred_fold,
                     class_names,
-                    self.run_dir / f"fold{fold+1}_confusion.png",
+                    plots_dir / f"fold{fold+1}_confusion.png",
                     title=fold_title,
                 )
                 plot_curves(
                     best_inner_result["tr_hist"],
                     best_inner_result["va_hist"],
                     best_inner_result["va_acc_hist"],
-                    self.run_dir / f"fold{fold+1}_curves.png",
+                    plots_dir / f"fold{fold+1}_curves.png",
                     title=fold_title,
                 )
+
+            # Append fold record after successful processing
+            outer_folds_record.append(fold_record)
 
         # Overall metrics
         mean_acc = float(np.mean(fold_accs)) if fold_accs else 0.0
@@ -582,6 +761,8 @@ class TrainingRunner:
 
         # Overall plot (confusion across all outer test predictions)
         if self.run_dir and overall_y_true:
+            plots_dir = self.run_dir / "plots"
+            plots_dir.mkdir(parents=True, exist_ok=True)
             overall_title = (
                 f"Overall · inner_mean_macro_f1={float(np.mean(inner_macro_f1s)) if inner_macro_f1s else 0.0:.2f} "
                 f"· mean_acc={mean_acc:.2f}"
@@ -590,9 +771,126 @@ class TrainingRunner:
                 overall_y_true,
                 overall_y_pred,
                 class_names,
-                self.run_dir / "overall_confusion.png",
+                plots_dir / "overall_confusion.png",
                 title=overall_title,
             )
+
+        # Write split indices artifact once per run
+        if self.run_dir:
+            try:
+                ds_dir = self.cfg.get("materialized_dir") or self.cfg.get("dataset_dir")
+                n_samples = int(len(dataset))
+                # Class counts map for readability
+                try:
+                    labels_int = np.asarray(y_all).astype(int)
+                    binc = np.bincount(labels_int, minlength=len(class_names)).tolist()
+                    class_counts = {str(class_names[i]): int(binc[i]) for i in range(len(class_names))}
+                except Exception:
+                    class_counts = {}
+                # Simple manifest hash for traceability
+                manifest_str = json.dumps({
+                    "dataset_dir": ds_dir,
+                    "n_samples": n_samples,
+                    "groups_unique": [int(s) for s in np.unique(groups).tolist()],
+                    "labels_unique": [int(s) for s in np.unique(y_all).tolist()],
+                }, sort_keys=True)
+                manifest_hash = hashlib.sha256(manifest_str.encode("utf-8")).hexdigest()
+
+                splits_payload = {
+                    "n_samples": n_samples,
+                    "dataset_dir": ds_dir,
+                    "class_names": list(class_names),
+                    "class_counts": class_counts,
+                    "manifest_hash": manifest_hash,
+                    "outer_folds": outer_folds_record,
+                }
+                (self.run_dir / "splits_indices.json").write_text(json.dumps(splits_payload, indent=2))
+            except Exception:
+                pass
+
+            # Write learning curves CSV once per run
+            try:
+                csv_fp = self.run_dir / "learning_curves_inner.csv"
+                fieldnames = [
+                    "outer_fold",
+                    "inner_fold",
+                    "epoch",
+                    "train_loss",
+                    "val_loss",
+                    "val_acc",
+                    "val_macro_f1",
+                    "n_train",
+                    "n_val",
+                    "optuna_trial_id",
+                    "param_hash",
+                ]
+                with csv_fp.open("w", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    for row in learning_curve_rows:
+                        writer.writerow(row)
+            except Exception:
+                pass
+
+            # Write per-outer-fold evaluation metrics once per run
+            try:
+                csv_fp2 = self.run_dir / "outer_eval_metrics.csv"
+                fieldnames2 = [
+                    "outer_fold",
+                    "test_subjects",
+                    "n_test_trials",
+                    "acc",
+                    "acc_std",
+                    "macro_f1",
+                    "macro_f1_std",
+                    "per_class_f1",
+                ]
+                with csv_fp2.open("w", newline="") as f:
+                    writer2 = csv.DictWriter(f, fieldnames=fieldnames2)
+                    writer2.writeheader()
+                    for row in outer_metrics_rows:
+                        writer2.writerow(row)
+                    # Final aggregate row
+                    try:
+                        agg_row = {
+                            "outer_fold": "OVERALL",
+                            "test_subjects": "-",
+                            "n_test_trials": sum(int(r["n_test_trials"]) for r in outer_metrics_rows),
+                            "acc": float(mean_acc),
+                            "acc_std": float(std_acc),
+                            "macro_f1": float(np.mean(fold_macro_f1s)) if fold_macro_f1s else 0.0,
+                            "macro_f1_std": float(np.std(fold_macro_f1s)) if fold_macro_f1s else 0.0,
+                            "per_class_f1": "",
+                        }
+                        writer2.writerow(agg_row)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # Write per-trial out-of-fold test predictions once per run
+            try:
+                csv_fp3 = self.run_dir / "test_predictions.csv"
+                fieldnames3 = [
+                    "outer_fold",
+                    "trial_index",
+                    "subject_id",
+                    "true_label_idx",
+                    "true_label_name",
+                    "pred_label_idx",
+                    "pred_label_name",
+                    "correct",
+                    "p_trueclass",
+                    "logp_trueclass",
+                    "probs",
+                ]
+                with csv_fp3.open("w", newline="") as f:
+                    writer3 = csv.DictWriter(f, fieldnames=fieldnames3)
+                    writer3.writeheader()
+                    for row in test_pred_rows:
+                        writer3.writerow(row)
+            except Exception:
+                pass
 
         return {
             "mean_acc": mean_acc,
@@ -601,9 +899,9 @@ class TrainingRunner:
             "weighted_f1": float(weighted_f1),
             "classification_report": class_report_str,
             "fold_accuracies": fold_accs,
+            "fold_macro_f1s": fold_macro_f1s,
             "fold_splits": fold_split_info,
             "inner_mean_acc": float(np.mean(inner_accs)) if inner_accs else 0.0,
             "inner_mean_macro_f1": float(np.mean(inner_macro_f1s)) if inner_macro_f1s else 0.0,
         }
-
 

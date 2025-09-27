@@ -14,3 +14,31 @@ include_channels: null      # explicit keep-only
 channel_lists:
   non_scalp: [E1, E8, E14, E17, E21, E25, E32, E38, E44, E49, E56, E63, E68, E73, E81, E88, E94, E99, E107, E113, E114, E119, E120, E121, E125, E126, E127, E128]
 cz_step: 0                
+
+# Post-hoc statistics defaults
+stats:
+  alpha: 0.05              # significance level for per-subject tests
+  chance_rate: null        # if null, defaults to 1/num_classes
+  multitest: fdr           # none | fdr
+  per_subject_metric: acc  # currently accuracy used for binomial
+  ci_method: t             # t | bootstrap
+  bootstrap_iters: 2000    # used if ci_method=bootstrap
+  glmm: false              # attempt GLMM (or robust logit fallback) in post-hoc
+  glmm_random_effects: [subject]  # random intercepts by subject
+  run_posthoc_after_train: false  # auto-run posthoc after train.py
+
+# Permutation testing defaults
+permutation:
+  enable: false
+  n_permutations: 200
+  scope: within_subject   # within_subject | global
+  stratified: true
+  seed: 123
+  block_key: null         # optional: shuffle within (subject, block_key)
+
+# Output artifact toggles
+outputs:
+  write_outer_eval_csv: true
+  write_test_predictions_csv: true
+  write_learning_curves_csv: true
+  write_splits_indices_json: true

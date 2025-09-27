@@ -308,14 +308,19 @@ def main():
     # 3) fold_XX_inner_YY_best.ckpt→ fallback to an inner-fold model if the above are absent
     def _resolve_ckpt_for_fold(run_dir: Path, fold_num: int) -> Path | None:
         # Prefer refit, then legacy single best, then any inner-best (fallback)
+        ckpt_dir = run_dir / "ckpt"
         candidates = [
+            ckpt_dir / f"fold_{fold_num:02d}_refit_best.ckpt",
             run_dir / f"fold_{fold_num:02d}_refit_best.ckpt",
+            ckpt_dir / f"fold_{fold_num:02d}_best.ckpt",
             run_dir / f"fold_{fold_num:02d}_best.ckpt",
         ]
         for c in candidates:
             if c.exists():
                 return c
-        inners = sorted(run_dir.glob(f"fold_{fold_num:02d}_inner_*_best.ckpt"))
+        inners = sorted((ckpt_dir.glob(f"fold_{fold_num:02d}_inner_*_best.ckpt") if ckpt_dir.exists() else []))
+        if not inners:
+            inners = sorted(run_dir.glob(f"fold_{fold_num:02d}_inner_*_best.ckpt"))
         return inners[0] if inners else None
 
     print("Starting XAI analysis...")

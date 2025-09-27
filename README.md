@@ -17,13 +17,60 @@ This repository implements a streamlined EEG decoding pipeline aligned with the 
 - Final evaluation can average across ≥10 seeds and generate XAI reports.
 - Outer test predictions use an inner‑fold ensemble (mean of softmax across inner K models) for stability; plots use the best inner fold’s curves.
  - Alternatively, set `outer_eval_mode: refit` to refit one model on the full outer‑train (optional subject‑aware val via `refit_val_frac`) before testing; both modes are YAML‑switchable.
+ - Determinism: strict seeding for Python/NumPy/Torch, `torch.use_deterministic_algorithms(True)`, `CUBLAS_WORKSPACE_CONFIG` for GEMM determinism, and per‑worker DataLoader seeding. A determinism banner is printed and persisted into reports.
+ - Provenance: reports include the exact model class (e.g., `braindecode.models.EEGNeX`), library versions (torch, numpy, sklearn, mne, braindecode, captum, optuna, python), and determinism flags.
+
+### Per‑run artifacts (besides checkpoints/plots)
+- `summary_<TASK>_<ENGINE>.json`: metrics + hyper + determinism + lib versions + model class + hardware
+- `resolved_config.yaml`: the frozen config used for the run
+- `splits_indices.json`: exact outer/inner indices and subjects for all folds (auditable splits)
+- `learning_curves_inner.csv`: all inner‑fold learning curves across outer folds (epoch‑wise train/val loss/acc/macro‑F1)
+- `outer_eval_metrics.csv`: one row per outer fold with held‑out subjects, n_test, acc, macro‑F1 (+ OVERALL row)
+- `test_predictions.csv`: one row per out‑of‑fold test trial (subject_id, trial_index, true/pred labels, p_trueclass, logp_trueclass, full probs) — ready for mixed‑effects models
+- `pip_freeze.txt` and (if available) `conda_env.yml`: environment freeze for reproducibility
+
+### Run directory structure
+- Run root contains text/JSON/CSV/HTML/PDF summaries and tables
+- Subdirectories:
+  - `plots/` — all PNG plots generated during the run (per‑fold confusion and curves; overall confusion)
+  - `ckpt/` — all checkpoints (e.g., `fold_XX_inner_YY_best.ckpt`, `fold_XX_refit_best.ckpt`)
+  - `xai_analysis/` — XAI outputs (per‑fold heatmaps, grand average, topoplots, summaries)
+
+### Transparency and safeguards
+- Hardware/runtime banner: GPU names, CUDA version, CPU, OS are printed and included in reports.
+- Split leakage guards: assertions ensure no subject appears in both train and test for any outer fold; inner folds are subject‑exclusive.
+- Class imbalance disclosure: class weights used for `CrossEntropyLoss` are saved per fold (e.g., `fold_XX_inner_YY_class_weights.json`, and `fold_XX_refit_class_weights.json`).
+
+### Permutation testing (empirical null, optional)
+- Purpose: build a null distribution by shuffling labels (no-signal hypothesis) with fixed outer/inner splits.
+- Config keys (in YAML):
+  - `permute_labels: true`
+  - `n_permutations: 200`
+  - `permute_scope: within_subject` (or `global`)
+  - `permute_stratified: true` (preserve within-subject class balance)
+  - `permute_seed: 123`
+- CLI (reusing observed splits from a completed run):
+```powershell
+python -X utf8 -u train.py `
+  --task cardinality_1_3 `
+  --engine eeg `
+  --base  configs/tasks/cardinality_1_3/resolved_config.yaml `
+  --permute-labels `
+  --n-permutations 200 `
+  --permute-scope within_subject `
+  --permute-stratified `
+  --permute-seed 123 `
+  --observed-run-dir "results\runs\<observed_run_dir_name>"
+```
+- Outputs (written next to the observed run):
+  - `<observed_run_dir>_perm_test_results.csv`: rows of (perm_id, outer_fold, acc, macro_f1, n_test_trials)
+  - `<observed_run_dir>_perm_summary.json`: observed scores, null means/SD, empirical p-values, and bookkeeping.
 
 ### Entry points (when to use what)
-- `train.py`: Single run for a given task/engine using layered configs; ideal for validating a resolved YAML and optionally running XAI on completion (`--run-xai`).
-- `scripts/optuna_search.py`: Unified Optuna driver for Step 1/2/3 sweeps (`--stage step1|step2|step3`) over a search space YAML; prunes per-epoch on inner macro‑F1.
-- `scripts/final_eval.py`: Multi-seed LOSO/GroupKFold evaluation using a fixed config (optionally merged with best params); aggregates seed metrics.
-- `scripts/run_xai_analysis.py`: Post-hoc per-fold attributions and grand-average XAI summary for a completed run directory.
-- `scripts/prepare_from_happe.py`: One-time materialization of per-subject `.fif` epochs with aligned behavior and montage from HAPPE/EEGLAB `.set`.
+- `train.py`: Single run or multi‑seed runs for a given task/engine using layered configs; ideal for validating a resolved YAML and optionally running XAI on completion (`--run-xai`). Multi‑seed: add `seeds: [41, 42, ...]` in YAML.
+- `scripts/optuna_search.py`: Unified Optuna driver for Step 1/2/3 sweeps (`--stage step1|step2|step3`) over a search space YAML; prunes per‑epoch on inner macro‑F1 and seeds the TPE sampler from config.
+- `scripts/run_xai_analysis.py`: Post‑hoc per‑fold attributions and consolidated XAI HTML/PDF for a completed run directory.
+- `scripts/prepare_from_happe.py`: One‑time materialization of per‑subject `.fif` epochs with aligned behavior and montage from HAPPE/EEGLAB `.set`.
 
 ## Repository layout
 - code/
@@ -49,6 +96,7 @@ This repository implements a streamlined EEG decoding pipeline aligned with the 
   - search_finalist.py — optional finalist tuner (joint sensitive params)
   - final_eval.py — multi‑seed final evaluation and consolidated reporting
   - run_xai_analysis.py — per‑fold attributions and consolidated XAI HTML/PDF
+  - run_posthoc_stats.py — post‑hoc statistics (group efficacy and subject reliability)
 - results/optuna/
   - refresh_optuna_summaries.py — per‑study CSV (sorted by inner_mean_macro_f1 desc) and plots
   - refresh_optuna_summaries.bat — convenience wrapper on Windows
@@ -102,6 +150,20 @@ python -X utf8 -u train.py `
   --engine eeg `
   --base  configs/tasks/cardinality_1_6/base.yaml
 ```
+
+1d) Multi‑seed LOSO with a fixed resolved config (preferred)
+Add to your YAML:
+```yaml
+seeds: [41, 42, 43, 44, 45]
+```
+Then run once:
+```powershell
+python -X utf8 -u train.py `
+  --task cardinality_1_3 `
+  --engine eeg `
+  --base configs/tasks/cardinality_1_3/resolved_config.yaml
+```
+This produces one run directory per seed (naming includes `seed_<N>` before `crop_ms`) and an aggregate JSON next to the runs: `results/runs/<timestamp>_<task>_<engine>_seeds_aggregate.json`.
 
 Run a single LOSO with an Optuna winner:
 ```powershell
@@ -170,10 +232,12 @@ for ($i=0; $i -lt 10; $i++) {
 ## Reproducibility
 - Outer split: `GroupKFold` when `n_folds` is set; otherwise `LOSO`.
 - Strict inner subject‑aware K‑fold: set `inner_n_folds` (≥2). If infeasible (too few unique subjects), the run raises with a clear error.
-- `seed`, `random_state`, and cache fingerprinting to keep trials consistent.
-- Final multi‑seed evaluation recommended (≥10 seeds).
-- Optuna uses TPE sampling and a Median Pruner (10 warmup epochs); per‑epoch inner‑val macro‑F1 is reported for pruning. The Optuna objective is the averaged inner macro‑F1 across inner folds and outer folds.
- - XAI checkpoint resolution order per fold: `fold_XX_refit_best.ckpt` → `fold_XX_best.ckpt` → first `fold_XX_inner_YY_best.ckpt`.
+- Determinism: `PYTHONHASHSEED`, Python/NumPy/Torch seeds, per‑worker DataLoader seeding, `torch.backends.cudnn.deterministic=True`, `torch.backends.cudnn.benchmark=False`, `torch.use_deterministic_algorithms(True)`, and `CUBLAS_WORKSPACE_CONFIG` to stabilize CUDA GEMM. Determinism banner is printed and persisted.
+- Provenance: model class path, library versions, and determinism flags are included in the TXT/HTML report and JSON.
+- Seeds: set a single `seed: 42` or a list `seeds: [41, 42, ...]` (multi‑seed loop). Run directories include `seed_<N>` in the name; a cross‑seed aggregate JSON is written.
+- Optuna: TPE sampler is seeded from config; pruning signal is inner macro‑F1; objective is inner‑CV mean macro‑F1.
+- Audit artifacts: `splits_indices.json`, `learning_curves_inner.csv`, `outer_eval_metrics.csv`, and `test_predictions.csv` capture splits, pruning traces, outer‑fold metrics, and per‑trial out‑of‑fold predictions (ready for mixed‑effects models).
+- XAI checkpoint resolution order per fold: `fold_XX_refit_best.ckpt` → `fold_XX_best.ckpt` → first `fold_XX_inner_YY_best.ckpt`.
 
 Tip: To force LOSO in any run that has a resolved config with `n_folds`, either set `n_folds: null` inside the YAML, or pass `--set n_folds=null` on the CLI.
 
@@ -197,6 +261,23 @@ Tip: To force LOSO in any run that has a resolved config with `n_folds`, either 
 ```powershell
 python -X utf8 -u scripts/run_xai_analysis.py --run-dir "results\runs\<run_dir_name>"
 ```
+
+### Post‑hoc statistics (group efficacy and subject reliability)
+- Purpose: quantify population‑level efficacy and subject‑level reliability without retraining.
+- Inputs: uses `outer_eval_metrics.csv`, `test_predictions.csv`, and permutation summary (if present) from the run directory.
+- Run:
+```powershell
+python -X utf8 -u scripts/run_posthoc_stats.py `
+  --run-dir results\runs\<run_dir_name> `
+  --alpha 0.05 `
+  --multitest fdr `
+  --glmm
+```
+- Outputs (written to the run directory):
+  - `group_stats.json`: mean and 95% CI for accuracy/macro‑F1; permutation p‑values if available.
+  - `per_subject_significance.csv`: per‑subject accuracy, binomial p‑value vs chance, adjusted p‑value, and above‑chance flag.
+  - `per_subject_summary.json`: number and proportion of subjects above chance.
+  - `glmm_summary.json`: optional population fixed‑effect summary (cluster‑robust logit fallback), including CI/p‑value.
 
 ## update github example: 
 PS D:\eeg_nn> conda activate eegnex-env

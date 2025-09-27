@@ -47,6 +47,13 @@ def run(cfg: Dict, label_fn: Callable):
     # Some models expect inputs shaped differently; adapter handles that uniformly
     # This keeps TrainingRunner agnostic of per-model input signature differences
     input_adapter = squeeze_input_adapter if model_name in ("cwat", "eegnex") else None
+    # Describe the public model class and input signature for provenance
+    try:
+        model_cls = RAW_EEG_MODELS[model_name]
+        model_class_path = f"{model_cls.__module__}.{model_cls.__name__}"
+    except Exception:
+        model_class_path = model_name
+    model_input_sig = "(B,C,T)" if input_adapter is squeeze_input_adapter else "(B,1,C,T)"
 
     runner = TrainingRunner(cfg, label_fn)
     summary = runner.run(
@@ -58,6 +65,12 @@ def run(cfg: Dict, label_fn: Callable):
         input_adapter=input_adapter,
         optuna_trial=cfg.get("optuna_trial")
     )
+    # Enrich summary with provenance info
+    try:
+        summary["model_class"] = model_class_path
+        summary["model_input_signature"] = model_input_sig
+    except Exception:
+        pass
     return summary
 
 
