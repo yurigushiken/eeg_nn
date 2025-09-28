@@ -9,9 +9,6 @@ save_ckpt: true
 random_state: 42
 activation: elu     
 
-inner_n_folds: 5
-n_folds: null
-
 
 # Outer test evaluation mode:
 # - ensemble: average softmax across inner K models (default, variance-reducing)

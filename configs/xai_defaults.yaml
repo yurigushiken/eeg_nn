@@ -1,0 +1,12 @@
+xai:
+  # Default time window (ms) used for Grad-TopoCAM integration when CLI flag is omitted
+  gradtopo_window_ms: [150, 250]
+
+  # Default Grad-CAM/TopoCAM target layer (dotted path inside the model wrapper)
+  # Choose an earlier conv that preserves [channels × time] if late layers collapse channels
+  gradcam_target_layer: features.3
+
+  # Number of channel labels to draw on topomap figures (read elsewhere as xai_top_k_channels)
+  xai_top_k_channels: 10
+
+

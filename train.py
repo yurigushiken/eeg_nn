@@ -82,6 +82,8 @@ def build_config(args) -> Dict[str, Any]:
 
     # base.yaml (task-specific)
     base_yaml = Path(args.base) if args.base else (Path("configs") / "tasks" / args.task / "base.yaml")
+    if args.base and not base_yaml.exists():
+        sys.exit(f"--base not found: {base_yaml}")
     if base_yaml.exists():
         cfg.update(yaml.safe_load(base_yaml.read_text()) or {})
 
@@ -119,6 +121,13 @@ def main():
     # Group all runs under a single timestamp id for this launch
     launch_run_id = datetime.datetime.now().strftime("%Y%m%d_%H%M")
 
+    # Determine base config tag to include in run_dir name
+    base_fp = Path(args.base) if args.base else (Path("configs") / "tasks" / args.task / "base.yaml")
+    base_tag = base_fp.stem
+
+    # Detect multi-seed mode to avoid directory collisions
+    multi_seed_mode = isinstance(base_cfg.get("seeds"), list) and len(base_cfg.get("seeds")) > 1
+
     # -------------------------------------------------------------------------
     # Per-run executor (single seed)
     # -------------------------------------------------------------------------
@@ -128,33 +137,14 @@ def main():
         det_banner = determinism_banner(cfg.get("seed"))
         print("[determinism]", det_banner, flush=True)
 
-        # Build human-friendly run_dir name
-        materialized = cfg.get("materialized_dir") or cfg.get("dataset_dir")
-        ds_tag = Path(materialized).name if materialized else None
-
-        seed_tag = None
-        if cfg.get("seed") is not None:
+        # Build human-friendly run_dir name: {timestamp}_{task}_{base-stem}
+        parts = [launch_run_id, args.task, base_tag]
+        # In multi-seed mode, append seed tag to avoid collisions while keeping grouping by launch_run_id
+        if multi_seed_mode and cfg.get("seed") is not None:
             try:
-                seed_tag = f"seed_{int(cfg['seed'])}"
+                parts.append(f"seed_{int(cfg['seed'])}")
             except Exception:
-                seed_tag = f"seed_{cfg['seed']}"
-
-        crop = cfg.get("crop_ms")
-        crop_tag = None
-        if isinstance(crop, (list, tuple)) and len(crop) == 2:
-            try:
-                a, b = int(crop[0]), int(crop[1])
-                crop_tag = f"crop_ms_{a}_{b}"
-            except Exception:
-                pass
-
-        parts = [launch_run_id, args.task, args.engine]
-        if ds_tag:
-            parts.append(ds_tag)
-        if seed_tag:
-            parts.append(seed_tag)
-        if crop_tag:
-            parts.append(crop_tag)
+                parts.append(f"seed_{cfg['seed']}")
 
         run_dir = Path("results") / "runs" / "_".join(parts)
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -207,7 +197,9 @@ def main():
                 # optional forest plot toggle if your script supports it
                 if bool(stats_cfg.get("forest", True)):
                     cmd.append("--forest")
+                print(f"[posthoc] invoking: {' '.join(map(str, cmd))}")
                 subprocess.run(cmd, check=True)
+                print("[posthoc] finished successfully.")
         except Exception as e:
             print(f"[posthoc] post-hoc stats failed: {e}")
 

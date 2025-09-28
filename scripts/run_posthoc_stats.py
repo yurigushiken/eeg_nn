@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 from __future__ import annotations
 import argparse
+import os
 import json
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -15,6 +16,22 @@ try:
     import matplotlib.pyplot as plt
 except Exception:
     plt = None
+
+# Silence rpy2 CFFI mode message on Windows by forcing ABI before any rpy2 import
+os.environ.setdefault("RPY2_CFFI_MODE", "ABI")
+
+# add reporting for HTML refresh
+try:
+    from utils.reporting import create_consolidated_reports
+except Exception:
+    create_consolidated_reports = None
+
+def fig_to_png_bytes(fig) -> bytes:
+    import io
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+    buf.seek(0)
+    return buf.read()
 
 
 def _read_outer_eval_metrics(run_dir: Path) -> List[Dict]:
@@ -93,26 +110,7 @@ def _ci95_mean(vals: List[float]) -> Tuple[float, float, float]:
     return m, m - half, m + half
 
 
-def _bh_fdr(pvals: List[float], alpha: float) -> List[float]:
-    # Benjamini-Hochberg adjusted p-values (q-values)
-    m = len(pvals)
-    if m == 0:
-        return []
-    order = np.argsort(pvals)
-    ranked = np.empty(m, dtype=float)
-    prev = 0.0
-    for rank, idx in enumerate(order, start=1):
-        pv = pvals[idx]
-        q = pv * m / rank
-        if rank == 1:
-            ranked[idx] = q
-            prev = q
-        else:
-            ranked[idx] = min(q, prev)
-            prev = ranked[idx]
-    # Ensure in [0,1]
-    ranked = np.clip(ranked, 0.0, 1.0)
-    return ranked.tolist()
+# (removed legacy _bh_fdr helper; using statsmodels' multipletests instead)
 
 
 def compute_group_stats(run_dir: Path, alpha: float, permute_parent: bool) -> Dict:
@@ -170,16 +168,24 @@ def compute_per_subject_significance(run_dir: Path, chance_rate: float, alpha: f
             "p_binomial": p,
         })
 
-    # Adjust p-values if requested
+    # Adjust p-values if requested (use vetted library implementation)
     if multitest.lower() == "fdr":
-        qvals = _bh_fdr(pvals, alpha)
+        try:
+            from statsmodels.stats.multitest import multipletests
+            reject, qvals, _, _ = multipletests(pvals, alpha=alpha, method="fdr_bh")
+        except Exception:
+            # Fallback to unadjusted if library not available
+            reject = [pv < alpha for pv in pvals]
+            qvals = pvals
     else:
+        reject = [pv < alpha for pv in pvals]
         qvals = pvals
     num_above = 0
     for i, row in enumerate(out_rows):
         q = qvals[i]
         row["p_adj"] = q
-        row["above_chance"] = bool(q < alpha)
+        # If FDR was applied, prefer reject mask when available
+        row["above_chance"] = bool(reject[i]) if 'reject' in locals() else bool(q < alpha)
         if row["above_chance"]:
             num_above += 1
 
@@ -191,56 +197,132 @@ def compute_per_subject_significance(run_dir: Path, chance_rate: float, alpha: f
     return out_rows, footer
 
 
-def maybe_glmm(run_dir: Path, enable: bool) -> Dict:
+def run_glmm(run_dir: Path, enable: bool, chance_rate: float) -> Dict:
+    """Fit a logistic GLMM via R lme4::glmer using rpy2 (no fallbacks).
+
+    Model tests above-chance performance using an offset at logit(chance):
+        correct ~ 1 + offset(offset_term) + (1 | subject_id)
+    where offset_term = logit(chance_rate).
+    """
     if not enable:
         return {"status": "disabled"}
-    # Fallback: cluster-robust logistic regression at subject level if GLMM unavailable
-    try:
-        import pandas as pd
-        import statsmodels.api as sm
-        from statsmodels.discrete.discrete_model import Logit
-    except Exception:
-        return {"status": "statsmodels_not_available"}
+
     fp = run_dir / "test_predictions.csv"
     if not fp.exists():
         return {"status": "no_test_predictions"}
+
     import pandas as pd
-    df = pd.read_csv(fp)
-    if "correct" not in df.columns or "subject_id" not in df.columns:
-        return {"status": "columns_missing"}
+    try:
+        df = pd.read_csv(fp)
+    except Exception as e:
+        return {"status": "read_error", "message": str(e)}
+
+        if "correct" not in df.columns or "subject_id" not in df.columns:
+            return {"status": "columns_missing"}
+
+    try:
+        import math
+        from rpy2 import robjects as ro
+        from rpy2.robjects import pandas2ri
+        from rpy2.robjects.packages import importr
+        from rpy2.robjects.conversion import localconverter
+    except Exception as e:
+        return {"status": "rpy2_not_available", "message": str(e)}
+
+    # Prepare data and offset
     try:
         df = df[["correct", "subject_id"]].dropna()
-        df["intercept"] = 1.0
-        model = Logit(df["correct"], df[["intercept"]])
-        res = model.fit(disp=False, method="newton")
-        # Cluster-robust SEs by subject (approximate random effects via clusters)
-        robust = res.get_robustcov_results(cov_type="cluster", groups=df["subject_id"])  
-        coef = float(robust.params[0])
-        se = float(robust.bse[0])
-        z = coef / se if se > 0 else 0.0
-        from math import erf, sqrt
-        pval = float(2 * (1 - 0.5 * (1 + erf(abs(z) / math.sqrt(2)))))
-        # Convert intercept log-odds to accuracy at baseline
-        acc_at_intercept = float(100.0 * (1.0 / (1.0 + math.exp(-coef))))
-        ci_low = float(100.0 * (1.0 / (1.0 + math.exp(-(coef - 1.959963984540054 * se)))))
-        ci_hi = float(100.0 * (1.0 / (1.0 + math.exp(-(coef + 1.959963984540054 * se)))))
-        # Approximate random-effects variance via cluster variance proxy if available
+        df["correct"] = df["correct"].astype(int)
+        p0 = float(chance_rate if (chance_rate is not None and 0.0 < chance_rate < 1.0) else 0.5)
+        # constant offset vector in the data frame to satisfy R's offset()
+        logit_p0 = math.log(p0 / (1.0 - p0))
+        df["offset_term"] = float(logit_p0)
+    except Exception as e:
+        return {"status": "prep_error", "message": str(e)}
+
+    try:
+        # Convert pandas -> R using local converter (no deprecated global activation)
+        with localconverter(ro.default_converter + pandas2ri.converter):
+            r_df = ro.conversion.py2rpy(df)
+
+        lme4 = importr("lme4")
+        base = importr("base")
+        stats = importr("stats")
+
+        ro.globalenv["d"] = r_df
+        ro.r("""
+            d$correct <- as.integer(d$correct)
+            d$subject_id <- as.factor(d$subject_id)
+            fit <- lme4::glmer(correct ~ 1 + offset(offset_term) + (1 | subject_id),
+                                data=d, family=stats::binomial())
+        """)
+        fit = ro.globalenv["fit"]
+
+        # Extract coefficients table using R expression to avoid generic dispatch issues
+        coef_df_r = ro.r('as.data.frame(coef(summary(fit)))')
+        with localconverter(ro.default_converter + pandas2ri.converter):
+            coef_df = ro.conversion.rpy2py(coef_df_r)
+        # Ensure row names
+        coef_df.index = [str(x) for x in coef_df.index]
+        row = coef_df.loc['(Intercept)'] if '(Intercept)' in coef_df.index else coef_df.iloc[0]
+        est = float(row.get('Estimate', row.iloc[0]))
+        se = float(row.get('Std. Error', float('nan')))
+        zval = float(row.get('z value', float('nan')))
+        pval = float(row.get('Pr(>|z|)', float('nan')))
+
+        # Probability at intercept relative to chance
+        p_at_intercept = float(1.0 / (1.0 + math.exp(-(logit_p0 + est))))
+
+        # Random effect variance for subject
+        vc_df_r = ro.r("as.data.frame(lme4::VarCorr(fit))")
+        with localconverter(ro.default_converter + pandas2ri.converter):
+            vc_df = ro.conversion.rpy2py(vc_df_r)
         re_var = None
         try:
-            # statsmodels doesn't directly give RE var in this setup; leave None
-            re_var = None
+            re_row = vc_df.loc[vc_df['grp'] == 'subject_id']
+            if not re_row.empty:
+                re_var = float(re_row.iloc[0]['vcov']) if 'vcov' in re_row.columns else None
         except Exception:
             re_var = None
+
+        # Extract subject random intercept BLUPs (+ conditional SEs)
+        re_r = ro.r('''
+          re <- lme4::ranef(fit, condVar = TRUE)$subject_id
+          pv <- attr(re, "postVar")
+          # pv should be a 3D array with dims [coef, coef, subjects] when only intercepts exist => [1,1,N]
+          se <- tryCatch(sqrt(pv[1,1,]), error=function(e) {
+            # Fallback: if not 3D, coerce via as.vector
+            sqrt(as.vector(pv))
+          })
+          data.frame(subject = rownames(re),
+                     blup = as.numeric(re[,1]),
+                     se = as.numeric(se),
+                     row.names = NULL)
+        ''')
+        with localconverter(ro.default_converter + pandas2ri.converter):
+            re_df = ro.conversion.rpy2py(re_r)
+        ranef_payload = []
+        try:
+            for subj, bl, sv in zip(re_df["subject"], re_df["blup"], re_df["se"]):
+                ranef_payload.append({"subject": str(subj), "blup": float(bl), "se": float(sv)})
+        except Exception:
+            ranef_payload = []
+
         return {
-            "status": "ok_cluster_robust",
-            "intercept_log_odds": coef,
+            "status": "ok_glmm",
+            "engine": "R lme4::glmer via rpy2",
+            "formula": "correct ~ 1 + offset(qlogis(chance)) + (1 | subject_id)",
+            "chance_rate": p0,
+            "intercept_delta_logit_from_chance": est,
+            "intercept_se": se,
+            "intercept_z": zval,
             "intercept_pvalue": pval,
-            "acc_at_intercept_pct": acc_at_intercept,
-            "ci95_acc_at_intercept_pct": [ci_low, ci_hi],
+            "probability_at_intercept": p_at_intercept,
             "random_effects_variance_subject": re_var,
+            "ranef_subject": ranef_payload,
         }
     except Exception as e:
-        return {"status": f"failed: {e}"}
+        return {"status": "fit_error", "message": str(e)}
 
 
 def write_json(p: Path, obj: Dict):
@@ -268,6 +350,9 @@ def main():
     run_dir: Path = args.run_dir
     if not run_dir.exists():
         sys.exit(f"Run directory not found: {run_dir}")
+    # All outputs now go under <run_dir>/stats
+    stats_dir = run_dir / "stats"
+    stats_dir.mkdir(exist_ok=True)
 
     # Load summary to get class_names and seeds if needed
     try:
@@ -282,61 +367,221 @@ def main():
         if isinstance(class_names, list) and len(class_names) > 0:
             chance_rate = 1.0 / float(len(class_names))
         else:
-            chance_rate = 0.5  # fallback
+            # Try to infer from task CONDITIONS in summary or by importing the task module
+            n_classes = None
+            try:
+                # summary written by engines/eeg.py may include num_classes
+                n_classes = int(summary.get("num_classes")) if summary.get("num_classes") else None
+            except Exception:
+                n_classes = None
+            if not n_classes:
+                try:
+                    task_name = summary.get("hyper", {}).get("task") or summary.get("task")
+                    if isinstance(task_name, str) and len(task_name) > 0:
+                        import importlib
+                        task_mod = importlib.import_module(f"tasks.{task_name}")
+                        conds = getattr(task_mod, "CONDITIONS", None)
+                        if isinstance(conds, (list, tuple)) and len(conds) > 0:
+                            n_classes = len(conds)
+                except Exception:
+                    n_classes = None
+            chance_rate = 1.0 / float(n_classes) if n_classes and n_classes > 0 else 0.5
 
     # Group-level stats
     group = compute_group_stats(run_dir, args.alpha, permute_parent=True)
     group["bookkeeping"].update({
         "chance_rate": chance_rate,
     })
-    write_json(run_dir / "group_stats.json", group)
+    write_json(stats_dir / "group_stats.json", group)
 
     # Subject-level stats
     per_subj_rows, footer = compute_per_subject_significance(run_dir, chance_rate, args.alpha, args.multitest)
-    write_csv(run_dir / "per_subject_significance.csv", per_subj_rows, [
+    write_csv(stats_dir / "per_subject_significance.csv", per_subj_rows, [
         "subject_id", "n_test_trials", "acc", "p_binomial", "p_adj", "above_chance",
     ])
-    write_json(run_dir / "per_subject_summary.json", footer)
+    write_json(stats_dir / "per_subject_summary.json", footer)
 
-    # Optional forest plot
-    if args.forest and plt is not None and per_subj_rows:
-        try:
-            ids = [int(r["subject_id"]) for r in per_subj_rows]
-            accs = [float(r["acc"]) for r in per_subj_rows]
-            ns = [int(r["n_test_trials"]) for r in per_subj_rows]
-            # Wilson CI per subject
-            ci = [_wilson_ci(int(round(a/100.0*n)), n, 0.05) for a, n in zip(accs, ns)]
-            lowers = [c[0] for c in ci]; uppers = [c[1] for c in ci]
-            y = np.arange(len(ids))
-            fig, ax = plt.subplots(figsize=(6, max(4, 0.3*len(ids))))
-            ax.errorbar(accs, y, xerr=[np.array(accs)-np.array(lowers), np.array(uppers)-np.array(accs)], fmt='o', color='black')
-            ax.axvline(100.0*chance_rate, color='red', linestyle='--', label='Chance')
-            ax.set_xlabel('Accuracy (%)')
-            ax.set_yticks(y)
-            ax.set_yticklabels([str(i) for i in ids])
-            ax.invert_yaxis()
-            ax.legend(loc='lower right')
-            plt.tight_layout()
-            (run_dir / "per_subject_forest.png").write_bytes(fig_to_png_bytes(fig))
-            plt.close(fig)
-        except Exception:
-            pass
+    # Optional forest plot (to stats/)
+    if args.forest:
+        if plt is None:
+            print("[posthoc] matplotlib not available; skipping forest plot.")
+        elif not per_subj_rows:
+            print("[posthoc] No per-subject rows; skipping forest plot.")
+        else:
+            try:
+                stats_dir.mkdir(exist_ok=True)
+                ids = [int(r["subject_id"]) for r in per_subj_rows]
+                accs = [float(r["acc"]) for r in per_subj_rows]
+                ns = [int(r["n_test_trials"]) for r in per_subj_rows]
+                # Wilson CI per subject
+                ci = [_wilson_ci(int(round(a/100.0*n)), n, 0.05) for a, n in zip(accs, ns)]
+                lowers = [c[0] for c in ci]; uppers = [c[1] for c in ci]
+                y = np.arange(len(ids))
+                fig, ax = plt.subplots(figsize=(6, max(4, 0.3*len(ids))))
+                ax.errorbar(accs, y, xerr=[np.array(accs)-np.array(lowers), np.array(uppers)-np.array(accs)], fmt='o', color='black')
+                ax.axvline(100.0*chance_rate, color='red', linestyle='--', label='Chance')
+                ax.set_xlabel('Accuracy (%)')
+                ax.set_yticks(y)
+                ax.set_yticklabels([str(i) for i in ids])
+                ax.invert_yaxis()
+                ax.legend(loc='lower right')
+                plt.tight_layout()
+                out_png = stats_dir / "per_subject_forest.png"
+                out_png.write_bytes(fig_to_png_bytes(fig))
+                plt.close(fig)
+                print(f"[posthoc] Wrote forest plot: {out_png}")
+            except Exception as e:
+                print(f"[posthoc] Forest plot failed: {e}")
 
-    # Optional GLMM (or cluster-robust logit)
-    glmm = maybe_glmm(run_dir, args.glmm)
-    write_json(run_dir / "glmm_summary.json", glmm)
+    # Optional permutation densities (if perm results CSV exists in parent)
+    try:
+        perm_csv = run_dir.parent / f"{run_dir.name}_perm_test_results.csv"
+        if perm_csv.exists() and plt is not None:
+            # compute per-permutation overall means from CSV
+            import pandas as pd
+            df = pd.read_csv(perm_csv)
+            if {"perm_id", "acc", "macro_f1"}.issubset(df.columns):
+                stats_dir.mkdir(exist_ok=True)
+                acc_by_perm = df.groupby("perm_id")["acc"].mean().values
+                f1_by_perm = df.groupby("perm_id")["macro_f1"].mean().values
+                # Observed means and permutation p-values
+                obs_acc = float(group.get("mean_acc", 0.0))
+                obs_f1 = float(group.get("mean_macro_f1", 0.0))
+                p_perm_acc = float((np.sum(acc_by_perm >= obs_acc) + 1) / (acc_by_perm.size + 1)) if acc_by_perm.size else 1.0
+                p_perm_f1 = float((np.sum(f1_by_perm >= obs_f1) + 1) / (f1_by_perm.size + 1)) if f1_by_perm.size else 1.0
+                # Plot density-style histograms with observed vertical line
+                fig, ax = plt.subplots(figsize=(5,3))
+                ax.hist(acc_by_perm, bins=24, color="#4C78A8", alpha=0.6, density=True)
+                ax.axvline(obs_acc, color='red', linestyle='--', linewidth=2)
+                ax.set_title(f"Null density of accuracy (perm); p={p_perm_acc:.3f}")
+                ax.set_xlabel("Accuracy (%)")
+                ax.set_ylabel("Density")
+                plt.tight_layout()
+                (stats_dir / "perm_density_acc.png").write_bytes(fig_to_png_bytes(fig))
+                plt.close(fig)
 
-    print("[posthoc] Wrote group_stats.json, per_subject_significance.csv, per_subject_summary.json, glmm_summary.json")
+                fig, ax = plt.subplots(figsize=(5,3))
+                ax.hist(f1_by_perm, bins=24, color="#F58518", alpha=0.6, density=True)
+                ax.axvline(obs_f1, color='red', linestyle='--', linewidth=2)
+                ax.set_title(f"Null density of macro-F1 (perm); p={p_perm_f1:.3f}")
+                ax.set_xlabel("Macro-F1 (%)")
+                ax.set_ylabel("Density")
+                plt.tight_layout()
+                (stats_dir / "perm_density_macro_f1.png").write_bytes(fig_to_png_bytes(fig))
+                plt.close(fig)
+    except Exception:
+        pass
+
+    # GLMM (true GLMM via R lme4)
+    glmm = run_glmm(run_dir, args.glmm, chance_rate)
+    write_json(stats_dir / "glmm_summary.json", glmm)
+
+    # Additional visuals linked to GLMM and p-values
+    try:
+        if plt is not None:
+            # 1) QQ plot of per-subject p-values with BH threshold
+            if per_subj_rows:
+                pvals_arr = np.array([float(r["p_binomial"]) for r in per_subj_rows], dtype=float)
+                m = pvals_arr.size
+                if m > 0:
+                    p_sorted = np.sort(pvals_arr)
+                    exp = (np.arange(1, m+1) - 0.5) / m
+                    alpha = float(args.alpha)
+                    # BH cutoff line y = (k/m)*alpha at the largest k where p_(k) <= (k/m)*alpha
+                    thresh_idx = np.where(p_sorted <= (np.arange(1, m+1)/m)*alpha)[0]
+                    fig, ax = plt.subplots(figsize=(4.8, 4.8))
+                    ax.plot(exp, p_sorted, 'o', color="#1f77b4", markersize=4)
+                    ax.plot([0,1],[0,1], '--', color='gray')
+                    if thresh_idx.size:
+                        k = int(thresh_idx.max()) + 1
+                        yline = (k/m)*alpha
+                        ax.axhline(yline, color='red', linestyle='--')
+                        ax.text(0.05, min(0.95, yline+0.03), f"BH cutoff (k={k})", color='red')
+                    ax.set_xlabel('Expected p (Uniform)')
+                    ax.set_ylabel('Observed p (Binomial)')
+                    ax.set_title('Per-subject p-value QQ')
+                    plt.tight_layout()
+                    (stats_dir / "qq_pvalues_fdr.png").write_bytes(fig_to_png_bytes(fig))
+                    plt.close(fig)
+
+            # 2) GLMM visuals if model succeeded
+            if glmm.get("status") == "ok_glmm":
+                # Intercept effect panel (log-odds with CI, prob scale on right)
+                est = float(glmm.get("intercept_delta_logit_from_chance", 0.0))
+                se = float(glmm.get("intercept_se", float('nan')))
+                p0 = float(glmm.get("chance_rate", chance_rate))
+                if se == se:  # not NaN
+                    lo = est - 1.959963984540054*se
+                    hi = est + 1.959963984540054*se
+                    logit_p0 = math.log(p0/(1-p0))
+                    fig, ax = plt.subplots(figsize=(6.0, 3.2))
+                    ax.errorbar([0], [est], yerr=[[est-lo],[hi-est]], fmt='o', color='#333')
+                    ax.axhline(0.0, color='gray', linestyle=':')
+                    ax.set_xticks([0])
+                    ax.set_xticklabels(["Intercept vs chance (log-odds)"])
+                    ax.set_ylabel("Estimate (log-odds)")
+                    # Secondary y-axis showing probability at intercept
+                    def logit_to_prob(x):
+                        x = np.asarray(x, dtype=float)
+                        return 1.0/(1.0+np.exp(-(logit_p0 + x)))
+                    def prob_to_logit(p):
+                        p = np.asarray(p, dtype=float)
+                        return np.log(p/(1-p)) - logit_p0
+                    ax.secondary_yaxis('right', functions=(logit_to_prob, prob_to_logit)).set_ylabel('Probability at intercept')
+                    plt.tight_layout()
+                    (stats_dir / "glmm_intercept_effect.png").write_bytes(fig_to_png_bytes(fig))
+                    plt.close(fig)
+
+                # Caterpillar plot of subject BLUPs on probability scale (if available)
+                ranef = glmm.get("ranef_subject", [])
+                if ranef:
+                    import pandas as pd
+                    re_df = pd.DataFrame(ranef)
+                    if {"subject","blup"}.issubset(re_df.columns):
+                        # Use SE when provided; otherwise draw points only
+                        bl = re_df["blup"].astype(float)
+                        se_arr = re_df["se"].astype(float) if "se" in re_df.columns else None
+                        logit_p0 = math.log(p0/(1-p0))
+                        prob = 1.0 / (1.0 + np.exp(-(logit_p0 + est + bl)))
+                        if se_arr is not None:
+                            prob_lo = 1.0 / (1.0 + np.exp(-(logit_p0 + est + (bl - 1.959963984540054*se_arr))))
+                            prob_hi = 1.0 / (1.0 + np.exp(-(logit_p0 + est + (bl + 1.959963984540054*se_arr))))
+                        order = np.argsort(prob)
+                        y = np.arange(len(order))
+                        fig, ax = plt.subplots(figsize=(6.4, max(4.0, 0.35*len(order))))
+                        if se_arr is not None:
+                            ax.hlines(y, prob_lo.values[order], prob_hi.values[order], color="#555")
+                        ax.plot(prob.values[order], y, 'o', color="#1f77b4")
+                        ax.axvline(p0, color='red', linestyle='--', label='Chance')
+                        ax.set_xlabel('Probability')
+                        ax.set_yticks(y)
+                        ax.set_yticklabels(re_df["subject"].astype(str).values[order].tolist())
+                        ax.invert_yaxis()
+                        ax.legend(loc='lower right')
+                        plt.tight_layout()
+                        (stats_dir / "glmm_caterpillar.png").write_bytes(fig_to_png_bytes(fig))
+                        plt.close(fig)
+    except Exception as e:
+        print(f"[posthoc] Additional visuals failed: {e}")
+
+    print("[posthoc] Wrote stats outputs to stats/ (group_stats.json, per_subject_significance.csv, per_subject_summary.json, glmm_summary.json)")
+
+    # Refresh consolidated report to include stats section if possible
+    try:
+        if create_consolidated_reports is not None:
+            # Load summary for banner/context
+            summary_path = next(run_dir.glob("summary_*.json"))
+            summary = json.loads(summary_path.read_text())
+            task = summary.get("hyper", {}).get("task") or ""
+            engine = summary.get("hyper", {}).get("engine") or "eeg"
+            if task:
+                create_consolidated_reports(run_dir, summary, task, engine)
+                print("[posthoc] Consolidated report refreshed with statistics.")
+    except Exception as e:
+        print(f"[posthoc] Could not refresh consolidated report: {e}")
 
 
 if __name__ == "__main__":
     main()
-
-def fig_to_png_bytes(fig) -> bytes:
-    import io
-    buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
-    buf.seek(0)
-    return buf.read()
 
 

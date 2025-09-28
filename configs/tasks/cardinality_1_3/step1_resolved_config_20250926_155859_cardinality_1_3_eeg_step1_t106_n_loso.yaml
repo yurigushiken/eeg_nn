@@ -1,10 +1,10 @@
-seeds: [43, 44]
+seeds: [44, 45]
 epochs: 40
 early_stop: 8
 inner_val_frac: 0.2
 save_ckpt: true
 batch_size: 8
-lr: 0.00039399232014824615
+lr: 0.0003677427388250912
 crop_ms:
 - 0
 - 496
@@ -44,19 +44,19 @@ cz_step: 0
 model_name: eegnex
 inner_n_folds: 5
 n_folds: null
-outer_eval_mode: ensemble
-refit_val_frac: 0.0
+refit_val_k: 0
 refit_early_stop: 10
 max_folds: null
 random_state: 42
 activation: elu
-materialized_dir: data_preprocessed/hpf_1.5_lpf_40_baseline-off
-filter_1: 24
-filter_2: 38
-kernel_block_4: 28
+outer_eval_mode: ensemble
+materialized_dir: data_preprocessed/hpf_1.5_lpf_35_baseline-off
+filter_1: 18
+filter_2: 44
+kernel_block_4: 35
 kernel_block_5: 24
 avg_pool_block4: 3
 dilation_block_4: 2
-drop_prob: 0.5214851448432087
-weight_decay: 0.0017813097926156977
+drop_prob: 0.6092420486428096
+weight_decay: 0.005422750192203312
 task: cardinality_1_3

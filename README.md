@@ -69,7 +69,7 @@ python -X utf8 -u train.py `
 ### Entry points (when to use what)
 - `train.py`: Single run or multi‑seed runs for a given task/engine using layered configs; ideal for validating a resolved YAML and optionally running XAI on completion (`--run-xai`). Multi‑seed: add `seeds: [41, 42, ...]` in YAML.
 - `scripts/optuna_search.py`: Unified Optuna driver for Step 1/2/3 sweeps (`--stage step1|step2|step3`) over a search space YAML; prunes per‑epoch on inner macro‑F1 and seeds the TPE sampler from config.
-- `scripts/run_xai_analysis.py`: Post‑hoc per‑fold attributions and consolidated XAI HTML/PDF for a completed run directory.
+- `scripts/run_xai_analysis.py`: Post‑hoc per‑fold attributions and consolidated XAI HTML for a completed run directory.
 - `scripts/prepare_from_happe.py`: One‑time materialization of per‑subject `.fif` epochs with aligned behavior and montage from HAPPE/EEGLAB `.set`.
 
 ## Repository layout
@@ -260,6 +260,51 @@ Tip: To force LOSO in any run that has a resolved config with `n_folds`, either 
  - Run XAI on a completed run directory:
 ```powershell
 python -X utf8 -u scripts/run_xai_analysis.py --run-dir "results\runs\<run_dir_name>"
+```
+
+### XAI (IG, Grad‑CAM heatmaps, Grad‑TopoCAM)
+- Outputs are written under `run_dir/xai_analysis/`:
+  - `integrated_gradients/`: per‑fold IG arrays (`fold_XX_xai_attributions.npy`), heatmaps (`.png`), and summaries (`.json`).
+  - `gradcam_heatmaps/`: per‑fold Grad‑CAM heatmaps aligned as `[channels × time]` when the target conv preserves channels.
+  - `gradcam_topomaps/`: per‑fold Grad‑TopoCAM vectors (`fold_XX_gradcam_topomap.npy`) and three topomap variants:
+    - default smooth: `fold_XX_gradcam_topomap.png`
+    - contours (paper‑friendly): `fold_XX_gradcam_topomap_contours.png`
+    - sensors/nearest (sanity‑check): `fold_XX_gradcam_topomap_sensors.png`
+  - Grand averages:
+    - IG: `grand_average_xai_attributions.npy`, `grand_average_xai_heatmap.png`, `grand_average_xai_topoplot.png`
+    - Grad‑TopoCAM: `grand_average_gradcam_topomap.npy` + three PNGs
+  - `consolidated_xai_report.html`: a light HTML gallery focusing on IG grand average and per‑fold heatmaps.
+
+- Choosing the conv layer for Grad‑CAM/TopoCAM:
+  - If heatmaps show vertical stripes only (vary by time, not by channel), choose an earlier conv that still preserves `[channels × time]`.
+  - You can pass `--target-layer` (e.g., `features.3`) or set a default in `configs/xai_defaults.yaml`.
+
+- Time window for Grad‑TopoCAM:
+  - Pass `--gradtopo-window start_ms,end_ms` (e.g., `150,250`) to integrate over a latency window before projecting to the scalp; omit for full window.
+  - Defaults can be placed in `configs/xai_defaults.yaml`.
+
+#### XAI defaults YAML
+Create `configs/xai_defaults.yaml` to document team defaults (used when the corresponding CLI flags are omitted):
+```yaml
+xai:
+  gradtopo_window_ms: [150, 250]
+  gradcam_target_layer: features.3
+  xai_top_k_channels: 10
+```
+
+`xai_top_k_channels` can also be set in your training config; the training config takes precedence over the YAML defaults.
+
+#### Example commands
+```powershell
+# Use defaults from configs/xai_defaults.yaml
+python -X utf8 -u scripts/run_xai_analysis.py `
+  --run-dir "D:\eeg_nn\results\runs\20250927_1122_cardinality_1_3_eeg_hpf_1.5_lpf_35_baseline-off_seed_42_crop_ms_0_496"
+
+# Override the layer and window on CLI
+python -X utf8 -u scripts/run_xai_analysis.py `
+  --run-dir "D:\eeg_nn\results\runs\20250927_1122_cardinality_1_3_eeg_hpf_1.5_lpf_35_baseline-off_seed_42_crop_ms_0_496" `
+  --target-layer "features.3" `
+  --gradtopo-window 150,250
 ```
 
 ### Post‑hoc statistics (group efficacy and subject reliability)

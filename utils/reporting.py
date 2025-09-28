@@ -2,6 +2,7 @@ import base64
 import re
 from pathlib import Path
 from typing import Dict, List
+import json
 
 def generate_html_report(
     run_dir: Path,
@@ -10,6 +11,7 @@ def generate_html_report(
     fold_plot_paths: List[Path],
     overall_plot_path: Path,
     banner_html: str = "",
+    stats_html: str = "",
 ) -> str:
     """Generates a self-contained HTML report from run artifacts.
 
@@ -46,6 +48,7 @@ def generate_html_report(
             .overall-plot img {{ max-width: 700px; border: 1px solid #ccc; }}
             .report-text {{ white-space: pre-wrap; font-family: monospace; background-color: #f4f4f4;
                            padding: 1em; border: 1px solid #ddd; margin-bottom: 40px; }}
+            .stats {{ background-color: #f9fbff; border: 1px solid #dfe7ff; padding: 1em; margin: 1em 0; }}
         </style>
     </head>
     <body>
@@ -53,6 +56,7 @@ def generate_html_report(
             <h1>{report_title}</h1>
             
             {banner_html}
+            {stats_html}
             <div class="report-text">
                 <h2>Summary Report</h2>
                 <pre>{txt_report_content}</pre>
@@ -103,9 +107,12 @@ def create_consolidated_reports(run_dir: Path, summary: Dict, task: str, engine:
     except Exception:
         pass
     
-    plots_dir = run_dir / "plots"
-    fold_plots = sorted(plots_dir.glob("fold*_*.png")) if plots_dir.exists() else sorted(run_dir.glob("fold*_*.png"))
-    overall_plot = (plots_dir / "overall_confusion.png") if (plots_dir / "overall_confusion.png").exists() else (run_dir / "overall_confusion.png")
+    # Prefer new outer-fold plots directory, fall back to legacy name
+    plots_outer = run_dir / "plots_outer"
+    plots_legacy = run_dir / "plots"
+    src_dir = plots_outer if plots_outer.exists() else plots_legacy
+    fold_plots = sorted(src_dir.glob("fold*_*.png")) if src_dir.exists() else sorted(run_dir.glob("fold*_*.png"))
+    overall_plot = (src_dir / "overall_confusion.png") if (src_dir / "overall_confusion.png").exists() else (run_dir / "overall_confusion.png")
 
     txt_report_path = run_dir / f"report_{task}_{engine}.txt"
     try:
@@ -149,8 +156,53 @@ def create_consolidated_reports(run_dir: Path, summary: Dict, task: str, engine:
         eval_line = f"<div class=\"eval-banner\"><pre><strong>Eval Mode: {outer_mode} | Outer folds: {n_folds if n_folds is not None else 'LOSO'} | Inner K: {inner_k}</strong></pre></div>"
     except Exception:
         eval_line = ""
+
+    # Statistics section (if post-hoc outputs exist)
+    stats_html = ""
+    try:
+        group_stats_fp = run_dir / "group_stats.json"
+        per_subj_summary_fp = run_dir / "per_subject_summary.json"
+        stats_dir = run_dir / "stats"
+        forest_png = stats_dir / "per_subject_forest.png"
+        perm_hist_acc = stats_dir / "perm_hist_acc.png"
+        perm_hist_f1 = stats_dir / "perm_hist_macro_f1.png"
+        if group_stats_fp.exists():
+            gs = json.loads(group_stats_fp.read_text())
+            mean_acc = gs.get("mean_acc")
+            ci_acc = gs.get("ci95_acc") or [None, None]
+            mean_f1 = gs.get("mean_macro_f1")
+            ci_f1 = gs.get("ci95_macro_f1") or [None, None]
+            p_acc = gs.get("perm_p_acc")
+            p_f1 = gs.get("perm_p_macro_f1")
+            subj_line = ""
+            if per_subj_summary_fp.exists():
+                ps = json.loads(per_subj_summary_fp.read_text())
+                subj_line = f"<div class=\"stats\"><pre><strong>Subject-level:</strong> {ps.get('num_above', 0)}/{ps.get('num_subjects', 0)} above chance ({(ps.get('proportion_above', 0.0)*100):.1f}%).</pre></div>"
+            stat_line = f"<div class=\"stats\"><pre><strong>Group-level:</strong> acc={mean_acc:.2f}% 95% CI [{ci_acc[0]:.2f}, {ci_acc[1]:.2f}]{(' p_perm='+str(p_acc)) if p_acc is not None else ''}\nmacro-F1={mean_f1:.2f} 95% CI [{ci_f1[0]:.2f}, {ci_f1[1]:.2f}]" + (f" p_perm={p_f1}" if p_f1 is not None else "") + "</pre></div>"
+            forest_img_html = ""
+            if forest_png.exists():
+                with open(forest_png, "rb") as f:
+                    encoded = base64.b64encode(f.read()).decode("utf-8")
+                forest_img_html = f"<div class=\"stats\"><h2>Per-Subject Accuracies</h2><img src=\"data:image/png;base64,{encoded}\" alt=\"Per-subject forest\"></div>"
+            perm_imgs_html = ""
+            try:
+                blocks = []
+                if perm_hist_acc.exists():
+                    with open(perm_hist_acc, "rb") as f:
+                        blocks.append(f"<img src=\"data:image/png;base64,{base64.b64encode(f.read()).decode('utf-8')}\" alt=\"Permutation acc\">")
+                if perm_hist_f1.exists():
+                    with open(perm_hist_f1, "rb") as f:
+                        blocks.append(f"<img src=\"data:image/png;base64,{base64.b64encode(f.read()).decode('utf-8')}\" alt=\"Permutation macro-F1\">")
+                if blocks:
+                    perm_imgs_html = "<div class=\"stats\"><h2>Permutation Null Distributions</h2>" + " ".join(blocks) + "</div>"
+            except Exception:
+                perm_imgs_html = ""
+            stats_html = "\n".join([stat_line, subj_line, forest_img_html, perm_imgs_html])
+    except Exception:
+        stats_html = ""
+
     banner_with_subtitle = "\n".join([s for s in [subtitle_html, banner_html, eval_line] if s])
-    html_content = generate_html_report(run_dir, report_title, txt_content, fold_plots, overall_plot, banner_html=banner_with_subtitle)
+    html_content = generate_html_report(run_dir, report_title, txt_content, fold_plots, overall_plot, banner_html=banner_with_subtitle, stats_html=stats_html)
     html_output_path = run_dir / "consolidated_report.html"
     html_output_path.write_text(html_content, encoding='utf-8')
     print(f" -> Consolidated HTML report saved to {html_output_path}")

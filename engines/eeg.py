@@ -69,6 +69,12 @@ def run(cfg: Dict, label_fn: Callable):
     try:
         summary["model_class"] = model_class_path
         summary["model_input_signature"] = model_input_sig
+        # Persist class names/count for downstream stats (chance rate, labels)
+        try:
+            summary["class_names"] = list(getattr(dataset, "class_names", []))
+            summary["num_classes"] = int(len(summary["class_names"])) if summary["class_names"] else int(getattr(dataset, "num_classes", 0))
+        except Exception:
+            pass
     except Exception:
         pass
     return summary

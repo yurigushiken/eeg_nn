@@ -138,6 +138,24 @@ def main():
             "hyper": safe_hyper,
         }
         write_summary(run_dir, summary, task, "eeg")
+        # Optionally run post-hoc statistics per trial if enabled in common.yaml
+        try:
+            stats_cfg = common.get("stats", {}) if isinstance(common, dict) else {}
+            if bool(stats_cfg.get("run_posthoc_after_train", False)):
+                import subprocess
+                cmd = [
+                    sys.executable, "-X", "utf8", "-u", str(proj_root / "scripts" / "run_posthoc_stats.py"),
+                    "--run-dir", str(run_dir),
+                    "--alpha", str(stats_cfg.get("alpha", 0.05)),
+                    "--multitest", str(stats_cfg.get("multitest", "fdr")),
+                ]
+                if bool(stats_cfg.get("glmm", False)):
+                    cmd.append("--glmm")
+                if bool(stats_cfg.get("forest", True)):
+                    cmd.append("--forest")
+                subprocess.run(cmd, check=True)
+        except Exception:
+            pass
         # Optimize nested-CV inner mean macro-F1
         obj = summary.get("inner_mean_macro_f1") or summary.get("inner_mean_acc") or 0.0
         return float(obj)

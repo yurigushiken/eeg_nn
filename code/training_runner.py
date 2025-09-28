@@ -300,7 +300,9 @@ class TrainingRunner:
                 # Save class weights once per inner fold
                 try:
                     if self.run_dir:
-                        cw_path = self.run_dir / f"fold_{fold+1:02d}_inner_{inner_fold+1:02d}_class_weights.json"
+                        cw_dir = self.run_dir / "class_weights"
+                        cw_dir.mkdir(parents=True, exist_ok=True)
+                        cw_path = cw_dir / f"fold_{fold+1:02d}_inner_{inner_fold+1:02d}_class_weights.json"
                         cw_payload = {str(i): float(w) for i, w in enumerate(cls_w)}
                         cw_path.write_text(json.dumps(cw_payload, indent=2))
                 except Exception:
@@ -444,6 +446,49 @@ class TrainingRunner:
                     }
                 )
 
+                # Save inner-fold plots (curves always; confusion if best_state available)
+                try:
+                    if self.run_dir:
+                        inner_plots = self.run_dir / "plots_inner"
+                        inner_plots.mkdir(parents=True, exist_ok=True)
+                        title_inner = f"Outer {fold+1} · Inner {inner_fold+1}"
+                        # Curves
+                        plot_curves(
+                            tr_hist,
+                            va_hist,
+                            va_acc_hist,
+                            inner_plots / f"outer{fold+1}_inner{inner_fold+1}_curves.png",
+                            title=title_inner,
+                        )
+                        # Confusion on inner validation set using best state
+                        if best_state is not None:
+                            model.load_state_dict(best_state)
+                            model.eval()
+                            y_true_i: List[int] = []
+                            y_pred_i: List[int] = []
+                            with torch.no_grad():
+                                for xb, yb in va_ld:
+                                    yb_gpu = yb.to(DEVICE)
+                                    xb_gpu = (
+                                        xb.to(DEVICE)
+                                        if not isinstance(xb, (list, tuple))
+                                        else [t.to(DEVICE) for t in xb]
+                                    )
+                                    xb_gpu = input_adapter(xb_gpu) if input_adapter else xb_gpu
+                                    out = model(xb_gpu) if not isinstance(xb_gpu, (list, tuple)) else model(*xb_gpu)
+                                    preds = out.argmax(1).cpu()
+                                    y_true_i.extend(yb.tolist())
+                                    y_pred_i.extend(preds.tolist())
+                            plot_confusion(
+                                y_true_i,
+                                y_pred_i,
+                                class_names,
+                                inner_plots / f"outer{fold+1}_inner{inner_fold+1}_confusion.png",
+                                title=title_inner,
+                            )
+                except Exception:
+                    pass
+
             # Aggregate inner metrics for this outer fold
             inner_mean_acc_this_outer = (
                 float(np.mean([r["best_inner_acc"] for r in inner_results_this_outer]))
@@ -571,7 +616,9 @@ class TrainingRunner:
                 # Save class weights for refit
                 try:
                     if self.run_dir:
-                        cw_path = self.run_dir / f"fold_{fold+1:02d}_refit_class_weights.json"
+                        cw_dir = self.run_dir / "class_weights"
+                        cw_dir.mkdir(parents=True, exist_ok=True)
+                        cw_path = cw_dir / f"fold_{fold+1:02d}_refit_class_weights.json"
                         cw_payload = {str(i): float(w) for i, w in enumerate(cls_w)}
                         cw_path.write_text(json.dumps(cw_payload, indent=2))
                 except Exception:
@@ -714,9 +761,9 @@ class TrainingRunner:
                 flush=True,
             )
 
-            # Plots per fold (use best inner fold histories for curves; ensemble/refit guides predictions)
+            # Plots per outer fold
             if self.run_dir and best_inner_result:
-                plots_dir = self.run_dir / "plots"
+                plots_dir = self.run_dir / "plots_outer"
                 plots_dir.mkdir(parents=True, exist_ok=True)
                 fold_title = (
                     f"Fold {fold+1} (Subjects: {test_subjects}) · "
@@ -761,7 +808,7 @@ class TrainingRunner:
 
         # Overall plot (confusion across all outer test predictions)
         if self.run_dir and overall_y_true:
-            plots_dir = self.run_dir / "plots"
+            plots_dir = self.run_dir / "plots_outer"
             plots_dir.mkdir(parents=True, exist_ok=True)
             overall_title = (
                 f"Overall · inner_mean_macro_f1={float(np.mean(inner_macro_f1s)) if inner_macro_f1s else 0.0:.2f} "
@@ -810,85 +857,111 @@ class TrainingRunner:
 
             # Write learning curves CSV once per run
             try:
+                outputs_cfg = self.cfg.get("outputs", {}) if isinstance(self.cfg, dict) else {}
+                write_curves = bool(outputs_cfg.get("write_learning_curves_csv", True))
+                write_outer = bool(outputs_cfg.get("write_outer_eval_csv", True))
+                write_preds = bool(outputs_cfg.get("write_test_predictions_csv", True))
+                write_splits = bool(outputs_cfg.get("write_splits_indices_json", True))
+            except Exception:
+                write_curves = write_outer = write_preds = write_splits = True
+
+            # If toggled off, remove splits payload write above
+            if not write_splits:
+                try:
+                    (self.run_dir / "splits_indices.json").unlink(missing_ok=True)  # type: ignore
+                except Exception:
+                    pass
+
+            try:
                 csv_fp = self.run_dir / "learning_curves_inner.csv"
-                fieldnames = [
-                    "outer_fold",
-                    "inner_fold",
-                    "epoch",
-                    "train_loss",
-                    "val_loss",
-                    "val_acc",
-                    "val_macro_f1",
-                    "n_train",
-                    "n_val",
-                    "optuna_trial_id",
-                    "param_hash",
-                ]
-                with csv_fp.open("w", newline="") as f:
-                    writer = csv.DictWriter(f, fieldnames=fieldnames)
-                    writer.writeheader()
-                    for row in learning_curve_rows:
-                        writer.writerow(row)
+                if write_curves and learning_curve_rows:
+                    fieldnames = [
+                        "outer_fold",
+                        "inner_fold",
+                        "epoch",
+                        "train_loss",
+                        "val_loss",
+                        "val_acc",
+                        "val_macro_f1",
+                        "n_train",
+                        "n_val",
+                        "optuna_trial_id",
+                        "param_hash",
+                    ]
+                    with csv_fp.open("w", newline="") as f:
+                        writer = csv.DictWriter(f, fieldnames=fieldnames)
+                        writer.writeheader()
+                        for row in learning_curve_rows:
+                            writer.writerow(row)
+                else:
+                    # Avoid creating an empty CSV with only header
+                    if csv_fp.exists() and not learning_curve_rows:
+                        try:
+                            csv_fp.unlink()
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
             # Write per-outer-fold evaluation metrics once per run
             try:
-                csv_fp2 = self.run_dir / "outer_eval_metrics.csv"
-                fieldnames2 = [
-                    "outer_fold",
-                    "test_subjects",
-                    "n_test_trials",
-                    "acc",
-                    "acc_std",
-                    "macro_f1",
-                    "macro_f1_std",
-                    "per_class_f1",
-                ]
-                with csv_fp2.open("w", newline="") as f:
-                    writer2 = csv.DictWriter(f, fieldnames=fieldnames2)
-                    writer2.writeheader()
-                    for row in outer_metrics_rows:
-                        writer2.writerow(row)
-                    # Final aggregate row
-                    try:
-                        agg_row = {
-                            "outer_fold": "OVERALL",
-                            "test_subjects": "-",
-                            "n_test_trials": sum(int(r["n_test_trials"]) for r in outer_metrics_rows),
-                            "acc": float(mean_acc),
-                            "acc_std": float(std_acc),
-                            "macro_f1": float(np.mean(fold_macro_f1s)) if fold_macro_f1s else 0.0,
-                            "macro_f1_std": float(np.std(fold_macro_f1s)) if fold_macro_f1s else 0.0,
-                            "per_class_f1": "",
-                        }
-                        writer2.writerow(agg_row)
-                    except Exception:
-                        pass
+                if write_outer:
+                    csv_fp2 = self.run_dir / "outer_eval_metrics.csv"
+                    fieldnames2 = [
+                        "outer_fold",
+                        "test_subjects",
+                        "n_test_trials",
+                        "acc",
+                        "acc_std",
+                        "macro_f1",
+                        "macro_f1_std",
+                        "per_class_f1",
+                    ]
+                    with csv_fp2.open("w", newline="") as f:
+                        writer2 = csv.DictWriter(f, fieldnames=fieldnames2)
+                        writer2.writeheader()
+                        for row in outer_metrics_rows:
+                            writer2.writerow(row)
+                        # Final aggregate row
+                        try:
+                            agg_row = {
+                                "outer_fold": "OVERALL",
+                                "test_subjects": "-",
+                                "n_test_trials": sum(int(r["n_test_trials"]) for r in outer_metrics_rows),
+                                "acc": float(mean_acc),
+                                "acc_std": float(std_acc),
+                                "macro_f1": float(np.mean(fold_macro_f1s)) if fold_macro_f1s else 0.0,
+                                "macro_f1_std": float(np.std(fold_macro_f1s)) if fold_macro_f1s else 0.0,
+                                "per_class_f1": "",
+                            }
+                            writer2.writerow(agg_row)
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
             # Write per-trial out-of-fold test predictions once per run
             try:
-                csv_fp3 = self.run_dir / "test_predictions.csv"
-                fieldnames3 = [
-                    "outer_fold",
-                    "trial_index",
-                    "subject_id",
-                    "true_label_idx",
-                    "true_label_name",
-                    "pred_label_idx",
-                    "pred_label_name",
-                    "correct",
-                    "p_trueclass",
-                    "logp_trueclass",
-                    "probs",
-                ]
-                with csv_fp3.open("w", newline="") as f:
-                    writer3 = csv.DictWriter(f, fieldnames=fieldnames3)
-                    writer3.writeheader()
-                    for row in test_pred_rows:
-                        writer3.writerow(row)
+                if write_preds and test_pred_rows:
+                    csv_fp3 = self.run_dir / "test_predictions.csv"
+                    fieldnames3 = [
+                        "outer_fold",
+                        "trial_index",
+                        "subject_id",
+                        "true_label_idx",
+                        "true_label_name",
+                        "pred_label_idx",
+                        "pred_label_name",
+                        "correct",
+                        "p_trueclass",
+                        "logp_trueclass",
+                        "probs",
+                    ]
+                    with csv_fp3.open("w", newline="") as f:
+                        writer3 = csv.DictWriter(f, fieldnames=fieldnames3)
+                        writer3.writeheader()
+                        for row in test_pred_rows:
+                            writer3.writerow(row)
             except Exception:
                 pass
 

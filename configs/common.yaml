@@ -25,7 +25,7 @@ stats:
   bootstrap_iters: 2000    # used if ci_method=bootstrap
   glmm: false              # attempt GLMM (or robust logit fallback) in post-hoc
   glmm_random_effects: [subject]  # random intercepts by subject
-  run_posthoc_after_train: false  # auto-run posthoc after train.py
+  run_posthoc_after_train: true  # auto-run posthoc after train.py
 
 # Permutation testing defaults
 permutation:
