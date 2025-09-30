@@ -126,6 +126,7 @@ def compute_and_plot_attributions(
     times_ms: np.ndarray,
     info_for_plot: Optional[mne.Info] = None,
     plot_ig_topomaps: bool = True,
+    class_names: Optional[Sequence[str]] = None,
 ) -> None:
     """
     IG on correctly predicted test trials; save npy/png/json under integrated_gradients/.
@@ -141,6 +142,9 @@ def compute_and_plot_attributions(
     test_loader = DataLoader(Subset(dataset, test_indices), batch_size=16, shuffle=False)
 
     all_attr = []
+    # accumulate per-class sums for correct predictions
+    sum_by_class: dict[int, np.ndarray] = {}
+    count_by_class: dict[int, int] = {}
     total_correct = 0
 
     for inputs, labels in test_loader:
@@ -161,7 +165,21 @@ def compute_and_plot_attributions(
 
         x.requires_grad_()
         attr = ig.attribute(x, target=y, internal_batch_size=x.size(0))
-        all_attr.append(attr.detach().cpu().numpy())
+        attr_np = attr.detach().cpu().numpy()  # (B,1,C,T) or (B,C,T)
+        all_attr.append(attr_np)
+
+        # per-class accumulation (on CPU numpy)
+        if attr_np.ndim == 4 and attr_np.shape[1] == 1:
+            attr_np = np.squeeze(attr_np, axis=1)  # (B,C,T)
+        if attr_np.ndim == 3:
+            y_np = y.detach().cpu().numpy().astype(int)
+            for i in range(attr_np.shape[0]):
+                cls = int(y_np[i])
+                if cls not in sum_by_class:
+                    sum_by_class[cls] = np.zeros_like(attr_np[i], dtype=np.float64)
+                    count_by_class[cls] = 0
+                sum_by_class[cls] += attr_np[i]
+                count_by_class[cls] += 1
 
     if not all_attr:
         print(f" -> no correct predictions for IG on fold {fold_num}. skipping.")
@@ -223,6 +241,59 @@ def compute_and_plot_attributions(
             f"(IG, fold {fold_num:02d}, abs-mean)"
         )
         print(f" -> IG topomap outputs for fold {fold_num:02d} saved to {ig_topo_dir}")
+
+    # -------------------------------
+    # Per-class outputs (per-fold)
+    # -------------------------------
+    if sum_by_class:
+        ig_cls_dir = output_dir / "integrated_gradients_per_class"
+        _ensure_dir(ig_cls_dir)
+
+        for cls_idx, cls_sum in sorted(sum_by_class.items()):
+            cls_count = max(1, int(count_by_class.get(cls_idx, 0)))
+            cls_avg = cls_sum / float(cls_count)
+
+            cls_tag = f"{cls_idx:02d}"
+            cls_name = None
+            if class_names is not None and 0 <= cls_idx < len(class_names):
+                cls_name = str(class_names[cls_idx])
+            safe_name = (cls_name or f"class{cls_idx}").replace(" ", "_")
+
+            # save array
+            cls_npy = ig_cls_dir / f"fold_{fold_num:02d}_class_{cls_tag}_xai_attributions.npy"
+            np.save(cls_npy, cls_avg)
+
+            # heatmap plot
+            cls_png = ig_cls_dir / f"fold_{fold_num:02d}_class_{cls_tag}_{safe_name}_xai_heatmap.png"
+            fig, ax = plt.subplots(figsize=(12, 8))
+            im = ax.imshow(cls_avg, cmap='inferno', aspect='auto', interpolation='nearest')
+            title_name = cls_name if cls_name is not None else f"class {cls_idx}"
+            ax.set_title(f'mean feature attributions (IG, fold {fold_num:02d}, {title_name})')
+            ax.set_xlabel('time (ms)')
+            ax.set_ylabel('eeg channels')
+            ax.set_yticks(np.arange(len(ch_names)))
+            ax.set_yticklabels(ch_names, fontsize=6)
+            xt = np.linspace(0, len(times_ms) - 1, num=10, dtype=int)
+            ax.set_xticks(xt)
+            ax.set_xticklabels([f"{times_ms[i]:.0f}" for i in xt])
+            plt.colorbar(im, ax=ax, label='IG attribution')
+            plt.tight_layout()
+            plt.savefig(cls_png)
+            plt.close(fig)
+
+            # summary json
+            with open(ig_cls_dir / f"fold_{fold_num:02d}_class_{cls_tag}_xai_summary.json", "w", encoding="utf-8") as f:
+                json.dump({
+                    "run_dir": run_dir_name,
+                    "fold": fold_num,
+                    "class_index": int(cls_idx),
+                    "class_name": (cls_name or None),
+                    "xai_method": "Integrated Gradients",
+                    "num_correct_trials_explained": int(cls_count),
+                    "attribution_map_shape": list(cls_avg.shape),
+                    "attribution_data_file": cls_npy.name,
+                    "heatmap_image_file": cls_png.name
+                }, f, indent=2)
 
 
 # -------------------------------

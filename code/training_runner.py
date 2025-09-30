@@ -194,8 +194,10 @@ class TrainingRunner:
         learning_curve_rows: List[dict] = []
         # Accumulate per-outer-fold evaluation rows
         outer_metrics_rows: List[dict] = []
-        # Accumulate per-trial out-of-fold test predictions
-        test_pred_rows: List[dict] = []
+        # Accumulate per-trial out-of-fold test predictions (outer)
+        test_pred_rows_outer: List[dict] = []
+        # Accumulate per-trial inner validation predictions
+        test_pred_rows_inner: List[dict] = []
 
         for fold, (tr_idx, va_idx) in enumerate(outer_pairs):
             if self.cfg.get("max_folds") is not None and fold >= int(self.cfg["max_folds"]):
@@ -317,7 +319,61 @@ class TrainingRunner:
                 va_hist: List[float] = []
                 va_acc_hist: List[float] = []
 
-                for epoch in range(1, int(self.cfg.get("epochs", 60)) + 1):
+                total_epochs = int(self.cfg.get("epochs", 60))
+                base_lr = float(self.cfg.get("lr", 7e-4))
+                # Linear LR warmup over initial fraction of epochs
+                lr_warmup_frac = float(self.cfg.get("lr_warmup_frac", 0.0) or 0.0)
+                lr_warmup_init = float(self.cfg.get("lr_warmup_init", 0.0) or 0.0)
+                lr_warmup_epochs = int(np.ceil(lr_warmup_frac * total_epochs)) if lr_warmup_frac > 0 else 0
+
+                # Augmentation ramp-up over initial fraction of epochs
+                aug_warmup_frac = float(self.cfg.get("aug_warmup_frac", 0.0) or 0.0)
+                aug_warmup_epochs = int(np.ceil(aug_warmup_frac * total_epochs)) if aug_warmup_frac > 0 else 0
+
+                def _set_lr(optimizer, lr_value: float):
+                    for pg in optimizer.param_groups:
+                        pg["lr"] = lr_value
+
+                def _scaled_aug_cfg(r: float):
+                    if r >= 1.0:
+                        return self.cfg
+                    cfg2 = dict(self.cfg)
+                    # probabilities
+                    for k in ("shift_p","scale_p","noise_p","time_mask_p","chan_mask_p"):
+                        if k in cfg2 and cfg2[k] is not None:
+                            cfg2[k] = float(cfg2[k]) * r
+                    # strengths / magnitudes
+                    for k in ("shift_max_frac","noise_std","time_mask_frac","chan_mask_ratio"):
+                        if k in cfg2 and cfg2[k] is not None:
+                            cfg2[k] = float(cfg2[k]) * r
+                    # scale range approaches 1.0
+                    if "scale_min" in cfg2 and cfg2["scale_min"] is not None:
+                        smin = float(cfg2["scale_min"])
+                        cfg2["scale_min"] = 1.0 + r * (smin - 1.0)
+                    if "scale_max" in cfg2 and cfg2["scale_max"] is not None:
+                        smax = float(cfg2["scale_max"])
+                        cfg2["scale_max"] = 1.0 + r * (smax - 1.0)
+                    return cfg2
+
+                for epoch in range(1, total_epochs + 1):
+                    # LR warmup schedule (linear)
+                    if lr_warmup_epochs > 0 and epoch <= lr_warmup_epochs:
+                        t = epoch / max(1, lr_warmup_epochs)
+                        factor = lr_warmup_init + (1.0 - lr_warmup_init) * t
+                        _set_lr(opt, base_lr * factor)
+                    # Augmentation ramp-up: rebuild transform each epoch with scaled cfg
+                    if aug_warmup_epochs > 0 and epoch <= aug_warmup_epochs:
+                        r = epoch / max(1, aug_warmup_epochs)
+                    else:
+                        r = 1.0
+                    try:
+                        # Access underlying training dataset of the DataLoader's Subset
+                        ds_train = getattr(tr_ld.dataset, "dataset", None)
+                        if ds_train is not None:
+                            aug_transform_epoch = aug_builder(_scaled_aug_cfg(r), dataset)
+                            ds_train.set_transform(aug_transform_epoch)
+                    except Exception:
+                        pass
                     # Train
                     model.train()
                     train_loss = 0.0
@@ -402,7 +458,12 @@ class TrainingRunner:
                             pass
                     va_hist.append(val_loss)
                     va_acc_hist.append(val_acc)
-                    sched.step(val_loss)
+                    # Defer scheduler stepping until after LR warm-up
+                    if not (lr_warmup_epochs > 0 and epoch <= lr_warmup_epochs):
+                        sched.step(val_loss)
+
+                    # Collect inner validation predictions at best checkpoint epoch for CSV output
+                    # We'll store these after training completes using best_state
 
                     # Early stopping remains on val_loss
                     if val_loss < best_val:
@@ -434,6 +495,46 @@ class TrainingRunner:
                             f"  [epoch {epoch}] (outer {fold+1} inner {inner_fold+1}) tr_loss={train_loss:.4f} va_loss={val_loss:.4f} va_acc={val_acc:.2f} best_val={best_val:.4f}",
                             flush=True,
                         )
+
+                # Collect inner validation predictions using best state for CSV output
+                if best_state is not None:
+                    model.load_state_dict(best_state)
+                    model.eval()
+                    with torch.no_grad():
+                        for xb, yb in va_ld:
+                            yb_gpu = yb.to(DEVICE)
+                            xb_gpu = (
+                                xb.to(DEVICE)
+                                if not isinstance(xb, (list, tuple))
+                                else [t.to(DEVICE) for t in xb]
+                            )
+                            xb_gpu = input_adapter(xb_gpu) if input_adapter else xb_gpu
+                            out = model(xb_gpu) if not isinstance(xb_gpu, (list, tuple)) else model(*xb_gpu)
+                            probs = F.softmax(out.float(), dim=1).cpu()
+                            preds = probs.argmax(1)
+                            bsz = yb.size(0)
+                            for j in range(bsz):
+                                abs_idx = int(inner_va_abs[j]) if j < len(inner_va_abs) else -1
+                                subj_id = int(groups[abs_idx]) if abs_idx >= 0 else -1
+                                true_lbl = int(yb[j].item())
+                                pred_lbl = int(preds[j].item())
+                                probs_vec = probs[j].tolist()
+                                p_true = float(probs_vec[true_lbl]) if 0 <= true_lbl < len(probs_vec) else 0.0
+                                logp_true = float(np.log(max(p_true, 1e-12)))
+                                test_pred_rows_inner.append({
+                                    "outer_fold": int(fold + 1),
+                                    "inner_fold": int(inner_fold + 1),
+                                    "trial_index": abs_idx,
+                                    "subject_id": subj_id,
+                                    "true_label_idx": true_lbl,
+                                    "true_label_name": str(class_names[true_lbl]) if 0 <= true_lbl < len(class_names) else "",
+                                    "pred_label_idx": pred_lbl,
+                                    "pred_label_name": str(class_names[pred_lbl]) if 0 <= pred_lbl < len(class_names) else "",
+                                    "correct": int(1 if pred_lbl == true_lbl else 0),
+                                    "p_trueclass": p_true,
+                                    "logp_trueclass": logp_true,
+                                    "probs": json.dumps(probs_vec),
+                                })
 
                 inner_results_this_outer.append(
                     {
@@ -559,7 +660,7 @@ class TrainingRunner:
                             probs_vec = probs_norm[j].tolist()
                             p_true = float(probs_vec[true_lbl]) if 0 <= true_lbl < len(probs_vec) else 0.0
                             logp_true = float(np.log(max(p_true, 1e-12)))
-                            test_pred_rows.append({
+                            test_pred_rows_outer.append({
                                 "outer_fold": int(fold + 1),
                                 "trial_index": abs_idx,
                                 "subject_id": subj_id,
@@ -713,7 +814,7 @@ class TrainingRunner:
                             probs_vec = probs[j].tolist()
                             p_true = float(probs_vec[true_lbl]) if 0 <= true_lbl < len(probs_vec) else 0.0
                             logp_true = float(np.log(max(p_true, 1e-12)))
-                            test_pred_rows.append({
+                            test_pred_rows_outer.append({
                                 "outer_fold": int(fold + 1),
                                 "trial_index": abs_idx,
                                 "subject_id": subj_id,
@@ -940,10 +1041,10 @@ class TrainingRunner:
             except Exception:
                 pass
 
-            # Write per-trial out-of-fold test predictions once per run
+            # Write per-trial out-of-fold test predictions (outer) once per run
             try:
-                if write_preds and test_pred_rows:
-                    csv_fp3 = self.run_dir / "test_predictions.csv"
+                if write_preds and test_pred_rows_outer:
+                    csv_fp3 = self.run_dir / "test_predictions_outer.csv"
                     fieldnames3 = [
                         "outer_fold",
                         "trial_index",
@@ -960,8 +1061,34 @@ class TrainingRunner:
                     with csv_fp3.open("w", newline="") as f:
                         writer3 = csv.DictWriter(f, fieldnames=fieldnames3)
                         writer3.writeheader()
-                        for row in test_pred_rows:
+                        for row in test_pred_rows_outer:
                             writer3.writerow(row)
+            except Exception:
+                pass
+
+            # Write per-trial inner validation predictions once per run
+            try:
+                if write_preds and test_pred_rows_inner:
+                    csv_fp4 = self.run_dir / "test_predictions_inner.csv"
+                    fieldnames4 = [
+                        "outer_fold",
+                        "inner_fold",
+                        "trial_index",
+                        "subject_id",
+                        "true_label_idx",
+                        "true_label_name",
+                        "pred_label_idx",
+                        "pred_label_name",
+                        "correct",
+                        "p_trueclass",
+                        "logp_trueclass",
+                        "probs",
+                    ]
+                    with csv_fp4.open("w", newline="") as f:
+                        writer4 = csv.DictWriter(f, fieldnames=fieldnames4)
+                        writer4.writeheader()
+                        for row in test_pred_rows_inner:
+                            writer4.writerow(row)
             except Exception:
                 pass
 

@@ -286,6 +286,7 @@ def main() -> None:
     ch_names = full_dataset.channel_names
     sfreq = full_dataset.sfreq
     times_ms = full_dataset.times_ms
+    class_names = getattr(full_dataset, "class_names", None)
 
     # montage: custom .sfp -> HydroCel-129 -> align
     montage = None
@@ -368,6 +369,7 @@ def main() -> None:
             model, full_dataset, test_idx, DEVICE, xai_root, fold, args.run_dir.name,
             test_subjects, ch_names, times_ms,
             info_for_plot=info_for_plot, plot_ig_topomaps=bool(info_for_plot is not None),
+            class_names=getattr(full_dataset, "class_names", None),
         )
 
         # Grad-CAM heatmaps
@@ -503,6 +505,61 @@ def main() -> None:
     else:
         print(" -> no IG attribution .npy files found to summarize (grand average).")
         ga_png_path = xai_root / "grand_average_xai_heatmap.png"  # placeholder path var for report call
+
+    # Per-class IG grand averages (heatmaps per class)
+    per_class_src = xai_root / "integrated_gradients_per_class"
+    if per_class_src.exists():
+        per_class_out = xai_root / "grand_average_per_class"
+        per_class_out.mkdir(parents=True, exist_ok=True)
+
+        # determine number of classes
+        if class_names is not None and len(class_names) > 0:
+            num_classes = len(class_names)
+        else:
+            # infer from existing files if class_names not provided
+            existing = list(sorted(per_class_src.glob("fold_*_class_*_xai_attributions.npy")))
+            cls_indices = set()
+            for p in existing:
+                m = re.search(r"class_(\d{2})_", p.name)
+                if m:
+                    cls_indices.add(int(m.group(1)))
+            num_classes = (max(cls_indices) + 1) if cls_indices else 0
+
+        for cls_idx in range(num_classes):
+            patt = f"fold_*_class_{cls_idx:02d}_xai_attributions.npy"
+            cls_npys = sorted(per_class_src.glob(patt))
+            if not cls_npys:
+                continue
+            cls_arrays = [np.load(p) for p in cls_npys]  # each (C,T)
+            cls_ga = np.mean(cls_arrays, axis=0)
+
+            # filenames
+            cls_name = None
+            if class_names is not None and 0 <= cls_idx < len(class_names):
+                cls_name = str(class_names[cls_idx])
+            safe = (cls_name or f"class{cls_idx}").replace(" ", "_")
+            out_npy = per_class_out / f"class_{cls_idx:02d}_{safe}_xai_attributions.npy"
+            out_png = per_class_out / f"class_{cls_idx:02d}_{safe}_xai_heatmap.png"
+            np.save(out_npy, cls_ga)
+
+            # plot
+            fig, ax = plt.subplots(figsize=(12, 8))
+            im = ax.imshow(cls_ga, cmap='inferno', aspect='auto', interpolation='nearest')
+            title = f"grand average feature attributions (IG, {cls_name if cls_name else f'class {cls_idx}'})"
+            ax.set_title(title)
+            ax.set_xlabel('time (ms)')
+            ax.set_ylabel('eeg channels')
+            ax.set_yticks(np.arange(len(ch_names)))
+            ax.set_yticklabels(ch_names, fontsize=6)
+            xt = np.linspace(0, len(times_ms) - 1, num=10, dtype=int)
+            ax.set_xticks(xt)
+            ax.set_xticklabels([f"{times_ms[i]:.0f}" for i in xt])
+            plt.colorbar(im, ax=ax, label='IG attribution')
+            plt.tight_layout()
+            fig.savefig(out_png)
+            plt.close(fig)
+    else:
+        print(" -> per-class IG directory not found; skipping per-class GA heatmaps.")
 
     # Grad-TopoCAM GA
     topo_npys = sorted((xai_root / "gradcam_topomaps").glob("fold_*_gradcam_topomap.npy"))

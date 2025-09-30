@@ -45,7 +45,7 @@ def load_yaml(p: Path) -> Dict[str, Any]:
 
 def main():
     ap = argparse.ArgumentParser(description="Generic Optuna TPE search driver")
-    ap.add_argument("--stage", required=True, choices=["step1", "step2", "step3"], help="Naming and output routing only")
+    ap.add_argument("--stage", required=True, choices=["step1", "step1_5", "step2", "step3"], help="Naming and output routing only")
     ap.add_argument("--task", required=True)
     # Support both styles: --base (preferred) and --cfg (overlay). Either/both are allowed.
     ap.add_argument("--base", required=False, help="Base YAML config (defaults to configs/tasks/<task>/base.yaml if omitted)")

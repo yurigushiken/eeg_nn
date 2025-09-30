@@ -1,0 +1,15 @@
+posthoc:
+  # Default significance level for hypothesis tests
+  alpha: 0.05
+
+  # Multiple testing correction method: "fdr" (Benjamini-Hochberg) or "none"
+  multitest: fdr
+
+  # Enable GLMM (logistic mixed-effects model via R lme4)
+  glmm: true
+
+  # Generate forest plot with Wilson CIs per subject
+  forest: true
+
+  # Chance rate (auto-detected from summary if null; override if needed)
+  chance_rate: null

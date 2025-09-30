@@ -2,8 +2,7 @@ model_name: eegnex
 seed: 44
 
 # Data sources (relative)
-# materialized_dir: "data_preprocessed/hpf_1.0_lpf_45_baseline-on-example"
-
+materialized_dir: data_preprocessed/hpf_1.5_lpf_40_baseline-off
 crop_ms: [0, 496]               # e.g., [0, 496]
 use_channel_list: non_scalp      # e.g., non_scalp
 
@@ -13,9 +12,9 @@ lr: 0.0007
 epochs: 40
 early_stop: 10
 inner_n_folds: 5
-n_folds: 6
+n_folds: null
 
-
+outer_eval_mode: ensemble
 # --- Refit Mode Controls (only used if outer_eval_mode: refit) ---
 refit_val_k: 0            # 0 → train on all outer-train (no early stop); set >=2 for deterministic GroupKFold val
 refit_early_stop: 10      # Patience for refit early stopping (if val is enabled)

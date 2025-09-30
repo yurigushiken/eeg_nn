@@ -19,6 +19,8 @@ This repository implements a streamlined EEG decoding pipeline aligned with the 
  - Alternatively, set `outer_eval_mode: refit` to refit one model on the full outer‑train (optional subject‑aware val via `refit_val_frac`) before testing; both modes are YAML‑switchable.
  - Determinism: strict seeding for Python/NumPy/Torch, `torch.use_deterministic_algorithms(True)`, `CUBLAS_WORKSPACE_CONFIG` for GEMM determinism, and per‑worker DataLoader seeding. A determinism banner is printed and persisted into reports.
  - Provenance: reports include the exact model class (e.g., `braindecode.models.EEGNeX`), library versions (torch, numpy, sklearn, mne, braindecode, captum, optuna, python), and determinism flags.
+ - Dataset caching:
+    - `dataset_cache_memory: true` enables an in-process RAM cache of the fully built dataset (X, y, groups, channels, times). The first trial in a Python process builds it; subsequent trials reuse instantly (skips repeated MNE loads and cropping). Restarting the Python process clears it.
 
 ### Per‑run artifacts (besides checkpoints/plots)
 - `summary_<TASK>_<ENGINE>.json`: metrics + hyper + determinism + lib versions + model class + hardware
@@ -26,7 +28,8 @@ This repository implements a streamlined EEG decoding pipeline aligned with the 
 - `splits_indices.json`: exact outer/inner indices and subjects for all folds (auditable splits)
 - `learning_curves_inner.csv`: all inner‑fold learning curves across outer folds (epoch‑wise train/val loss/acc/macro‑F1)
 - `outer_eval_metrics.csv`: one row per outer fold with held‑out subjects, n_test, acc, macro‑F1 (+ OVERALL row)
-- `test_predictions.csv`: one row per out‑of‑fold test trial (subject_id, trial_index, true/pred labels, p_trueclass, logp_trueclass, full probs) — ready for mixed‑effects models
+- `test_predictions_outer.csv`: one row per out‑of‑fold test trial (outer) — subject_id, trial_index, true/pred labels, p_trueclass, logp_trueclass, full probs — ready for mixed‑effects models
+- `test_predictions_inner.csv`: one row per inner validation trial — outer_fold, inner_fold, subject_id, trial_index, true/pred labels, p_trueclass, logp_trueclass, full probs — useful for inner vs outer performance comparison
 - `pip_freeze.txt` and (if available) `conda_env.yml`: environment freeze for reproducibility
 
 ### Run directory structure
@@ -68,8 +71,12 @@ python -X utf8 -u train.py `
 
 ### Entry points (when to use what)
 - `train.py`: Single run or multi‑seed runs for a given task/engine using layered configs; ideal for validating a resolved YAML and optionally running XAI on completion (`--run-xai`). Multi‑seed: add `seeds: [41, 42, ...]` in YAML.
+- Outer evaluation mode:
+  - `outer_eval_mode: ensemble` (default): mean-softmax over K inner models for test predictions.
+  - `outer_eval_mode: refit`: refit one model on full outer-train (set `refit_val_frac>0` to enable subject-aware early stop).
 - `scripts/optuna_search.py`: Unified Optuna driver for Step 1/2/3 sweeps (`--stage step1|step2|step3`) over a search space YAML; prunes per‑epoch on inner macro‑F1 and seeds the TPE sampler from config.
 - `scripts/run_xai_analysis.py`: Post‑hoc per‑fold attributions and consolidated XAI HTML for a completed run directory.
+- `scripts/analyze_nloso_subject_performance.py`: Per‑subject and per‑fold performance analysis; creates `subject_performance/` folder with CSVs, bar charts, confusion matrices, and optional inner vs outer comparison (auto‑detects `test_predictions_outer.csv` and `test_predictions_inner.csv`).
 - `scripts/prepare_from_happe.py`: One‑time materialization of per‑subject `.fif` epochs with aligned behavior and montage from HAPPE/EEGLAB `.set`.
 
 ## Repository layout
@@ -83,13 +90,13 @@ python -X utf8 -u train.py `
 - configs/
   - common.yaml — global defaults (training, crop_ms, channel lists)
   - tasks/<task>/
-    - base.yaml — base hyper‑parameters
-    - step1_search.yaml — controller for Step 1 (folds, epochs, etc.)
-    - step1_space_deep_spatial.yaml — Step 1 space (dataset choice, core model, spatial window, big levers)
+    - base.yaml — base hyper-parameters
+    - step1_search.yaml — controller for Step 1
+    - step1_space_*.yaml — Step 1 search space (architecture/spatial/big levers)
     - step2_search.yaml — controller for Step 2
-    - step2_space_deep_spatial.yaml — Step 2 space (refinement/stability knobs)
-    - step3_search.yaml — controller for Step 3 (augmentations)
-    - step3_space_aug.yaml — Step 3 space (train‑time augmentations)
+    - step2_space_*.yaml — Step 2 space (refinement/stability)
+    - step3_search.yaml — controller for Step 3
+    - step3_space_*.yaml — Step 3 space (augmentations)
 - scripts/
   - prepare_from_happe.py — convert HAPPE EEGLAB `.set` to per‑subject `.fif` with metadata + montage
   - optuna_search.py — Unified Optuna TPE driver (Stage 1/2/3 via --stage)
@@ -97,10 +104,15 @@ python -X utf8 -u train.py `
   - final_eval.py — multi‑seed final evaluation and consolidated reporting
   - run_xai_analysis.py — per‑fold attributions and consolidated XAI HTML/PDF
   - run_posthoc_stats.py — post‑hoc statistics (group efficacy and subject reliability)
+  - analyze_nloso_subject_performance.py — per‑subject/per‑fold performance + inner vs outer comparison
+- optuna_tools/
+  - config.py, runner.py, plotting.py, reports.py, discovery.py, db.py, csv_io.py, meta.py, index_builder.py — modular Optuna refresh pipeline (plots/CSV/top‑3 report/index)
 - results/optuna/
-  - refresh_optuna_summaries.py — per‑study CSV (sorted by inner_mean_macro_f1 desc) and plots
-  - refresh_optuna_summaries.bat — convenience wrapper on Windows
-  - Parallel plots: PNG plus SVG/PDF exports; Matplotlib PNG fallback with thicker lines for readability
+  - refresh_optuna_summaries.bat — Windows wrapper that calls the Python entry point
+- scripts/
+  - refresh_optuna_summaries.py — CLI entry for refreshing studies (plots/CSV/top‑3); uses optuna_tools
+  - optuna_index_builder.py — rebuild a global `optuna_runs_index.csv` from per‑trial summaries
+  - Parallel plots: HTML + PNG only (no SVG/PDF). PNG export uses thicker lines and high scale for readability
 - data directories (git‑ignored):
   - eeg-raw/subjectXX.mff
   - data_behavior/behavior_data/SubjectXX.csv
@@ -204,6 +216,14 @@ python -X utf8 -u scripts/optuna_search.py `
   --trials 48
 ```
 
+#### Performance tips
+- Enable in-process dataset cache to avoid repeated MNE loads and time cropping within an Optuna run:
+```yaml
+# common.yaml (already enabled in this repo)
+dataset_cache_memory: true
+```
+- Cache persists only for the current Python process. Restarting clears it.
+
 3) Final evaluation (multi‑seed, LOSO). With `--use-best`, merges best from step1 → step2 → step3 → finalist (last wins).
 ```powershell
 python scripts/final_eval.py `
@@ -225,6 +245,35 @@ for ($i=0; $i -lt 10; $i++) {
 }
 ```
 
+### Optuna studies: refresh (modular tools)
+
+Refresh Optuna studies (modular)
+
+Tools live under optuna_tools/ and are driven by scripts/refresh_optuna_summaries.py.
+
+What’s included
+
+config.py – builds paths/settings (env-aware).
+
+discovery.py – finds studies & trials.
+
+csv_io.py – writes !all_trials-<study>.csv (sorted by best inner metric).
+
+db.py, plotting.py – loads Optuna SQLite and exports plots (HTML + PNG).
+
+reports.py – Top-3 report (HTML + PDF; Playwright w/ matplotlib fallback).
+
+meta.py – cache to skip up-to-date studies.
+
+index_builder.py – writes global optuna_runs_index.csv.
+
+runner.py – orchestrates a full refresh; optional index rebuild.
+
+Run it
+
+Double-click (Windows): results\optuna\refresh_optuna_summaries.bat
+
+
 ## Preprocessing details
 - HAPPE produces cleaned `.set` per subject. `prepare_from_happe.py` aligns behavior, removes `Condition==99`, encodes labels, attaches montage, and saves per‑subject `.fif`.
 - Default at train time: `use_channel_list: non_scalp`. The Cz‑ring (`cz_step`) heuristic is disabled by default (can be re‑enabled by adding it to YAML). You can still set `crop_ms` and/or explicit `include_channels`.
@@ -236,7 +285,7 @@ for ($i=0; $i -lt 10; $i++) {
 - Provenance: model class path, library versions, and determinism flags are included in the TXT/HTML report and JSON.
 - Seeds: set a single `seed: 42` or a list `seeds: [41, 42, ...]` (multi‑seed loop). Run directories include `seed_<N>` in the name; a cross‑seed aggregate JSON is written.
 - Optuna: TPE sampler is seeded from config; pruning signal is inner macro‑F1; objective is inner‑CV mean macro‑F1.
-- Audit artifacts: `splits_indices.json`, `learning_curves_inner.csv`, `outer_eval_metrics.csv`, and `test_predictions.csv` capture splits, pruning traces, outer‑fold metrics, and per‑trial out‑of‑fold predictions (ready for mixed‑effects models).
+- Audit artifacts: `splits_indices.json`, `learning_curves_inner.csv`, `outer_eval_metrics.csv`, `test_predictions_outer.csv`, and `test_predictions_inner.csv` capture splits, pruning traces, outer‑fold metrics, per‑trial out‑of‑fold predictions (ready for mixed‑effects models), and inner validation predictions (for inner vs outer comparison).
 - XAI checkpoint resolution order per fold: `fold_XX_refit_best.ckpt` → `fold_XX_best.ckpt` → first `fold_XX_inner_YY_best.ckpt`.
 
 Tip: To force LOSO in any run that has a resolved config with `n_folds`, either set `n_folds: null` inside the YAML, or pass `--set n_folds=null` on the CLI.
@@ -252,7 +301,12 @@ Tip: To force LOSO in any run that has a resolved config with `n_folds`, either 
   - `inner_n_folds`: number of inner folds (must be ≥2). Strictly enforced; insufficient subjects → error.
   - `epochs`, `early_stop`, `batch_size`, `lr`, etc. apply to each inner fold training.
 
-## Commands cheat‑sheet
+- Stability warm-ups:
+  - `lr_warmup_frac`: fraction of epochs (0–1) for linear LR warm-up from `lr_warmup_init * lr` to `lr`. Default 0.
+  - `lr_warmup_init`: initial LR scale (0–1) at epoch 1 during warm-up. Default 0.
+  - `aug_warmup_frac`: fraction of epochs (0–1) to ramp augmentation probabilities and magnitudes from 0→full. Default 0.
+
+## Commands cheat-sheet
 - Convert: `python scripts/prepare_from_happe.py`
 - Search (unified): `python scripts/optuna_search.py --stage step1|step2|step3 ...`
 - Final eval: `python scripts/final_eval.py ...`
@@ -264,20 +318,23 @@ python -X utf8 -u scripts/run_xai_analysis.py --run-dir "results\runs\<run_dir_n
 
 ### XAI (IG, Grad‑CAM heatmaps, Grad‑TopoCAM)
 - Outputs are written under `run_dir/xai_analysis/`:
-  - `integrated_gradients/`: per‑fold IG arrays (`fold_XX_xai_attributions.npy`), heatmaps (`.png`), and summaries (`.json`).
-  - `gradcam_heatmaps/`: per‑fold Grad‑CAM heatmaps aligned as `[channels × time]` when the target conv preserves channels.
-  - `gradcam_topomaps/`: per‑fold Grad‑TopoCAM vectors (`fold_XX_gradcam_topomap.npy`) and three topomap variants:
-    - default smooth: `fold_XX_gradcam_topomap.png`
-    - contours (paper‑friendly): `fold_XX_gradcam_topomap_contours.png`
-    - sensors/nearest (sanity‑check): `fold_XX_gradcam_topomap_sensors.png`
+  - `integrated_gradients/`: per-fold IG arrays `fold_XX_xai_attributions.npy`, heatmaps `.png`, summaries `.json`.
+  - NEW: `integrated_gradients_per_class/`: per-fold, per-class IG arrays and heatmaps for correctly predicted trials by class.
+  - `gradcam_heatmaps/`: per-fold Grad-CAM heatmaps (use an earlier conv that preserves channels×time).
+  - `gradcam_topomaps/`: per-fold Grad-TopoCAM vectors `fold_XX_gradcam_topomap.npy` + three PNG variants.
   - Grand averages:
     - IG: `grand_average_xai_attributions.npy`, `grand_average_xai_heatmap.png`, `grand_average_xai_topoplot.png`
-    - Grad‑TopoCAM: `grand_average_gradcam_topomap.npy` + three PNGs
-  - `consolidated_xai_report.html`: a light HTML gallery focusing on IG grand average and per‑fold heatmaps.
+    - Grad-TopoCAM: `grand_average_gradcam_topomap.npy` + three PNGs
+    - NEW: `grand_average_per_class/`: classwise grand-average IG heatmaps (`class_XX_*_xai_attributions.npy/.png`)
+  - `consolidated_xai_report.html`: IG grand average + peak windows + per-fold IG cards.
 
 - Choosing the conv layer for Grad‑CAM/TopoCAM:
-  - If heatmaps show vertical stripes only (vary by time, not by channel), choose an earlier conv that still preserves `[channels × time]`.
-  - You can pass `--target-layer` (e.g., `features.3`) or set a default in `configs/xai_defaults.yaml`.
+  - If maps are flat/uniform, you likely targeted a layer that already collapsed the electrode axis. Pick an EARLIER conv with an output that still has a non-trivial channel dimension.
+  - Example (EEGNeX): layers like `block_1.1` or `block_2.0` preserve (electrodes, time); layers from `block_3.0` onward often have spatial size 1 → constant vectors → uniform topomaps.
+  - CLI override:
+```powershell
+python -X utf8 -u scripts/run_xai_analysis.py --run-dir "<run_dir>" --target-layer block_1.1
+```
 
 - Time window for Grad‑TopoCAM:
   - Pass `--gradtopo-window start_ms,end_ms` (e.g., `150,250`) to integrate over a latency window before projecting to the scalp; omit for full window.
@@ -294,6 +351,17 @@ xai:
 
 `xai_top_k_channels` can also be set in your training config; the training config takes precedence over the YAML defaults.
 
+#### Post‑hoc stats defaults YAML
+Create `configs/posthoc_defaults.yaml` to set default flags for post‑hoc statistics (CLI args override these):
+```yaml
+posthoc:
+  alpha: 0.05
+  multitest: fdr  # or "none"
+  glmm: true
+  forest: true
+  chance_rate: null  # auto-detected if null
+```
+
 #### Example commands
 ```powershell
 # Use defaults from configs/xai_defaults.yaml
@@ -309,20 +377,50 @@ python -X utf8 -u scripts/run_xai_analysis.py `
 
 ### Post‑hoc statistics (group efficacy and subject reliability)
 - Purpose: quantify population‑level efficacy and subject‑level reliability without retraining.
-- Inputs: uses `outer_eval_metrics.csv`, `test_predictions.csv`, and permutation summary (if present) from the run directory.
-- Run:
+- Inputs: uses `outer_eval_metrics.csv`, `test_predictions_outer.csv`, and permutation summary (if present) from the run directory.
+- Defaults: set in `configs/posthoc_defaults.yaml` (alpha, multitest, glmm, forest, chance_rate); CLI args override YAML.
+- Run (with defaults from YAML):
+```powershell
+python -X utf8 -u scripts/run_posthoc_stats.py --run-dir results\runs\<run_dir_name>
+```
+- Run (with explicit flags, overriding YAML):
 ```powershell
 python -X utf8 -u scripts/run_posthoc_stats.py `
   --run-dir results\runs\<run_dir_name> `
   --alpha 0.05 `
   --multitest fdr `
-  --glmm
+  --glmm `
+  --forest
 ```
-- Outputs (written to the run directory):
+- Outputs (written to `<run_dir>/stats/`):
   - `group_stats.json`: mean and 95% CI for accuracy/macro‑F1; permutation p‑values if available.
   - `per_subject_significance.csv`: per‑subject accuracy, binomial p‑value vs chance, adjusted p‑value, and above‑chance flag.
   - `per_subject_summary.json`: number and proportion of subjects above chance.
-  - `glmm_summary.json`: optional population fixed‑effect summary (cluster‑robust logit fallback), including CI/p‑value.
+  - `glmm_summary.json`: optional population fixed‑effect summary via R lme4, including CI/p‑value.
+  - `per_subject_forest.png`: forest plot with Wilson CIs per subject (if `--forest`).
+  - `qq_pvalues_fdr.png`: QQ plot of per‑subject p‑values with BH threshold.
+  - `glmm_intercept_effect.png`: GLMM intercept effect on log‑odds and probability scales (if `--glmm`).
+  - `glmm_caterpillar.png`: caterpillar plot of subject BLUPs on probability scale (if `--glmm`).
+  - `perm_density_acc.png`, `perm_density_macro_f1.png`: null densities from permutation test (if available).
+
+### Per‑subject and per‑fold performance analysis
+- Purpose: detailed per‑subject and per‑fold accuracy breakdown; optional inner vs outer comparison.
+- Inputs: auto‑detects `test_predictions_outer.csv` and `test_predictions_inner.csv` from the run directory.
+- Run:
+```powershell
+python -X utf8 -u scripts/analyze_nloso_subject_performance.py `
+  "results\runs\<run_dir_name>"
+```
+- Outputs (written to `<run_dir>/subject_performance/`):
+  - `per_subject_metrics.csv`: per‑subject accuracy and support n
+  - `per_fold_metrics.csv`: per‑fold accuracy and support n
+  - `acc_by_subject_bar.png`, `acc_by_fold_bar.png`: bar charts with support n annotated
+  - `overall_confusion.png`: overall confusion matrix (row‑normalized %)
+  - `per_subject_confusion/subject-<id>.png`: per‑subject confusion matrices
+  - `report.html`: consolidated HTML report
+  - `inner_vs_outer/` (if `test_predictions_inner.csv` is found):
+    - `inner_vs_outer_subject_metrics.csv`: per‑subject inner vs outer accuracy with delta
+    - `inner_vs_outer_scatter.png`: scatter plot of inner vs outer accuracy by subject
 
 ## update github example: 
 PS D:\eeg_nn> conda activate eegnex-env

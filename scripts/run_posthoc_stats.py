@@ -4,11 +4,12 @@ import argparse
 import os
 import json
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 import math
 import csv
 import numpy as np
 import sys
+import yaml
 
 try:
     import matplotlib
@@ -57,7 +58,10 @@ def _read_outer_eval_metrics(run_dir: Path) -> List[Dict]:
 
 
 def _read_test_predictions(run_dir: Path) -> List[Dict]:
-    fp = run_dir / "test_predictions.csv"
+    # Try new name first, then fall back to legacy name for backwards compatibility
+    fp = run_dir / "test_predictions_outer.csv"
+    if not fp.exists():
+        fp = run_dir / "test_predictions.csv"
     rows: List[Dict] = []
     if not fp.exists():
         return rows
@@ -207,7 +211,10 @@ def run_glmm(run_dir: Path, enable: bool, chance_rate: float) -> Dict:
     if not enable:
         return {"status": "disabled"}
 
-    fp = run_dir / "test_predictions.csv"
+    # Try new name first, then fall back to legacy name for backwards compatibility
+    fp = run_dir / "test_predictions_outer.csv"
+    if not fp.exists():
+        fp = run_dir / "test_predictions.csv"
     if not fp.exists():
         return {"status": "no_test_predictions"}
 
@@ -337,14 +344,37 @@ def write_csv(p: Path, rows: List[Dict], fieldnames: List[str]):
             w.writerow(r)
 
 
+def _load_posthoc_defaults() -> Dict:
+    """Load defaults from configs/posthoc_defaults.yaml if it exists."""
+    try:
+        # Look for posthoc_defaults.yaml in configs/ relative to this script
+        script_dir = Path(__file__).resolve().parent
+        proj_root = script_dir.parent
+        defaults_path = proj_root / "configs" / "posthoc_defaults.yaml"
+        if defaults_path.exists():
+            with defaults_path.open("r") as f:
+                cfg = yaml.safe_load(f) or {}
+            return cfg.get("posthoc", {})
+    except Exception:
+        pass
+    return {}
+
+
 def main():
-    ap = argparse.ArgumentParser(description="Post-hoc stats for a completed run directory.")
+    # Load YAML defaults first
+    defaults = _load_posthoc_defaults()
+    
+    ap = argparse.ArgumentParser(
+        description="Post-hoc stats for a completed run directory. Defaults can be set in configs/posthoc_defaults.yaml."
+    )
     ap.add_argument("--run-dir", required=True, type=Path)
-    ap.add_argument("--alpha", type=float, default=0.05)
-    ap.add_argument("--chance-rate", type=float, default=None, help="If unset, uses 1/num_classes from summary")
-    ap.add_argument("--multitest", choices=["none", "fdr"], default="fdr")
-    ap.add_argument("--glmm", action="store_true", help="Attempt GLMM (or cluster-robust logit fallback)")
-    ap.add_argument("--forest", action="store_true", help="Write per_subject_forest.png if matplotlib available")
+    ap.add_argument("--alpha", type=float, default=defaults.get("alpha", 0.05))
+    ap.add_argument("--chance-rate", type=float, default=defaults.get("chance_rate"), help="If unset, uses 1/num_classes from summary")
+    ap.add_argument("--multitest", choices=["none", "fdr"], default=defaults.get("multitest", "fdr"))
+    ap.add_argument("--glmm", action="store_true", default=defaults.get("glmm", False), help="Attempt GLMM via R lme4")
+    ap.add_argument("--forest", action="store_true", default=defaults.get("forest", False), help="Write per_subject_forest.png if matplotlib available")
+    ap.add_argument("--no-glmm", action="store_false", dest="glmm", help="Disable GLMM even if enabled in YAML")
+    ap.add_argument("--no-forest", action="store_false", dest="forest", help="Disable forest plot even if enabled in YAML")
     args = ap.parse_args()
 
     run_dir: Path = args.run_dir

@@ -1,6 +1,0 @@
-max_folds: null
-epochs: 40
-early_stop: 8
-batch_size: 16
-save_ckpt: true
-random_state: 42

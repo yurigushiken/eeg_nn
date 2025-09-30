@@ -1,5 +1,7 @@
 from __future__ import annotations
 from typing import Dict, Any, Callable, Tuple, List
+import hashlib
+import json
 
 import os
 import re
@@ -68,9 +70,48 @@ class MaterializedEpochsDataset(BaseEEGDataset):
       channel order across subjects).
     - Times are validated to be consistent across subjects and converted to ms.
     """
+    # In-process dataset cache (module-level)
+    _MEM_CACHE: Dict[str, Dict[str, Any]] = {}
+
     def __init__(self, cfg: Dict[str, Any], label_fn: Callable):
         super().__init__()
         self.cfg = cfg
+        # Optional in-process cache toggle (per Python process)
+        use_mem_cache = bool(cfg.get("dataset_cache_memory", False))
+
+        def _canonicalize(obj: Any) -> Any:
+            if isinstance(obj, (list, tuple)):
+                return [_canonicalize(v) for v in obj]
+            if isinstance(obj, dict):
+                return {str(k): _canonicalize(obj[k]) for k in sorted(obj.keys(), key=lambda x: str(x))}
+            return obj
+
+        def _cache_key() -> str:
+            label_fn_name = getattr(label_fn, "__name__", str(label_fn))
+            payload = {
+                "materialized_dir": str(cfg.get("materialized_dir") or cfg.get("dataset_dir") or ""),
+                "crop_ms": _canonicalize(cfg.get("crop_ms")),
+                "use_channel_list": _canonicalize(cfg.get("use_channel_list")),
+                "include_channels": _canonicalize(cfg.get("include_channels")),
+                "cz_step": int(cfg.get("cz_step") or 0),
+                "cz_name": str(cfg.get("cz_name", "Cz")),
+                "channel_lists": _canonicalize(cfg.get("channel_lists") or {}),
+                "label_fn": label_fn_name,
+            }
+            return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+        key = _cache_key()
+        if use_mem_cache and key in MaterializedEpochsDataset._MEM_CACHE:
+            bundle = MaterializedEpochsDataset._MEM_CACHE[key]
+            # Restore from RAM cache
+            self.X = torch.from_numpy(np.array(bundle["X"]))
+            self.y = torch.from_numpy(np.array(bundle["y"]))
+            self.class_names = list(bundle["class_names"])
+            self.groups = np.array(bundle["groups"])  # type: ignore[assignment]
+            self._ch_names = list(bundle["ch_names"])  # type: ignore[assignment]
+            self._sfreq = float(bundle["sfreq"])  # type: ignore[assignment]
+            self._times_ms = np.array(bundle["times_ms"])  # type: ignore[assignment]
+            return
         root = Path(cfg["materialized_dir"]) if cfg.get("materialized_dir") else Path(cfg.get("dataset_dir", ""))
         files = sorted(root.glob("sub-*preprocessed-epo.fif"))
         if not files:
@@ -139,6 +180,21 @@ class MaterializedEpochsDataset(BaseEEGDataset):
         self._ch_names = epochs_list[0].ch_names
         self._sfreq = float(epochs_list[0].info["sfreq"]) if epochs_list[0].info else None
         self._times_ms = (times0 * 1000.0).astype(np.float32)
+
+        # Save to RAM cache for subsequent trials in the same process
+        try:
+            if use_mem_cache:
+                MaterializedEpochsDataset._MEM_CACHE[key] = {
+                    "X": self.X.numpy(),
+                    "y": self.y.numpy(),
+                    "groups": np.array(self.groups),
+                    "ch_names": list(self._ch_names),
+                    "sfreq": float(self._sfreq),
+                    "times_ms": np.array(self._times_ms),
+                    "class_names": list(self.class_names),
+                }
+        except Exception:
+            pass
 
     @property
     def num_channels(self) -> int:

@@ -111,7 +111,19 @@ def create_consolidated_reports(run_dir: Path, summary: Dict, task: str, engine:
     plots_outer = run_dir / "plots_outer"
     plots_legacy = run_dir / "plots"
     src_dir = plots_outer if plots_outer.exists() else plots_legacy
-    fold_plots = sorted(src_dir.glob("fold*_*.png")) if src_dir.exists() else sorted(run_dir.glob("fold*_*.png"))
+    if src_dir.exists():
+        fold_candidates = list(src_dir.glob("fold*_*.png"))
+    else:
+        fold_candidates = list(run_dir.glob("fold*_*.png"))
+
+    def _fold_sort_key(p: Path):
+        m = re.search(r"fold(\d+)_([a-zA-Z]+)\.png$", p.name)
+        fold_num = int(m.group(1)) if m else 10**9
+        kind = (m.group(2).lower() if m else "")
+        kind_order = 0 if "confusion" in kind else 1 if "curves" in kind else 2
+        return (fold_num, kind_order, p.name)
+
+    fold_plots = sorted(fold_candidates, key=_fold_sort_key)
     overall_plot = (src_dir / "overall_confusion.png") if (src_dir / "overall_confusion.png").exists() else (run_dir / "overall_confusion.png")
 
     txt_report_path = run_dir / f"report_{task}_{engine}.txt"
