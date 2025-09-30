@@ -62,3 +62,8 @@ dist/
 !.gitkeep
 !*/README.md
 
+
+# Spec Kit / Codex
+.codex/
+.specify/.cache/
+
