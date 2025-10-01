@@ -10,58 +10,61 @@ Sync Impact Report
   [reviewed] .specify/templates/tasks-template.md - no changes required
 - Follow-up TODOs: none
 -->
-# Numbers Cognition EEG Pipeline Constitution
+Numbers Cognition EEG Pipeline Constitution
+Core Principles
+I. Reproducible Experiment Design
 
-## Core Principles
+Always connect to the environment. conda activate eegnex-env
 
-### I. Reproducible Experiment Design
-Every experiment MUST be reproducible from a version-controlled configuration and documented invocation. Canonical CLI commands in `README.md` and `scripts/` MUST be the only entry point; ad-hoc flags require inline justification committed with the run.
-- Every run MUST emit `resolved_config.yaml`, `pip_freeze.txt`, CLI arguments, and Git metadata into its run directory before training starts.
-- Configurations under `configs/` MUST remain immutable once a run is recorded; updates require a new file and changelog entry referencing the prior config.
-- Researchers MUST record the random seed set, Optuna study name, and hardware banner exactly as printed by the pipeline.
+All experiments will be reproducible from a version-controlled configuration and a single, documented command. The scripts and commands defined in the project's documentation are the official entry points for running experiments. Any manual command-line overrides used for exploration must be justified and committed to the project's log for auditability.
 
-### II. Data Provenance & Integrity
-All data transformations MUST be deterministic, auditable, and reversible to the original HAPPE output.
-- Source `.set` files, behavior CSVs, and montage definitions MUST remain read-only; conversion to `.fif` MUST occur via `scripts/prepare_from_happe.py` with command history logged.
-- Any exclusion or recoding of trials MUST be captured in a machine-readable diff stored alongside the affected dataset.
-- Behavior alignment errors MUST abort the run; fixes require documented rationale and reproducible scripts committed to `scripts/` or `utils/`.
+    Every run will save a resolved_config.yaml, a pip_freeze.txt, and a record of its command-line arguments to its output directory.
 
-### III. Deterministic Training & Search
-Search and training procedures MUST preserve determinism so that repeated executions reproduce metrics bit-for-bit when hardware permits it.
-- Python, NumPy, Torch, and DataLoader seeds MUST be set from a single canonical seed declared in the run configuration.
-- `torch.use_deterministic_algorithms(True)` and required environment variables (for example `CUBLAS_WORKSPACE_CONFIG`) MUST remain enabled unless upstream libraries provide a documented deterministic alternative.
-- Optuna trials MUST persist pruned and completed states; reruns MUST reuse the same study storage or export to JSON for archival.
+    Configuration files under the configs/ directory are considered immutable. Updates require a new, versioned file with a clear changelog.
 
-### IV. Rigorous Validation & Reporting
-Evaluation MUST reflect subject-aware cross-validation and multi-seed aggregation to prevent optimistic bias.
-- Default workflows MUST use GroupKFold or LOSO as defined in the task config; deviations require explicit statistical justification.
-- Aggregated reports MUST include per-fold metrics, macro-F1, confusion matrices, and variance across seeds; omission is non-compliant.
-- Permutation tests, when executed, MUST document seeds, number of permutations, and reuse the original splits to maintain paired comparisons.
+    The random seed, Optuna study name, and hardware information printed by the pipeline will be recorded for every run.
 
-### V. Audit-Ready Artifact Retention
-Every scientific claim MUST be backed by accessible artifacts that allow third-party replication without internal knowledge.
-- Run directories under `results/` MUST retain checkpoints, plots, split indices, predictions CSVs, and XAI outputs; clean-up scripts MUST never delete these without an archived copy.
-- Environment snapshots (`environment.yml` or `pip_freeze.txt`) and resolved configs MUST be referenced in publications or lab notebooks.
-- Summary JSON files MUST enumerate library versions, model class, and determinism flags; manual edits are forbidden.
+II. Data Provenance & Integrity
 
-## Data & Artifact Governance
-- Raw, intermediate, and derived datasets MUST live in dedicated folders (`data_input_from_happe/`, `data_preprocessed/`, `results/`) with read/write permissions managed via the lab's SOP.
-- Any manual notebook exploration MUST write outputs to `reference_files/` with a README describing purpose, input commit hashes, and reproducibility steps.
-- External collaborators MUST receive redacted packages containing only the artifacts needed to reproduce published results, plus a copy of this constitution.
-- Backups MUST be scheduled for all run artifacts and configuration files; verification logs MUST be retained for at least five years.
+All data transformations will be deterministic and auditable. The source data from HAPPE, along with the raw behavioral files, are treated as read-only archives. Our pipeline will never modify these original files. All preparation and conversion to the .fif format will be handled exclusively by the scripts/prepare_from_happe.py script. If the pipeline detects a mismatch between EEG trials and behavioral data, it will terminate the run with an error. Correcting such an error requires a documented, reproducible script.
+III. Deterministic Training & Search
 
-## Development Workflow & Review
-- Code changes MUST include tests or deterministic run scripts that demonstrate compliance with Core Principles; reviewers MUST reject changes lacking reproducibility evidence.
-- Pull requests MUST document affected configs, datasets, and expected impact on metrics; reviewers MUST compare against the baseline artifacts in `results/`.
-- Continuous integration MUST execute linting, unit tests, and at least one dry-run configuration validation to ensure determinism flags remain enabled.
-- Every merged change MUST append a lab-note entry summarizing rationale, exact commands, and artifact locations.
+All search and training procedures will enforce determinism to ensure that repeated executions produce bit-for-bit identical results where hardware allows. We will set Python, NumPy, and PyTorch seeds from a single, canonical seed in the run configuration. We will also enable all available deterministic algorithm flags in the PyTorch and cuDNN backend environments. Optuna studies will persist their state to a database to ensure that searches can be archived and reproduced.
+IV. Rigorous Validation & Reporting
 
-## Governance
-- This constitution supersedes ad-hoc lab practices. Non-compliant work MUST NOT be merged, published, or shared.
-- Amendments require consensus from the project leads, documentation of the rationale, and an updated version string with semantic versioning.
-- MINOR increments add or materially expand principles or sections; PATCH increments clarify wording without changing obligations; MAJOR increments remove or significantly redefine principles.
-- Compliance reviews occur before each publication or dataset release; findings MUST be logged with remediation owners and deadlines.
-- Archive copies of every ratified version MUST remain in version control for traceability.
+Our evaluation protocol is designed to produce an unbiased estimate of how well our models generalize to new, unseen individuals. All validation will be subject-aware, using GroupKFold or Leave-One-Subject-Out cross-validation to prevent data leakage. Final, reported results will be aggregated across multiple random seeds to provide a stable and reliable measure of performance. All summary reports will include per-fold metrics, macro-F1 scores, and confusion matrices to ensure full transparency. Permutation tests, when used, will reuse the original data splits to maintain valid paired comparisons.
+V. Audit-Ready Artifact Retention
+
+Every scientific claim we make will be backed by accessible, version-controlled artifacts that allow for third-party replication. Run directories under results/ are considered permanent records and will retain model checkpoints, performance plots, data split indices, per-trial predictions, and XAI outputs. Environment snapshots and resolved configuration files will be referenced in all publications and internal lab notebooks. The summary files generated by each run will serve as an immutable record of library versions, hardware, and determinism settings.
+Data & Artifact Governance
+
+    All raw, intermediate, and final datasets will reside in their dedicated, version-controlled directories (data_input_from_happe/, data_preprocessed/, results/).
+
+    Any manual data exploration in notebooks will save its outputs to a reference_files/ directory, accompanied by a README that describes the purpose and steps for reproduction.
+
+    External collaborators will receive curated data packages containing only the artifacts needed to reproduce published results, along with a copy of this constitution.
+
+    We will maintain regular, verified backups of all run artifacts and configuration files.
+
+Development Workflow & Review
+
+    All code changes must include tests or deterministic run scripts that demonstrate compliance with these core principles.
+
+    Pull requests must document the changes made to configurations, the expected impact on metrics, and a comparison against baseline results.
+
+    Our continuous integration system will run automated checks to ensure code quality and verify that deterministic settings remain enabled.
+
+    Every merged change will be accompanied by a log entry summarizing the rationale, the exact commands used for validation, and the location of any new artifacts.
+
+Governance
+
+    This constitution represents our shared commitment to rigorous and reproducible science. Work that does not adhere to these principles will not be merged, published, or shared.
+
+    Amendments to this constitution require consensus from the project leads and a documented rationale.
+
+    We will conduct compliance reviews before each publication or major data release.
+
+    All ratified versions of this document will be kept in version control for full traceability.
 
 **Version**: 1.0.0 | **Ratified**: 2025-09-30 | **Last Amended**: 2025-09-30
 

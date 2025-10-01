@@ -108,7 +108,7 @@ python -X utf8 -u train.py `
 - optuna_tools/
   - config.py, runner.py, plotting.py, reports.py, discovery.py, db.py, csv_io.py, meta.py, index_builder.py — modular Optuna refresh pipeline (plots/CSV/top‑3 report/index)
 - results/optuna/
-  - refresh_optuna_summaries.bat — Windows wrapper that calls the Python entry point
+  - refresh_all_studies.bat — Windows wrapper that calls the Python entry point
 - scripts/
   - refresh_optuna_summaries.py — CLI entry for refreshing studies (plots/CSV/top‑3); uses optuna_tools
   - optuna_index_builder.py — rebuild a global `optuna_runs_index.csv` from per‑trial summaries
@@ -271,7 +271,7 @@ runner.py – orchestrates a full refresh; optional index rebuild.
 
 Run it
 
-Double-click (Windows): results\optuna\refresh_optuna_summaries.bat
+Double-click (Windows): results\optuna\refresh_all_studies.bat
 
 
 ## Preprocessing details
@@ -310,7 +310,7 @@ Tip: To force LOSO in any run that has a resolved config with `n_folds`, either 
 - Convert: `python scripts/prepare_from_happe.py`
 - Search (unified): `python scripts/optuna_search.py --stage step1|step2|step3 ...`
 - Final eval: `python scripts/final_eval.py ...`
-- Refresh Optuna summaries: `results\optuna\refresh_optuna_summaries.bat`
+- Refresh Optuna summaries: `results\optuna\refresh_all_studies.bat`
  - Run XAI on a completed run directory:
 ```powershell
 python -X utf8 -u scripts/run_xai_analysis.py --run-dir "results\runs\<run_dir_name>"

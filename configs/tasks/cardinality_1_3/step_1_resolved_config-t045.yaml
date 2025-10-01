@@ -1,0 +1,106 @@
+seed: 44
+epochs: 43
+early_stop: 11
+inner_val_frac: 0.2
+save_ckpt: false
+batch_size: 8
+lr: 0.00010842431446734385
+crop_ms:
+- 0
+- 496
+use_channel_list: non_scalp
+include_channels: null
+channel_lists:
+  non_scalp:
+  - E1
+  - E8
+  - E14
+  - E17
+  - E21
+  - E25
+  - E32
+  - E38
+  - E44
+  - E49
+  - E56
+  - E63
+  - E68
+  - E73
+  - E81
+  - E88
+  - E94
+  - E99
+  - E107
+  - E113
+  - E114
+  - E119
+  - E120
+  - E121
+  - E125
+  - E126
+  - E127
+  - E128
+cz_step: 0
+dataset_cache_memory: true
+stats:
+  alpha: 0.05
+  chance_rate: null
+  multitest: fdr
+  per_subject_metric: acc
+  ci_method: t
+  bootstrap_iters: 2000
+  glmm: false
+  glmm_random_effects:
+  - subject
+  run_posthoc_after_train: true
+permutation:
+  enable: false
+  n_permutations: 200
+  scope: within_subject
+  stratified: true
+  seed: 123
+  block_key: null
+outputs:
+  write_outer_eval_csv: true
+  write_test_predictions_csv: true
+  write_learning_curves_csv: true
+  write_splits_indices_json: true
+model_name: eegnex
+materialized_dir: data_preprocessed/hpf_1.5_lpf_40_baseline-off
+inner_n_folds: 5
+n_folds: null
+outer_eval_mode: ensemble
+refit_val_k: 0
+refit_early_stop: 10
+weight_decay: 2.5e-05
+drop_prob: 0.55
+scheduler_patience: 8
+lr_warmup_frac: 0.0
+lr_warmup_init: 0.0
+filter_1: 21
+filter_2: 51
+kernel_block_1_2: 65
+kernel_block_4: 35
+kernel_block_5: 22
+avg_pool_block4: 6
+avg_pool_block5: 7
+dilation_block_4: 4
+dilation_block_5: 3
+depth_multiplier: 3
+activation: elu
+max_norm_conv: 1.7285702370712301
+max_norm_linear: 0.482997263179507
+mixup_alpha: 0.0
+shift_p: 0.0
+shift_max_frac: 0.0
+scale_p: 0.0
+scale_min: 1.0
+scale_max: 1.0
+noise_p: 0.0
+noise_std: 0.0
+time_mask_p: 0.0
+time_mask_frac: 0.0
+chan_mask_p: 0.0
+chan_mask_ratio: 0.0
+aug_warmup_frac: 0.0
+task: cardinality_1_3

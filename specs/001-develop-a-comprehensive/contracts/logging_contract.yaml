@@ -1,0 +1,37 @@
+version: 1
+name: runtime_logging_contract
+format: jsonl
+
+console_handler:
+  level: INFO
+file_handler:
+  level: DEBUG
+  path_template: "<run_dir>/logs/runtime.jsonl"
+
+record_fields:
+  - timestamp    # ISO-8601 with timezone
+  - level        # DEBUG|INFO|WARNING|ERROR
+  - logger       # logger name
+  - event        # short machine-readable event key
+  - run_id       # unique run directory name
+  - fold         # nullable outer/inner fold id
+  - subject_id   # nullable subject id
+  - message      # human-readable message
+  - extra        # mapping of additional fields
+
+required_events:
+  - epoch_end
+  - fold_end
+  - cv_split_exported
+  - class_weights_saved
+  - chance_level_computed
+  - posthoc_started
+  - posthoc_completed
+
+determinism:
+  monotonic_timestamps: true
+  seed_in_first_record: true
+
+test_overrides:
+  env_level_var: EEGNN_LOG_LEVEL
+

@@ -63,7 +63,12 @@ def main():
     base_path = Path(args.base) if args.base else (proj_root / "configs" / "tasks" / task / "base.yaml")
     base_cfg = load_yaml(base_path)
     ctrl = load_yaml(Path(args.cfg)) if args.cfg else {}
-    space = load_yaml(Path(args.space))
+    space_path = Path(args.space)
+    if not space_path.exists():
+        sys.exit(f"--space not found: {space_path}")
+    space = load_yaml(space_path)
+    if not isinstance(space, dict) or not space:
+        sys.exit(f"--space YAML is empty: {space_path}. Did you point to the correct file?")
 
     engine_run = engine_registry.get("eeg")
     label_fn = task_registry.get(task)

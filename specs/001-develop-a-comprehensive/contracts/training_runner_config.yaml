@@ -1,0 +1,121 @@
+schema_version: 1.0
+config:
+  required:
+    task:
+      type: string
+      allowed: ["cardinality_1_3"]
+    engine:
+      type: string
+      allowed: ["eeg"]
+    materialized_dir:
+      type: path
+      exists: true
+    stage:
+      type: string
+      allowed: ["stage_1", "stage_2", "stage_3", "final_loso"]
+    seed:
+      type: integer
+      description: Master seed applied to Python/NumPy/PyTorch/Optuna
+    inner_n_folds:
+      type: integer
+      min: 2
+    n_folds:
+      type: integer
+      min: 2
+      nullable: true
+      description: When null, outer loop defaults to LOSO
+    min_subjects:
+      type: integer
+      min: 10
+    min_trials_per_class:
+      type: integer
+      min: 5
+    class_weight_mode:
+      type: string
+      allowed: ["balanced", "none"]
+    augmentation:
+      type: dict
+      keys:
+        shift_p: {type: float, min: 0.0, max: 1.0}
+        shift_max_frac: {type: float, min: 0.0, max: 0.5}
+        scale_p: {type: float, min: 0.0, max: 1.0}
+        scale_min: {type: float, min: 0.5, max: 1.5}
+        scale_max: {type: float, min: 0.5, max: 1.5}
+        noise_p: {type: float, min: 0.0, max: 1.0}
+        noise_std: {type: float, min: 0.0, max: 1.0}
+        time_mask_p: {type: float, min: 0.0, max: 1.0}
+        time_mask_frac: {type: float, min: 0.0, max: 0.5}
+        chan_mask_p: {type: float, min: 0.0, max: 1.0}
+        chan_mask_ratio: {type: float, min: 0.0, max: 0.5}
+        mixup_alpha: {type: float, min: 0.0, max: 1.0}
+      description: Applied only to training splits; scaled during warmup
+    lr:
+      type: float
+      min: 1.0e-5
+      max: 1.0e-2
+    weight_decay:
+      type: float
+      min: 0.0
+      max: 1.0e-1
+    epochs:
+      type: integer
+      min: 10
+      max: 300
+    lr_warmup_frac:
+      type: float
+      min: 0.0
+      max: 0.5
+    lr_warmup_init:
+      type: float
+      min: 0.0
+      max: 1.0
+    aug_warmup_frac:
+      type: float
+      min: 0.0
+      max: 0.5
+    runtime_budget_minutes:
+      type: float
+      min: 0.0
+      description: Alerts when exceeded per LOSO run
+    glmm_enabled:
+      type: boolean
+    permutation_tests:
+      type: dict
+      keys:
+        enabled: {type: boolean}
+        n_permutations: {type: integer, min: 100}
+        stratified: {type: boolean}
+        scope: {type: string, allowed: ["within_subject", "global"]}
+  optional:
+    predefined_splits:
+      type: path
+      exists: true
+    optuna_study_name:
+      type: string
+    resume_from_study:
+      type: boolean
+
+artifacts:
+  run_dir:
+    required_files:
+      - resolved_config.yaml
+      - split_indices.json
+      - metrics_outer.csv
+      - metrics_inner.csv
+      - class_weights/
+      - stats/glmm_results.json
+      - stats/permutation_results.json
+      - xai/
+      - predictions/outer_predictions.csv
+      - predictions/inner_predictions.csv
+    checks:
+      - name: subject_count_threshold
+        condition: "num_subjects >= config.min_subjects"
+      - name: trials_per_class_threshold
+        condition: "all(class_count >= config.min_trials_per_class for class_count in subject.class_counts.values())"
+      - name: excluded_subject_log
+        condition: "exists('excluded_subjects.csv')"
+      - name: runtime_budget
+        condition: "elapsed_minutes <= config.runtime_budget_minutes"
+      - name: glmm_present
+        condition: "config.glmm_enabled implies exists('stats/glmm_results.json')"

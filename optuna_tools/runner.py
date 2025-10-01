@@ -10,7 +10,7 @@ from .meta import needs_refresh, save_meta
 from .cleaning import clean_prefix
 from .csv_io import write_trials_csv
 from .db import find_optuna_db, generate_plots_from_db
-from .reports import write_top3_report
+from .reports import write_top3_report, _resolve_confusion_png
 from .index_builder import rebuild_index as _rebuild_index
 
 
@@ -63,6 +63,47 @@ def _fallback_history_plot(study_dir: Path, study_name: str, df) -> None:
         fig.write_image(plots_dir / f"history_basic-{study_name}.png", scale=2)
     except Exception:
         pass
+
+
+def _collect_overall_confusions(study_dir: Path, df) -> None:
+    """Copy each trial's overall confusion PNG into a per-study folder with unique names.
+
+    Destination: <study_dir>/"!overall confusion"/overall_confusion-<trial_dir_name>.png
+    """
+    import shutil
+
+    out_dir = study_dir / "!overall confusion"
+    out_dir.mkdir(exist_ok=True)
+
+    n_copied = 0
+    for _, row in df.iterrows():
+        trial_dir_name = str(row.get("trial_dir") or row.get("run_id") or "")
+        if not trial_dir_name:
+            continue
+        trial_dir = study_dir / trial_dir_name
+        src = _resolve_confusion_png(trial_dir)
+        if not src or not src.exists():
+            continue
+
+        stem = f"overall_confusion-{trial_dir_name}"
+        dest = out_dir / f"{stem}.png"
+        if dest.exists():
+            # Ensure uniqueness if a file with that name already exists
+            i = 1
+            while True:
+                alt = out_dir / f"{stem}-{i}.png"
+                if not alt.exists():
+                    dest = alt
+                    break
+                i += 1
+
+        try:
+            shutil.copyfile(src, dest)
+            n_copied += 1
+        except Exception as e:
+            print(f"  - failed copying confusion for {trial_dir_name}: {e}")
+
+    print(f"  - copied {n_copied} overall confusion PNGs to {out_dir.name}")
 
 
 def run_refresh(cfg: Config, rebuild_index: bool = False) -> None:
@@ -158,6 +199,12 @@ def run_refresh(cfg: Config, rebuild_index: bool = False) -> None:
             write_top3_report(study_dir, df, study_name)
         except Exception as e:
             print(f"  - top3 report failed: {e}")
+
+        # Aggregate per-trial overall confusion matrices into a single folder for convenience
+        try:
+            _collect_overall_confusions(study_dir, df)
+        except Exception as e:
+            print(f"  - overall confusion aggregation failed: {e}")
 
         save_meta(study_dir, n_trials, latest_mtime)
         print(f"  - updated meta, latest_mtime={latest_mtime}")

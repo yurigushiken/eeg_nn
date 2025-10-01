@@ -34,6 +34,7 @@ dist/
 /data_behavior/
 /data_behavior_lite/
 /data_input_from_happe/
+/data_input_from_mne/
 /data_preprocessed/
 /cache/
 /reference_files/

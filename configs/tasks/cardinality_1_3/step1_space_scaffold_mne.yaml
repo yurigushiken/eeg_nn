@@ -1,5 +1,12 @@
 # Stage 1 — Scaffold (Clean)
 
+
+materialized_dir:
+  method: categorical
+  choices:
+    - data_preprocessed\mne-hpf_1.5_lpf_40_baseline-off
+
+
 # --- modest training budget (clean) ---
 epochs:
   method: int
