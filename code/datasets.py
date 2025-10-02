@@ -76,6 +76,11 @@ class MaterializedEpochsDataset(BaseEEGDataset):
     def __init__(self, cfg: Dict[str, Any], label_fn: Callable):
         super().__init__()
         self.cfg = cfg
+        self._min_trials = int(cfg.get("min_trials_per_class", 0) or 0)
+        self._exclusion_log_path = cfg.get("exclusion_log_path")
+        self.excluded_subjects: Dict[int, Dict[str, Any]] = {}
+        self.exclusion_log_path: str | None = None
+        self.channel_metadata: Dict[str, Any] = {}
         # Optional in-process cache toggle (per Python process)
         use_mem_cache = bool(cfg.get("dataset_cache_memory", False))
 
@@ -134,14 +139,63 @@ class MaterializedEpochsDataset(BaseEEGDataset):
             m = sid_re.search(fp.name)
             if m:
                 ep.metadata["subject"] = int(m.group(1))
+            # Apply label function early to enable per-subject trial counting
+            ep.metadata["__y"] = label_fn(ep.metadata)
             epochs_list.append(ep)
+        
+        # Filter subjects based on min_trials_per_class (T014)
+        import csv
+        filtered_epochs_list = []
+        all_subject_channels: Dict[int, List[str]] = {}
+        for ep in epochs_list:
+            subject_id = ep.metadata["subject"].iloc[0]
+            all_subject_channels[subject_id] = ep.ch_names
+            # Count valid trials per class
+            valid_trials = ep.metadata[ep.metadata["__y"].notna()]
+            if len(valid_trials) == 0:
+                # Exclude subjects with no valid trials
+                self.excluded_subjects[subject_id] = {
+                    "reason": "no_valid_trials",
+                    "min_trials_per_class": self._min_trials,
+                    "class_counts": {},
+                }
+                continue
+            class_counts = valid_trials["__y"].value_counts().to_dict()
+            
+            if self._min_trials > 0 and any(count < self._min_trials for count in class_counts.values()):
+                self.excluded_subjects[subject_id] = {
+                    "reason": "insufficient_trials",
+                    "min_trials_per_class": self._min_trials,
+                    "class_counts": class_counts,
+                }
+            else:
+                filtered_epochs_list.append(ep)
+        
+        epochs_list = filtered_epochs_list
+        
+        # Write exclusion log if configured
+        if self._exclusion_log_path and self.excluded_subjects:
+            self.exclusion_log_path = str(self._exclusion_log_path)
+            with open(self.exclusion_log_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["subject_id", "reason", "min_trials_per_class", "class_counts"])
+                for sid, info in self.excluded_subjects.items():
+                    writer.writerow([sid, info["reason"], info["min_trials_per_class"], json.dumps(info["class_counts"])])
+        
         # Ensure identical channel set & order across all Epochs (align subjects)
         # Rationale: downstream models require fixed channel dimensions and order
-        if len(epochs_list) > 1:
-            base = epochs_list[0].ch_names
-            common = [ch for ch in base if all(ch in ep.ch_names for ep in epochs_list)]
+        if len(epochs_list) >= 1:
+            # Compute intersection across ALL subjects (including those later excluded)
+            base_sid = sorted(all_subject_channels.keys())[0]
+            base = list(all_subject_channels[base_sid])
+            common = [ch for ch in base if all(ch in chs for chs in all_subject_channels.values())]
             if not common:
                 raise ValueError("No common channels across subjects after preprocessing.")
+            # Store channel metadata (T014)
+            self.channel_metadata = {
+                "intersection": common,
+                "per_subject": all_subject_channels,
+            }
             aligned = []
             for ep in epochs_list:
                 picks = mne.pick_channels(ep.ch_names, include=common, ordered=True)

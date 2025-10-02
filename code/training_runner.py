@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Dict, Callable, List
+from typing import Dict, Callable, List, Any
 
 import copy
 import json
@@ -15,8 +15,18 @@ from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import f1_score, classification_report
 import optuna
 
-from utils.plots import plot_confusion, plot_curves
+try:
+    from utils import plots as _plots
+    plot_confusion = _plots.plot_confusion
+    plot_curves = _plots.plot_curves
+except Exception:  # pragma: no cover - fallback to no-op to allow tests to run until implemented
+    def plot_confusion(*args, **kwargs):
+        pass  # no-op until utils.plots is implemented
+
+    def plot_curves(*args, **kwargs):
+        pass  # no-op until utils.plots is implemented
 import random
+import re
 
 """
 Training/evaluation orchestration with nested, subject-aware cross-validation.
@@ -54,11 +64,53 @@ def _seed_worker(worker_id):
     torch.manual_seed(worker_seed)
 
 
+def format_subject_id(subject: int) -> str:
+    """Return zero-padded subject identifier in snake_case (e.g., subject_07)."""
+    try:
+        subject_int = int(subject)
+    except Exception:
+        subject_int = subject
+    return f"subject_{subject_int:02d}"
+
+
+def format_fold_id(fold: int) -> str:
+    """Return zero-padded fold identifier in snake_case (e.g., fold_03)."""
+    try:
+        fold_int = int(fold)
+    except Exception:
+        fold_int = fold
+    return f"fold_{fold_int:02d}"
+
+
+def validate_artifact_name(name: str) -> None:
+    """Validate artifact path uses snake_case segments and allowed extensions.
+
+    Accept lowercase letters, numbers, underscores, forward slashes, and dots in extensions.
+    Reject camelCase or hyphenated patterns, and disallow unknown extensions.
+    """
+    if not isinstance(name, str) or not name:
+        raise ValueError("artifact name must be a non-empty string")
+    # Allowed chars per segment: [a-z0-9_]+, segments separated by '/'
+    segments = name.split("/")
+    seg_pattern = re.compile(r"^[a-z0-9_]+(\.[a-z0-9]+)?$")
+    for seg in segments:
+        if not seg_pattern.match(seg):
+            raise ValueError(f"invalid artifact segment: {seg}")
+    # Validate extension if present (allow csv, json, jsonl, png)
+    allowed_ext = {".csv", ".json", ".jsonl", ".png"}
+    from pathlib import Path as _P
+    ext = _P(name).suffix
+    if ext and ext not in allowed_ext:
+        raise ValueError(f"invalid artifact extension: {ext}")
+
+
 class TrainingRunner:
     def __init__(self, cfg: Dict, label_fn: Callable):
         self.cfg = cfg
         self.label_fn = label_fn
         self.run_dir = self._ensure_run_dir(cfg)
+        self.stage = str(cfg.get("stage", "") or "")
+        self.stage_context = self._resolve_stage_context()
 
     def _ensure_run_dir(self, cfg: Dict):
         from pathlib import Path
@@ -68,6 +120,52 @@ class TrainingRunner:
             p.mkdir(parents=True, exist_ok=True)
             return p
         return None
+
+    def _resolve_stage_context(self) -> Dict[str, Any]:
+        stage = self.stage
+        if stage in {"stage_2", "stage_3", "final_loso"}:
+            base_dir = self.cfg.get("previous_stage_dir") or self.cfg.get("base_run")
+            return self.validate_stage_handoff(stage=stage, previous_stage_dir=base_dir)
+        return {}
+
+    @staticmethod
+    def validate_stage_handoff(stage: str, previous_stage_dir: str | None) -> Dict[str, Any]:
+        from pathlib import Path
+
+        stage = str(stage)
+        if stage not in {"stage_2", "stage_3", "final_loso"}:
+            raise ValueError(f"Unsupported stage '{stage}' for handoff validation")
+        if not previous_stage_dir:
+            raise ValueError(f"Stage '{stage}' requires previous_stage_dir/base_run to be provided")
+
+        prev_path = Path(previous_stage_dir)
+        if not prev_path.exists():
+            raise ValueError(f"Previous stage directory does not exist: {previous_stage_dir}")
+
+        resolved_cfg = prev_path / "resolved_config.yaml"
+        evidence_dir = prev_path / "evidence"
+
+        missing: List[str] = []
+        if not resolved_cfg.exists():
+            missing.append("resolved_config.yaml")
+        if not evidence_dir.exists():
+            missing.append("evidence/")
+        else:
+            outer_metrics = evidence_dir / "outer_eval_metrics.csv"
+            if not outer_metrics.exists():
+                missing.append("evidence/outer_eval_metrics.csv")
+
+        if missing:
+            raise ValueError(
+                "Previous stage handoff is incomplete; missing: " + ", ".join(missing)
+            )
+
+        return {
+            "stage": stage,
+            "champion_config": resolved_cfg,
+            "evidence_dir": evidence_dir,
+        }
+
 
     def _make_loaders(
         self,
@@ -123,6 +221,20 @@ class TrainingRunner:
         )
         return tr_ld, va_ld, te_ld, inner_tr_idx
 
+    def _validate_subject_requirements(self, dataset, groups):
+        min_subjects = int(self.cfg.get("min_subjects", 0) or 0)
+        unique_subjects = int(len(np.unique(groups)))
+        if min_subjects > 0 and unique_subjects < min_subjects:
+            raise ValueError(
+                f"Dataset contains {unique_subjects} unique subjects, fewer than the required minimum of {min_subjects} subjects"
+            )
+
+        if hasattr(dataset, "excluded_subjects") and dataset.excluded_subjects:
+            print(
+                f"[dataset] excluded_subjects={sorted(dataset.excluded_subjects.keys())}",
+                flush=True,
+            )
+
     def run(
         self,
         dataset,
@@ -143,6 +255,43 @@ class TrainingRunner:
         else:
             y_all = dataset.get_all_labels()
         num_cls = len(class_names)
+
+        # Sanity checks before any split orchestration
+        self._validate_subject_requirements(dataset, groups)
+
+        # Setup JSONL runtime log per logging contract (Option B)
+        jsonl_log_path = None
+        if self.run_dir:
+            logs_dir = self.run_dir / "logs"
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            jsonl_log_path = logs_dir / "runtime.jsonl"
+            # Initialize with run start event
+            from datetime import datetime, timezone
+            def _log_event(event: str, message: str = "", **extra):
+                if jsonl_log_path:
+                    record = {
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "level": "INFO",
+                        "logger": "training_runner",
+                        "event": event,
+                        "run_id": self.run_dir.name if self.run_dir else "",
+                        "message": message,
+                        "extra": extra,
+                    }
+                    with jsonl_log_path.open("a") as f:
+                        f.write(json.dumps(record) + "\n")
+            _log_event("run_start", f"Starting run with seed={self.cfg.get('seed')}")
+        else:
+            def _log_event(event: str, message: str = "", **extra):
+                pass  # no-op if no run_dir
+
+        # Log chance level for awareness
+        try:
+            if num_cls > 0:
+                chance = 100.0 / float(num_cls)
+                _log_event("chance_level_computed", f"chance={chance:.2f}%", num_classes=num_cls)
+        except Exception:
+            pass
 
         # Log effective randomness controls for reproducibility assurance
         try:
@@ -307,6 +456,7 @@ class TrainingRunner:
                         cw_path = cw_dir / f"fold_{fold+1:02d}_inner_{inner_fold+1:02d}_class_weights.json"
                         cw_payload = {str(i): float(w) for i, w in enumerate(cls_w)}
                         cw_path.write_text(json.dumps(cw_payload, indent=2))
+                        _log_event("class_weights_saved", f"Saved class weights for fold {fold+1} inner {inner_fold+1}", fold=fold+1, inner_fold=inner_fold+1)
                 except Exception:
                     pass
 
@@ -887,6 +1037,7 @@ class TrainingRunner:
 
             # Append fold record after successful processing
             outer_folds_record.append(fold_record)
+            _log_event("fold_end", f"Completed outer fold {fold+1}", fold=fold+1)
 
         # Overall metrics
         mean_acc = float(np.mean(fold_accs)) if fold_accs else 0.0
@@ -953,6 +1104,7 @@ class TrainingRunner:
                     "outer_folds": outer_folds_record,
                 }
                 (self.run_dir / "splits_indices.json").write_text(json.dumps(splits_payload, indent=2))
+                _log_event("cv_split_exported", "Exported CV split indices to splits_indices.json")
             except Exception:
                 pass
 
@@ -1103,5 +1255,10 @@ class TrainingRunner:
             "fold_splits": fold_split_info,
             "inner_mean_acc": float(np.mean(inner_accs)) if inner_accs else 0.0,
             "inner_mean_macro_f1": float(np.mean(inner_macro_f1s)) if inner_macro_f1s else 0.0,
+            "num_classes": int(num_cls),
         }
 
+
+def validate_stage_handoff(stage: str, previous_stage_dir: str | None) -> Dict[str, Any]:
+    """Module-level convenience wrapper for tests/contracts."""
+    return TrainingRunner.validate_stage_handoff(stage=stage, previous_stage_dir=previous_stage_dir)

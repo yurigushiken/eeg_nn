@@ -611,6 +611,26 @@ def main():
         print(f"[posthoc] Could not refresh consolidated report: {e}")
 
 
+@staticmethod
+def validate_visualization_outputs(run_dir: Path):
+    """Return a set of missing visualization artifact paths relative to run_dir.
+
+    This function enforces a minimal visualization contract for FR-026.
+    """
+    required = [
+        "plots/overall_confusion.png",
+        "plots_outer/fold01_confusion.png",
+        "stats/per_subject_forest.png",
+        "stats/caterpillar_plot.png",
+        "stats/xai/summary.html",
+    ]
+    missing = set()
+    for rel in required:
+        if not (run_dir / rel).exists():
+            missing.add(rel)
+    return missing
+
+
 if __name__ == "__main__":
     main()
 

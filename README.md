@@ -11,31 +11,33 @@ This repository implements a streamlined EEG decoding pipeline aligned with the 
 ### Key ideas
 - Preprocessing is performed externally with HAPPE; we convert EEGLAB `.set` to `.fif` once with `scripts/prepare_from_happe.py`.
 - Optuna search runs directly on materialized `.fif` via `scripts/optuna_search.py` with a `--stage` flag; we use TPE with MedianPruner (warmup=10) and per‑epoch pruning on inner macro‑F1.
+- Stage progression is manual (by design): you choose the next stage and feed winners via YAML overlays; the runner does not auto‑chain stages.
 - Behavior alignment is strict by default; any epochs↔behavior mismatch raises and aborts.
 - Default channel policy excludes non‑scalp channels (`use_channel_list: non_scalp`). The Cz‑ring knob (`cz_step`) is disabled by default.
 - Every run writes `resolved_config.yaml` in its run directory for reproducibility and re‑use.
 - Final evaluation can average across ≥10 seeds and generate XAI reports.
 - Outer test predictions use an inner‑fold ensemble (mean of softmax across inner K models) for stability; plots use the best inner fold’s curves.
  - Alternatively, set `outer_eval_mode: refit` to refit one model on the full outer‑train (optional subject‑aware val via `refit_val_frac`) before testing; both modes are YAML‑switchable.
- - Determinism: strict seeding for Python/NumPy/Torch, `torch.use_deterministic_algorithms(True)`, `CUBLAS_WORKSPACE_CONFIG` for GEMM determinism, and per‑worker DataLoader seeding. A determinism banner is printed and persisted into reports.
+ - Determinism: strict seeding for Python/NumPy/Torch, per‑worker DataLoader seeding. A determinism banner is printed and persisted into reports.
  - Provenance: reports include the exact model class (e.g., `braindecode.models.EEGNeX`), library versions (torch, numpy, sklearn, mne, braindecode, captum, optuna, python), and determinism flags.
  - Dataset caching:
-    - `dataset_cache_memory: true` enables an in-process RAM cache of the fully built dataset (X, y, groups, channels, times). The first trial in a Python process builds it; subsequent trials reuse instantly (skips repeated MNE loads and cropping). Restarting the Python process clears it.
+   - `dataset_cache_memory: true` enables an in-process RAM cache of the fully built dataset (X, y, groups, channels, times). The first trial in a Python process builds it; subsequent trials reuse instantly (skips repeated MNE loads and cropping). Restarting the Python process clears it.
 
 ### Per‑run artifacts (besides checkpoints/plots)
-- `summary_<TASK>_<ENGINE>.json`: metrics + hyper + determinism + lib versions + model class + hardware
+- `summary_<TASK>_<ENGINE>.json`: metrics + hyper + determinism + lib versions + model class + hardware (+ config_hash, exclusion summary, telemetry reference)
 - `resolved_config.yaml`: the frozen config used for the run
 - `splits_indices.json`: exact outer/inner indices and subjects for all folds (auditable splits)
 - `learning_curves_inner.csv`: all inner‑fold learning curves across outer folds (epoch‑wise train/val loss/acc/macro‑F1)
 - `outer_eval_metrics.csv`: one row per outer fold with held‑out subjects, n_test, acc, macro‑F1 (+ OVERALL row)
 - `test_predictions_outer.csv`: one row per out‑of‑fold test trial (outer) — subject_id, trial_index, true/pred labels, p_trueclass, logp_trueclass, full probs — ready for mixed‑effects models
 - `test_predictions_inner.csv`: one row per inner validation trial — outer_fold, inner_fold, subject_id, trial_index, true/pred labels, p_trueclass, logp_trueclass, full probs — useful for inner vs outer performance comparison
+- `logs/runtime.jsonl`: JSONL event log (fold boundaries, class-weights saved, chance-level computed, split export, posthoc start/end)
 - `pip_freeze.txt` and (if available) `conda_env.yml`: environment freeze for reproducibility
 
 ### Run directory structure
 - Run root contains text/JSON/CSV/HTML/PDF summaries and tables
 - Subdirectories:
-  - `plots/` — all PNG plots generated during the run (per‑fold confusion and curves; overall confusion)
+  - `plots/` — per‑fold confusion and curves; overall confusion
   - `ckpt/` — all checkpoints (e.g., `fold_XX_inner_YY_best.ckpt`, `fold_XX_refit_best.ckpt`)
   - `xai_analysis/` — XAI outputs (per‑fold heatmaps, grand average, topoplots, summaries)
 
@@ -74,8 +76,10 @@ python -X utf8 -u train.py `
 - Outer evaluation mode:
   - `outer_eval_mode: ensemble` (default): mean-softmax over K inner models for test predictions.
   - `outer_eval_mode: refit`: refit one model on full outer-train (set `refit_val_frac>0` to enable subject-aware early stop).
-- `scripts/optuna_search.py`: Unified Optuna driver for Step 1/2/3 sweeps (`--stage step1|step2|step3`) over a search space YAML; prunes per‑epoch on inner macro‑F1 and seeds the TPE sampler from config.
-- `scripts/run_xai_analysis.py`: Post‑hoc per‑fold attributions and consolidated XAI HTML for a completed run directory.
+- `scripts/optuna_search.py`: Unified Optuna driver for Stage 1/2/3 sweeps (`--stage step1|step2|step3`) over a search space YAML; prunes per‑epoch on inner macro‑F1 and seeds the TPE sampler from config.
+- `scripts/final_eval.py`: Multi-seed final evaluation; writes aggregate metrics JSON.
+- `scripts/run_posthoc_stats.py`: Post‑hoc stats (GLMM/forest/caterpillar) under `stats/`.
+- `scripts/run_xai_analysis.py`: Per‑fold attributions and consolidated XAI HTML.
 - `scripts/analyze_nloso_subject_performance.py`: Per‑subject and per‑fold performance analysis; creates `subject_performance/` folder with CSVs, bar charts, confusion matrices, and optional inner vs outer comparison (auto‑detects `test_predictions_outer.csv` and `test_predictions_inner.csv`).
 - `scripts/prepare_from_happe.py`: One‑time materialization of per‑subject `.fif` epochs with aligned behavior and montage from HAPPE/EEGLAB `.set`.
 

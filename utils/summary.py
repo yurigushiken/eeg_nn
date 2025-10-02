@@ -1,9 +1,31 @@
 from __future__ import annotations
 import json
+import hashlib
 from pathlib import Path
-from utils.reporting import create_consolidated_reports
+try:
+    from utils.reporting import create_consolidated_reports
+except Exception:
+    def create_consolidated_reports(run_dir: Path, summary: dict, task: str, engine: str):
+        return None
 import yaml
 import sys
+
+def _compute_chance_level(num_classes: int | None) -> float:
+    try:
+        if num_classes and num_classes > 0:
+            return 100.0 / float(num_classes)
+    except Exception:
+        pass
+    return 0.0
+
+def _compute_config_hash(hyper: dict) -> str:
+    """Compute a deterministic hash of hyperparameters for tracking/caching."""
+    try:
+        # Sort keys for determinism
+        serialized = json.dumps(hyper, sort_keys=True, default=str)
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:12]
+    except Exception:
+        return "unknown"
 
 def _collect_lib_versions() -> dict:
     versions = {}
@@ -90,6 +112,33 @@ def write_summary(run_dir: Path, summary: dict, task: str, engine: str):
     # Collect hardware/runtime info
     hw_info = _collect_hardware_info()
     summary.setdefault("hardware", hw_info)
+    
+    # Add config hash for tracking/caching (T023)
+    try:
+        hyper = summary.get("hyper", {})
+        if isinstance(hyper, dict) and hyper:
+            summary["config_hash"] = _compute_config_hash(hyper)
+    except Exception:
+        pass
+    
+    # Include exclusion summary if dataset excluded subjects (T023)
+    try:
+        excluded_subjects = summary.get("excluded_subjects") or {}
+        if excluded_subjects:
+            summary["exclusion_summary"] = {
+                "count": len(excluded_subjects),
+                "subject_ids": sorted(excluded_subjects.keys()),
+            }
+    except Exception:
+        pass
+    
+    # Reference runtime telemetry log (T023)
+    try:
+        runtime_log = run_dir / "logs" / "runtime.jsonl"
+        if runtime_log.exists():
+            summary["runtime_log_path"] = str(runtime_log.relative_to(run_dir.parent.parent))
+    except Exception:
+        pass
 
     # Write raw JSON summary
     out_fp_json = run_dir / f"summary_{task}_{engine}.json"
@@ -141,6 +190,13 @@ def write_summary(run_dir: Path, summary: dict, task: str, engine: str):
     report_lines.append(f"Weighted F1-Score: {summary.get('weighted_f1', 0.0):.2f}")
     report_lines.append(f"Inner Val Mean Acc: {summary.get('inner_mean_acc', 0.0):.2f}%")
     report_lines.append(f"Inner Val Mean Macro F1: {summary.get('inner_mean_macro_f1', 0.0):.2f}")
+    # Chance level (if known)
+    try:
+        ch = _compute_chance_level(summary.get("num_classes"))
+        if ch > 0.0:
+            report_lines.append(f"Chance Level (based on class count): {ch:.2f}%")
+    except Exception:
+        pass
     report_lines.append("")
 
     # Fold Breakdown
@@ -158,10 +214,26 @@ def write_summary(run_dir: Path, summary: dict, task: str, engine: str):
 
     # Hyperparameters (flat listing for quick inspection)
     report_lines.append("--- Hyperparameters ---")
+    if summary.get("config_hash"):
+        report_lines.append(f"Config Hash: {summary['config_hash']}")
     if summary.get("hyper"):
         for key, value in summary["hyper"].items():
             report_lines.append(f"  {key}: {value}")
     report_lines.append("")
+    
+    # Exclusion Summary (T023)
+    if summary.get("exclusion_summary"):
+        report_lines.append("--- Dataset Exclusions ---")
+        excl = summary["exclusion_summary"]
+        report_lines.append(f"Excluded Subjects: {excl['count']} subject(s)")
+        report_lines.append(f"IDs: {excl['subject_ids']}")
+        report_lines.append("")
+    
+    # Runtime Telemetry Reference (T023)
+    if summary.get("runtime_log_path"):
+        report_lines.append("--- Runtime Telemetry ---")
+        report_lines.append(f"JSONL Log: {summary['runtime_log_path']}")
+        report_lines.append("")
 
     # Write report
     out_fp_txt = run_dir / f"report_{task}_{engine}.txt"

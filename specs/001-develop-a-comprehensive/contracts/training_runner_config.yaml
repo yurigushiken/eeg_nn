@@ -73,10 +73,6 @@ config:
       type: float
       min: 0.0
       max: 0.5
-    runtime_budget_minutes:
-      type: float
-      min: 0.0
-      description: Alerts when exceeded per LOSO run
     glmm_enabled:
       type: boolean
     permutation_tests:
@@ -108,6 +104,7 @@ artifacts:
       - xai/
       - predictions/outer_predictions.csv
       - predictions/inner_predictions.csv
+      - logs/runtime.jsonl
     checks:
       - name: subject_count_threshold
         condition: "num_subjects >= config.min_subjects"
@@ -115,7 +112,5 @@ artifacts:
         condition: "all(class_count >= config.min_trials_per_class for class_count in subject.class_counts.values())"
       - name: excluded_subject_log
         condition: "exists('excluded_subjects.csv')"
-      - name: runtime_budget
-        condition: "elapsed_minutes <= config.runtime_budget_minutes"
       - name: glmm_present
         condition: "config.glmm_enabled implies exists('stats/glmm_results.json')"

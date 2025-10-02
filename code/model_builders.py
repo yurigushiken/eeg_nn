@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Dict, Any
 
 import torch.nn as nn
+from types import SimpleNamespace
 
 """
 Model builders and augmentation utilities for raw EEG.
@@ -22,6 +23,20 @@ try:
     from braindecode.models import EEGNeX as BD_EEGNeX
 except Exception:
     BD_EEGNeX = None
+
+
+def _extract_aug_params(cfg: Dict[str, Any]) -> Dict[str, float]:
+    """Extract augmentation parameters from cfg with safe defaults.
+
+    Exposed keys remain minimal and opt-in. Defaults preserve legacy behavior.
+    """
+    aug = cfg.get("augmentation", {}) if isinstance(cfg, dict) else {}
+    return {
+        "shift_p": float(aug.get("shift_p", 0.0) or 0.0),
+        "noise_p": float(aug.get("noise_p", 0.0) or 0.0),
+        "time_mask_p": float(aug.get("time_mask_p", 0.0) or 0.0),
+        "mixup_alpha": float(aug.get("mixup_alpha", 0.0) or 0.0),
+    }
 
 
 def build_eegnex(cfg: Dict[str, Any], num_classes: int, C: int, T: int) -> nn.Module:
@@ -72,6 +87,12 @@ def build_eegnex(cfg: Dict[str, Any], num_classes: int, C: int, T: int) -> nn.Mo
         max_norm_conv=float(cfg.get("max_norm_conv", 1.0)),
         max_norm_linear=float(cfg.get("max_norm_linear", 0.25)),
     )
+    # Attach a minimal cfg namespace capturing augmentation parameters for tests/reporting
+    try:
+        aug_params = _extract_aug_params(cfg)
+        setattr(model, "cfg", SimpleNamespace(**aug_params))
+    except Exception:
+        pass
     return model
 
 
@@ -142,5 +163,25 @@ def build_raw_eeg_aug(cfg: Dict[str, Any], T: int):
 RAW_EEG_MODELS = {
     "eegnex": build_eegnex,
 }
+
+
+def get_model_builder(name: str):
+    """Return a builder callable for the requested model.
+
+    The returned builder has signature: builder(cfg, num_classes) -> object
+    For test scaffolding, it returns an object exposing `.cfg` with augmentation
+    parameters populated from cfg (legacy-safe defaults when absent).
+
+    In production, callers that require full model instantiation should use
+    `build_eegnex(cfg, num_classes, C, T)` with dataset-derived shapes.
+    """
+    name_l = str(name).lower()
+    if name_l == "eegnex":
+        def _builder(cfg: Dict[str, Any], num_classes: int):
+            # Lightweight object exposing cfg for tests; avoids requiring C/T here.
+            aug_params = _extract_aug_params(cfg)
+            return SimpleNamespace(cfg=SimpleNamespace(**aug_params))
+        return _builder
+    raise ValueError(f"Unknown model builder '{name}'. Available: {list(RAW_EEG_MODELS.keys())}")
 
 

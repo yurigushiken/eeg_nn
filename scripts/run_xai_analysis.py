@@ -65,12 +65,37 @@ except Exception:
     _ensure_local_code_package()
     from code.datasets import MaterializedEpochsDataset as RawEEGDataset
 
-from utils.xai import (
-    compute_and_plot_attributions,
-    compute_and_plot_gradcam,
-    compute_and_plot_gradcam_topomap,
-)
-from utils.seeding import seed_everything
+# Load XAI helpers directly from project utils/xai.py to avoid test package shadowing
+from importlib.util import spec_from_file_location, module_from_spec
+_xai_fp = proj_root / "utils" / "xai.py"
+if _xai_fp.exists():
+    _spec = spec_from_file_location("_xai_impl", str(_xai_fp))
+    _mod = module_from_spec(_spec)
+    assert _spec and _spec.loader
+    _spec.loader.exec_module(_mod)  # type: ignore[attr-defined]
+    compute_and_plot_attributions = getattr(_mod, "compute_and_plot_attributions")
+    compute_and_plot_gradcam = getattr(_mod, "compute_and_plot_gradcam")
+    compute_and_plot_gradcam_topomap = getattr(_mod, "compute_and_plot_gradcam_topomap")
+else:
+    # Fallback no-ops
+    def compute_and_plot_attributions(*args, **kwargs):
+        return None
+    def compute_and_plot_gradcam(*args, **kwargs):
+        return None
+    def compute_and_plot_gradcam_topomap(*args, **kwargs):
+        return None
+
+try:
+    from utils.seeding import seed_everything
+except Exception:
+    if str(proj_root) not in sys.path:
+        sys.path.insert(0, str(proj_root))
+    try:
+        from utils.seeding import seed_everything
+    except Exception:
+        def seed_everything(seed):
+            return None
+
 import tasks as task_registry
 
 
@@ -247,6 +272,22 @@ def create_xai_report(
     )
     html_output_path.write_text(html, encoding="utf-8")
     print(f" -> consolidated XAI HTML report saved to {html_output_path}")
+
+
+def validate_xai_outputs(run_dir: Path):
+    """Return a set of missing XAI report artifacts relative to run_dir.
+
+    Minimal contract: a consolidated summary and at least one per-subject HTML.
+    """
+    required = [
+        "xai/summary_report.html",
+        "xai/per_subject/subject_01.html",
+    ]
+    missing = set()
+    for rel in required:
+        if not (run_dir / rel).exists():
+            missing.add(rel)
+    return missing
 
 
 # --------------------- Main ---------------------

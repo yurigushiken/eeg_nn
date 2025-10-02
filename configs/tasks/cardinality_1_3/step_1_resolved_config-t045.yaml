@@ -1,8 +1,8 @@
-seed: 44
+seeds: [44, 45, 46]
 epochs: 43
 early_stop: 11
 inner_val_frac: 0.2
-save_ckpt: false
+save_ckpt: true
 batch_size: 8
 lr: 0.00010842431446734385
 crop_ms:
@@ -69,8 +69,9 @@ model_name: eegnex
 materialized_dir: data_preprocessed/hpf_1.5_lpf_40_baseline-off
 inner_n_folds: 5
 n_folds: null
-outer_eval_mode: ensemble
-refit_val_k: 0
+outer_eval_mode: refit
+refit_val_frac: 0.1
+refit_val_k: 5
 refit_early_stop: 10
 weight_decay: 2.5e-05
 drop_prob: 0.55

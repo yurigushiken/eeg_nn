@@ -7,66 +7,66 @@
   - `python D:\eeg_nn\scripts\prepare_from_happe.py --input-root D:\eeg_nn\data_input_from_happe --output-root D:\eeg_nn\data_preprocessed --montage standard_1005`
 - Verify at least 10 subjects with ≥5 trials per class remain after materialization
 
-## Stage 1: Foundational Hyperparameter Search
+## Stage 1: Foundational Hyperparameter Search (manual stage progression)
+```powershell
+python -X utf8 -u scripts/optuna_search.py `
+  --stage step1 `
+  --task cardinality_1_3 `
+  --base  configs/tasks/cardinality_1_3/base.yaml `
+  --cfg   configs/tasks/cardinality_1_3/step1_search.yaml `
+  --space configs/tasks/cardinality_1_3/step1_space_deep_spatial.yaml `
+  --trials 48
 ```
-python D:\eeg_nn\scripts\optuna_search.py \
-  --task cardinality_1_3 \
-  --stage stage_1 \
-  --config D:\eeg_nn\configs\tasks\cardinality_1_3\step_1_resolved_config-t034_n_loso.yaml \
-  --materialized-dir D:\eeg_nn\data_preprocessed\hpf_1.0_lpf_40_baseline-on \
-  --study-name eeg_decode_stage1 \
-  --n-trials 80
-```
-- Output: `results/runs/<timestamp>_stage1/` with `resolved_config.yaml`, Optuna study DB, split indices, per-trial predictions, and preliminary metrics
+- Output: `results/optuna/<study>/...` per-trial artifacts, plus per-trial summaries under the study; a best.json persisted under `results/optuna_studies/<task>/step1/`
 
-## Stage 2: Architectural Refinement Search
+## Stage 2: Architectural Refinement (manual handoff)
+```powershell
+python -X utf8 -u scripts/optuna_search.py `
+  --stage step2 `
+  --task cardinality_1_3 `
+  --base  configs/tasks/cardinality_1_3/base.yaml `
+  --cfg   configs/tasks/cardinality_1_3/step2_search.yaml `
+  --space configs/tasks/cardinality_1_3/step2_space_deep_spatial.yaml `
+  --trials 48
 ```
-python D:\eeg_nn\scripts\optuna_search.py \
-  --task cardinality_1_3 \
-  --stage stage_2 \
-  --base-run results/runs/<stage1_timestamp>_stage1 \
-  --study-name eeg_decode_stage2 \
-  --n-trials 60
-```
-- Uses Stage 1 champion configuration as the seed; records refined architectural parameters and updated evidence bundle
+- Use step1 champion params (best.json) as input overlay when authoring the step2 search controller.
 
-## Stage 3: Augmentation + Optimizer Search
+## Stage 3: Augmentation + Optimizer Sweep (optional)
+```powershell
+python -X utf8 -u scripts/optuna_search.py `
+  --stage step3 `
+  --task cardinality_1_3 `
+  --base  configs/tasks/cardinality_1_3/base.yaml `
+  --cfg   configs/tasks/cardinality_1_3/step3_search.yaml `
+  --space configs/tasks/cardinality_1_3/step3_space_aug.yaml `
+  --trials 48
 ```
-python D:\eeg_nn\scripts\optuna_search.py \
-  --task cardinality_1_3 \
-  --stage stage_3 \
-  --base-run results/runs/<stage2_timestamp>_stage2 \
-  --study-name eeg_decode_stage3 \
-  --n-trials 60
-```
-- Jointly tunes augmentation probabilities and sensitive optimizer settings while logging augmentation ramp parameters
 
-## Final Evaluation: LOSO Champion Refit
+## Final Evaluation: LOSO Champion Refit (multi-seed supported)
+```powershell
+python -X utf8 -u scripts/final_eval.py `
+  --task cardinality_1_3 `
+  --cfg  configs/tasks/cardinality_1_3/base.yaml `
+  --seeds 3
 ```
-python D:\eeg_nn\scripts\final_eval.py \
-  --task cardinality_1_3 \
-  --base-run results/runs/<stage3_timestamp>_stage3 \
-  --n-seeds 3 \
-  --materialized-dir D:\eeg_nn\data_preprocessed\hpf_1.0_lpf_40_baseline-on \
-  --outer-protocol loso
-```
-- Produces `results/runs/<timestamp>_final_loso_seed_*` folders with per-fold models refit from scratch, aggregated metrics, GLMM outputs, and permutation-ready artifacts
+- Produces per-seed run directories with LOSO folds, aggregates mean/std across seeds, and writes audit artifacts: `splits_indices.json`, `outer_eval_metrics.csv`, predictions CSVs, and logs/runtime.jsonl.
 
-## Post-hoc Statistics & Reporting
+## Post-hoc Statistics & XAI
+```powershell
+python -X utf8 -u scripts/run_posthoc_stats.py --run-dir results\runs\<run_dir>
+python -X utf8 -u scripts/run_xai_analysis.py   --run-dir results\runs\<run_dir>
 ```
-python D:\eeg_nn\scripts\run_posthoc_stats.py \
-  --run-dir results/runs/<final_timestamp>_final_loso_seed_0 \
-  --alpha 0.05 --multitest fdr --glmm --forest
+- Outputs under `stats/` and `xai_analysis/` inside the run directory.
 
-python D:\eeg_nn\scripts\run_xai_analysis.py \
-  --run-dir results/runs/<final_timestamp>_final_loso_seed_0 \
-  --method grad_cam --format html
+## Refresh Optuna Evidence (CSV/plots/index)
+```powershell
+python -X utf8 -u scripts/refresh_optuna_summaries.py --results-root results\optuna --rebuild-index
 ```
-- Generates group-level confidence intervals, GLMM summaries, permutation significance (if requested), subject reliability tables, confusion matrices, forest/caterpillar plots, and XAI interpretability reports ready for publication
+- Rebuilds per-study CSV/plots and `results/optuna/optuna_runs_index.csv`.
 
 ## Verification Checklist
 - ✅ All stages completed with deterministic seeds recorded in `resolved_config.yaml`
 - ✅ LOSO results across seeds show consistent accuracy and macro-F1
 - ✅ GLMM and permutation outputs archived under `results/runs/<final_timestamp>/stats`
-- ✅ XAI reports stored under `results/runs/<final_timestamp>/xai`
-- ✅ Console logs confirm per-epoch metrics, fold timestamps, and runtime budgets
+- ✅ XAI reports stored under `results/runs/<final_timestamp>/xai_analysis`
+- ✅ JSONL runtime log present at `logs/runtime.jsonl` inside each run directory

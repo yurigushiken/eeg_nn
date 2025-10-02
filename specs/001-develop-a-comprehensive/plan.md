@@ -21,7 +21,7 @@ Update the EEG numerosity decoding pipeline so that `D:\eeg_nn\code\datasets.py`
 
 ## Constitution Check
 - **Principle I (Reproducible Design)**: Plan keeps config layering, resolved config persistence, and documented commands (PASS)
-- **Principle II (Data Integrity)**: Trial alignment, channel intersection, and subject filtering remain deterministic and auditable (PASS)
+- **Principle II (Data Integrity)**: Trial alignment and subject filtering remain deterministic and auditable (PASS)
 - **Principle III (Deterministic Training & Search)**: Optuna integration, seeding, and deterministic DataLoader workers enforced (PASS)
 - **Principle IV (Validation & Reporting)**: Nested subject-aware splits, LOSO refits, GLMM/permutation tests, and fold telemetry included (PASS)
 - **Principle V (Artifact Retention)**: Run directories capture configs, metrics, split indices, environment freezes, statistics, XAI assets (PASS)
@@ -42,7 +42,6 @@ D:\eeg_nn\engines\
 D:\eeg_nn\scripts\
 ├── prepare_from_happe.py
 ├── optuna_search.py
-├── final_eval.py
 ├── run_posthoc_stats.py
 ├── run_xai_analysis.py
 └── analyze_nloso_subject_performance.py
@@ -56,11 +55,11 @@ D:\eeg_nn\configs\
 D:\eeg_nn\results\runs\
 ```
 
-**Structure Decision**: Single CLI-driven research pipeline rooted in `D:\eeg_nn\code\`, supported by `engines`, `scripts`, and versioned `configs`; no additional subprojects required.
+**Structure Decision**: Single CLI-driven research pipeline rooted in `D:\eeg_nn\code\`, supported by `engines`, `scripts`, and versioned `configs`. Stage progression is manual (via CLI), not runner-internal; no additional subprojects required.
 
 ## Phase 0: Outline & Research
 - Confirmed clarified thresholds: ≥10 subjects available; ≥5 trials per class per subject (adjust dataset filters and run preflight checks accordingly)
-- Revalidated channel intersection policy and audit logging requirements to ensure deterministic preprocessing assumptions align with constitution
+<!-- -CANCEL THIS Revalidated channel intersection policy and audit logging requirements to ensure deterministic preprocessing assumptions align with constitution -->
 - Assessed Optuna sequential search design to maintain determinism while spanning multistage search spaces
 - Catalogued artifact expectations (GLMM, permutation, confusion matrices, XAI) to ensure run directory schema remains audit-ready
 - Document findings and decisions in `D:\eeg_nn\specs\001-develop-a-comprehensive\research.md`
@@ -70,28 +69,28 @@ D:\eeg_nn\results\runs\
 ## Phase 1: Design & Contracts
 - **Dataset enforcement (`datasets.py`)**
   - Add explicit validation for ≥5 trials per class per subject; log exclusions with subject ID and counts
-  - Persist channel intersection metadata and condition codebook per run; surface mismatches with actionable errors
+  <!-- cancel this!- Persist channel intersection metadata and condition codebook per run; surface mismatches with actionable errors -->
   - Ensure dataset metadata exposes subject counts to guard LOSO prerequisites
 - **Training orchestration (`training_runner.py`)
   - Maintain nested subject-aware CV with leakage checks and audit logs of split indices
-  - Encode sequential Optuna stages, capturing evidence bundles and best params per stage
+  - Do not auto-orchestrate sequential Optuna stages; provide only `validate_stage_handoff` to check prior-champion availability. Stage execution is manual using CLI with previous `resolved_config.yaml`.
   - Enforce LOSO refits per seed with runtime monitoring and deterministic behavior (DataLoader seeding, class-weight recomputation)
   - Expand artifact production: per-fold metrics, per-trial predictions, GLMM inputs, permutation metadata, class weights, runtime telemetry
   - Implement zero-padded/snake_case naming conventions for all output identifiers (subjects, folds, files) to satisfy FR-018
-  - Compute and log chance level automatically based on class count to satisfy FR-025 (note: `scripts/run_posthoc_stats.py` already infers chance when missing; we will surface it earlier in `utils.summary` during training)
-  - HPO management: ensure refresh entry points are wired and discoverable per FR-020 (`scripts/refresh_optuna_summaries.py` and `results/optuna/refresh_all_studies.*`), with completion logs persisted alongside regenerated artifacts
+  - Compute and log chance level automatically based on class count to satisfy FR-025
+  - HPO management: keep refresh entry points per FR-020. No internal chaining of stages; users invoke next stage manually after reviewing artifacts.
   - Outer-loop strategy is config-driven: GroupKFold when `n_folds` is set; otherwise LOSO. Tests will cover both modes (FR-011)
-  - Logging (Option B): add a lightweight JSONL runtime log at `<run_dir>/logs/runtime.jsonl` with key events (epoch_end, fold_end, cv_split_exported, class_weights_saved, chance_level_computed, posthoc_started, posthoc_completed), while preserving existing console output (FR-019)
+  - Logging (Option B): add a lightweight JSONL runtime log at `<run_dir>/logs/runtime.jsonl` with key events while preserving console output (FR-019)
 
 - **Model builders (`model_builders.py`)
   - Keep EEGNeX builder compatible while exposing clarified architectural params; ensure defaults stable
   - Provide augmentation hooks consistent with clarified Stage 3 requirements (mixup, masking, warmup scaling)
 
 - **Contracts**
-  - Update `D:\eeg_nn\specs\001-develop-a-comprehensive\contracts\training_runner_config.yaml` to encode 5-trial threshold, subject minimum, augmentation knobs, permutation toggles, and artifact checks
-  - Reference existing Optuna refresh stack (no reimplementation): `scripts/refresh_optuna_summaries.py`, `results/optuna/refresh_all_studies.*`, and `optuna_tools/` (`runner.py`, `reports.py`, `plotting.py`, `index_builder.py`)
-  - Author `contracts/optuna_refresh_contract.yaml` to enumerate required CSVs/plots/logs and index rebuild behavior used by T010/T019 (align to current outputs from `optuna_tools`)
-  - Author `contracts/logging_contract.yaml` specifying runtime JSONL logging (fields/levels/handlers) validated by T008
+  - Update `D:\eeg_nn\specs\001-develop-a-comprehensive\contracts\training_runner_config.yaml` with thresholds, augmentation knobs, permutation toggles, and artifact checks
+  - Reference existing Optuna refresh stack; align `scripts/refresh_optuna_summaries.py` to tests (CLI alias, index rebuild)
+  - Author `contracts/optuna_refresh_contract.yaml` enumerating required CSVs/plots/logs and index behavior used by T010/T019
+  - Author `contracts/logging_contract.yaml` specifying runtime JSONL logging (fields/levels/handlers)
 
 - **Data Model**
   - Revise entity definitions to include trial count thresholds, subject exclusion flags, and refined HPO stage artifacts in `data-model.md`
@@ -110,10 +109,10 @@ D:\eeg_nn\results\runs\
   - Add tests validating JSONL runtime logging per `contracts/logging_contract.yaml` (FR-019)
 
 - **Reporting & Visualization**
-  - Validate `run_posthoc_stats.py` and `run_xai_analysis.py` produce all required visualizations (confusion matrices, forest/caterpillar plots, XAI reports) and consolidated reports; add minimal gaps only if tests show missing outputs (FR-026)
-  - Extend `train.py` to automatically trigger post-hoc statistical analysis after each execution, generating consolidated HTML reports per FR-021 (already present behind `stats.run_posthoc_after_train`; validate behavior)
+  - Validate `run_posthoc_stats.py` and `run_xai_analysis.py` produce all required visualizations and consolidated reports; add minimal gaps only if tests show missing outputs (FR-026)
+  - Ensure `train.py` can automatically trigger post-hoc statistical analysis after each execution (per config)
 
-**Outputs**: `data-model.md`, `contracts\training_runner_config.yaml`, `quickstart.md`, updated plan, agent context refresh
+**Outputs**: updated plan and contracts
 
 ## Phase 2: Task Planning Approach
 - Base tasks on `.specify\templates\tasks-template.md`

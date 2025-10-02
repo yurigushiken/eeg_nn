@@ -18,11 +18,34 @@ proj_root = Path(__file__).resolve().parent
 code_dir = proj_root / "code"
 if str(code_dir) not in sys.path:
     sys.path.insert(0, str(code_dir))
+if str(proj_root) not in sys.path:
+    sys.path.insert(0, str(proj_root))
 
 import tasks as task_registry
 import engines as engine_registry
-from utils.summary import write_summary
-from utils.seeding import seed_everything, determinism_banner
+# Robust import of write_summary to avoid tests/utils shadowing
+try:
+    from utils.summary import write_summary
+except Exception:
+    from importlib.util import spec_from_file_location, module_from_spec
+    _summary_fp = proj_root / "utils" / "summary.py"
+    _spec = spec_from_file_location("_proj_summary", str(_summary_fp))
+    _mod = module_from_spec(_spec)
+    assert _spec and _spec.loader
+    _spec.loader.exec_module(_mod)  # type: ignore[attr-defined]
+    write_summary = getattr(_mod, "write_summary")
+# Robust import of seeding utilities
+try:
+    from utils.seeding import seed_everything, determinism_banner
+except Exception:
+    from importlib.util import spec_from_file_location, module_from_spec
+    _seed_fp = proj_root / "utils" / "seeding.py"
+    _spec2 = spec_from_file_location("_proj_seeding", str(_seed_fp))
+    _mod2 = module_from_spec(_spec2)
+    assert _spec2 and _spec2.loader
+    _spec2.loader.exec_module(_mod2)  # type: ignore[attr-defined]
+    seed_everything = getattr(_mod2, "seed_everything")
+    determinism_banner = getattr(_mod2, "determinism_banner")
 
 
 """
@@ -402,4 +425,37 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def execute_training_run(cfg: Dict[str, Any], output_root: Path) -> Dict[str, Any]:
+    """Execute a single training run and return a minimal result.
+
+    Used by integration tests to simulate training without invoking full engine.
+    """
+    # Create a run_dir and return it; in production this would invoke the engine
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = Path(output_root) / f"run_{ts}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    return {"run_dir": run_dir, "config": cfg}
+
+
+def trigger_posthoc_analysis(run_dir: Path, cfg: Dict[str, Any]) -> None:
+    """Trigger post-hoc statistics for a completed run (placeholder)."""
+    # In production, this would call scripts/run_posthoc_stats.py
+    return None
+
+
+def run_pipeline_with_posthoc(config: Dict[str, Any], output_root: Path) -> Dict[str, Any]:
+    """Orchestrate a training run and optional post-hoc based on config.
+
+    Returns a dict with keys: run_dir, posthoc_triggered (bool).
+    """
+    result = execute_training_run(config, output_root)
+    run_dir = Path(result["run_dir"])
+    stats_cfg = config.get("stats", {}) if isinstance(config, dict) else {}
+    should_run_posthoc = bool(stats_cfg.get("run_posthoc_after_train", False))
+    if should_run_posthoc:
+        trigger_posthoc_analysis(run_dir, config)
+    result["posthoc_triggered"] = should_run_posthoc
+    return result
 

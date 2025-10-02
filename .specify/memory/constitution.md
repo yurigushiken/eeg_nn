@@ -16,7 +16,7 @@ I. Reproducible Experiment Design
 
 Always connect to the environment. conda activate eegnex-env
 
-All experiments will be reproducible from a version-controlled configuration and a single, documented command. The scripts and commands defined in the project's documentation are the official entry points for running experiments. Any manual command-line overrides used for exploration must be justified and committed to the project's log for auditability.
+All experiments will be reproducible (except channel order) from a version-controlled configuration and a single, documented command. The scripts and commands defined in the project's documentation are the official entry points for running experiments. Any manual command-line overrides used for exploration must be justified and committed to the project's log for auditability.
 
     Every run will save a resolved_config.yaml, a pip_freeze.txt, and a record of its command-line arguments to its output directory.
 
