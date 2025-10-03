@@ -14,7 +14,7 @@ Numbers Cognition EEG Pipeline Constitution
 Core Principles
 I. Reproducible Experiment Design
 
-Always connect to the environment. conda activate eegnex-env
+Always connect to the environment. conda activate eegnex-env. ALWAYS.
 
 All experiments will be reproducible (except channel order) from a version-controlled configuration and a single, documented command. The scripts and commands defined in the project's documentation are the official entry points for running experiments. Any manual command-line overrides used for exploration must be justified and committed to the project's log for auditability.
 
