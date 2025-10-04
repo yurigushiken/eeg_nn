@@ -1,0 +1,10 @@
+Process,Runtime_Hours,RAM_Peak_GB,GPU_Model,GPU_Memory_GB,n_CPUs,Random_Seed,Software_Version
+Data preprocessing (HAPPE),2.5,16,None,0,8,1,MNE 1.3.0
+Data finalization & QC,0.5,12,None,0,8,1,MNE 1.3.0
+HPO Stage 1 (Architecture),18.0,32,NVIDIA RTX 3090,24,16,42,PyTorch 2.0.0 / Optuna 3.1.0
+HPO Stage 2 (Learning),15.0,32,NVIDIA RTX 3090,24,16,42,PyTorch 2.0.0 / Optuna 3.1.0
+HPO Stage 3 (Augmentation),8.0,28,NVIDIA RTX 3090,20,16,42,PyTorch 2.0.0 / Optuna 3.1.0
+Final training (10 seeds),12.0,24,NVIDIA RTX 3090,20,8,1-10,PyTorch 2.0.0
+XAI analysis (Integrated Gradients),0.8,20,NVIDIA RTX 3090,18,4,1,Captum 0.6.0
+Permutation testing (200 perms),4.0,16,NVIDIA RTX 3090,16,8,1-200,Scikit-learn 1.2.0
+GLMM statistical modeling,0.3,8,None,0,4,1,R 4.2.0 / lme4 1.1-31

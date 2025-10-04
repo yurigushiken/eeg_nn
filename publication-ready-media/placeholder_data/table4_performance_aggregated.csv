@@ -1,0 +1,9 @@
+Task,Metric,Mean_±_SD,Median,Range,Chance,p_value,Effect_Size_Cohen_d,Subjects_Above_Chance_n
+Cardinality 1-3,Accuracy,44.4 ± 3.5,43.8,37.8 - 50.3,33.3,<0.001,3.2,22/24 (92%)
+Cardinality 1-3,Macro-F1,41.2 ± 3.2,40.5,35.1 - 47.8,33.3,<0.001,2.5,22/24 (92%)
+Cardinality 1-3,Min-F1,37.5 ± 2.8,37.1,32.2 - 42.5,33.3,<0.05,1.5,18/24 (75%)
+Cardinality 1-3,Cohen's Kappa,0.17 ± 0.05,0.16,0.07 - 0.25,-,<0.001,-,22/24 (92%)
+Cardinality 4-6,Accuracy,48.3 ± 3.2,47.9,42.1 - 56.2,33.3,<0.001,4.7,22/24 (92%)
+Cardinality 4-6,Macro-F1,45.1 ± 3.0,44.8,39.2 - 51.5,33.3,<0.001,4.0,22/24 (92%)
+Cardinality 4-6,Min-F1,40.8 ± 2.5,40.5,36.8 - 45.7,33.3,<0.01,3.0,21/24 (88%)
+Cardinality 4-6,Cohen's Kappa,0.23 ± 0.06,0.22,0.14 - 0.32,-,<0.001,-,22/24 (92%)

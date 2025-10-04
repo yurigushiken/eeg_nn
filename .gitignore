@@ -42,26 +42,56 @@ dist/
 /optuna_studies/
 /temp/
 
-# Large/binary artifacts safeguard
+# Large/binary artifacts safeguard - be specific about paths
+# Raw data files (always ignore)
 *.fif
 *.mff
+*.set
+
+# Model checkpoints (always ignore)
 *.ckpt
 *.pt
 *.pth
 *.onnx
 *.bin
+
+# Database files (always ignore)
 *.db
 *.sqlite
-*.log
-*.png
-*.pdf
-*.set
-*.txt
-*.csv
 
-# Allow placeholders/docs to remain
+# Results and output artifacts (path-specific)
+/results/**/*.png
+/results/**/*.pdf
+/results/**/*.csv
+/results/**/*.txt
+/optuna_studies/**/*.db
+/cache/**/*
+/temp/**/*
+
+# Test outputs and fixtures (exclude all generated artifacts)
+/tests/**/*.png
+/tests/**/*.pdf
+/tests/**/*.ckpt
+/tests/**/*.fif
+/tests/**/*.csv
+/tests/**/consolidated_xai_report.*
+
+# Runtime/log outputs
+*.log
+pip_freeze.txt
+conda_env.yml
+
+# Exclude media outputs
+/media/**/*.png
+/media/**/*.txt
+/media/**/*.csv
+/media/**/*.pdf
+
+# Allow documentation and specs (but not media outputs)
+!docs/**
+!specs/**
+!**/*README*
 !.gitkeep
-!*/README.md
 
 
 # Spec Kit / Codex

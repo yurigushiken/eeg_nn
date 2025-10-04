@@ -1,26 +1,73 @@
 name: eegnex-env
 channels:
   - conda-forge
-  - pytorch
 dependencies:
   - python=3.11
   - pip
-  - numpy
-  - scipy
-  - pandas
-  - scikit-learn
-  - pyyaml
-  - matplotlib
-  - seaborn
-  - mne>=1.6
-  - pyprep
-  - optuna
-  - pytorch
+  
+  # Core scientific computing
+  - numpy>=1.26
+  - scipy>=1.16
+  - pandas>=2.3
+  - scikit-learn>=1.7
+  
+  # Visualization
+  - matplotlib>=3.10
+  - seaborn>=0.13
+  
+  # Configuration and utilities
+  - pyyaml>=6.0
+  - tqdm
+  
+  # EEG/MNE ecosystem
+  - mne-base>=1.10
+  - pyprep>=0.5
+  
+  # Optimization
+  - optuna>=4.5
+  
+  # PyTorch (via pip for CUDA control)
+  # Note: Conda's pytorch may not provide the exact CUDA version needed
+  
+  # Testing
+  - pytest>=8.4
+  
   - pip:
+      # PyTorch with CUDA 11.8 (or adjust for your GPU)
+      # Install manually after environment creation with:
+      # pip install torch==2.1.0+cu118 torchaudio==2.1.0+cu118 torchvision==0.16.0+cu118 --index-url https://download.pytorch.org/whl/cu118
+      # Or for CPU-only: pip install torch torchaudio torchvision
+      - torch>=2.1.0
+      - torchaudio>=2.1.0
+      - torchvision>=0.16.0
+      
+      # Deep learning for EEG
       - braindecode>=1.1.0
-      - captum
-      - playwright
-      - mffpy
-      - mne-icalabel
-      - python-picard
+      - skorch>=0.14
+      - torchinfo>=1.8
+      
+      # XAI (Explainable AI)
+      - captum>=0.8
+      
+      # MNE extensions
+      - mne-icalabel>=0.7
+      - mne-bids>=0.16
+      - python-picard>=0.8
+      - mffpy>=0.10
+      
+      # Report generation
+      - playwright>=1.55
+      - weasyprint>=66.0
+      
+      # Statistical modeling (for post-hoc analysis)
+      - pymc>=5.25
+      - bambi>=0.15
+      - arviz>=0.22
+      - pymer4>=0.9
+      - rpy2>=3.6
+      
+      # Utilities
+      - requests>=2.28
+      - h5py>=3.14
+      - h5netcdf>=1.6
 

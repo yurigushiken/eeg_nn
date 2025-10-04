@@ -62,13 +62,24 @@ def plot_confusion(
     # Dynamic sizing for many classes
     num_classes = len(class_names)
     if num_classes > 10:
-        figsize = (max(7, num_classes * 0.4), max(5, num_classes * 0.35))
+        base_width = max(7, num_classes * 0.4)
+        base_height = max(5, num_classes * 0.35)
         annot_fontsize = max(4, 9 - (num_classes - 10) * 0.2)
         xtick_rotation = 90
     else:
-        figsize = (7, 5)
+        base_width = 7
+        base_height = 5
         annot_fontsize = 9
         xtick_rotation = 0
+    
+    # Add extra width if we have hyper_lines (per-class F1 scores on the side)
+    if hyper_lines:
+        max_text_len = max(len(s) for s in hyper_lines)
+        # Add ~3.5 inches for side text (enough for ~50 characters)
+        extra_width = min(3.5, 2.0 + max_text_len * 0.03)
+        figsize = (base_width + extra_width, base_height)
+    else:
+        figsize = (base_width, base_height)
 
     fig, ax = plt.subplots(figsize=figsize)
     sns.heatmap(
@@ -117,12 +128,20 @@ def plot_confusion(
     # Optional hyper-params on left (monospace, dynamic left margin)
     if hyper_lines:
         max_len = max(len(s) for s in hyper_lines)
-        left_margin = min(0.5, 0.15 + max_len * 0.006)
-        fig.subplots_adjust(left=left_margin)
-        fig.text(0.02, 0.5, "\n".join(hyper_lines), va="center", ha="left", fontsize=7, family="monospace")
-    
-    # Use tight_layout to prevent white space, but keep minimum margins
-    fig.tight_layout(rect=[0, 0, 1, 0.96] if title else [0, 0, 1, 1])
+        # Calculate left margin as fraction of total figure width
+        # With extra width added, we can use a smaller fraction
+        left_margin = min(0.35, 0.12 + max_len * 0.004)
+        
+        # Use tight_layout first, then adjust for text
+        fig.tight_layout(rect=[left_margin, 0, 1, 0.96] if title else [left_margin, 0, 1, 1])
+        
+        # Place text in the left margin area (in figure coordinates)
+        fig.text(0.01, 0.5, "\n".join(hyper_lines), 
+                va="center", ha="left", fontsize=7, family="monospace",
+                transform=fig.transFigure)
+    else:
+        # Use tight_layout to prevent white space, but keep minimum margins
+        fig.tight_layout(rect=[0, 0, 1, 0.96] if title else [0, 0, 1, 1])
     
     outfile.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(outfile, dpi=300, bbox_inches="tight")
