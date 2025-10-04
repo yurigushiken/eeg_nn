@@ -10,7 +10,7 @@
 ### Session 2025-10-03
 - Q: For IG per-fold attribution averaging, should we include only correctly classified test trials or all test trials? → A: Only correctly classified
 - Q: For the two peak windows used in the Top‑2 Spatio‑Temporal Events, should the window length be fixed at 50 ms or configurable? → A: Configurable; default 100 ms
-- Q: For Grad‑CAM/TopoCAM, should it be optional (skip if no target layer) or required with a default? → A: Optional; skip if target layer absent
+- Q: For Grad‑CAM/TopoCAM, should it be optional (skip if no target layer) or required with a default? → A: Mandatory; target layer always configured for EEGNeX CNN
 - Q: Do you want per-class outputs limited to grand-average only, or also per-fold per-class artifacts? → A: Grand-average per-class only
 - Q: For the time-frequency view (FR-005), which method should be the default? → A: Wavelet transform
 
@@ -68,7 +68,7 @@ As a computational neuroscience researcher, after completing a model run, I want
 
 ### Acceptance Scenarios
 1. Given a completed run directory with per-fold checkpoints and a summary file, When the XAI analysis is executed, Then per-fold Integrated Gradients (IG) attribution matrices (channels × time) and heatmaps are saved, grand-average IG artifacts are produced, and a consolidated HTML report is written to the run directory.
-2. Given the same run, When a Grad-CAM target layer is configured, Then per-fold Grad-CAM heatmaps/vectors are saved and included in the grand-average summary; When no target is provided, the system logs a clear skip and still completes IG outputs and the report.
+2. Given the same run with EEGNeX model, When the XAI analysis is executed, Then per-fold Grad-CAM heatmaps/vectors are computed using the configured target layer and saved alongside IG outputs, and both are included in the grand-average summary and consolidated report.
 3. Given the custom montage file is present, When topoplots are requested, Then scalp topomaps render for overall and peak windows; When montage attachment fails, Then the system continues and logs a skip for topoplots without failing the run.
 4. Given multi-class tasks, When XAI analysis completes, Then grand-average, per-class IG visualizations (heatmaps and, when montage attached, topomaps) are produced for each class.
 5. Given grand-average IG is available, When time-frequency analysis is enabled, Then a grand-average time-frequency visualization is produced that highlights influential oscillatory bands over time.
@@ -85,7 +85,7 @@ As a computational neuroscience researcher, after completing a model run, I want
 
 ### Functional Requirements
 - **FR-001 (Core IG)**: System MUST compute per-fold Integrated Gradients (IG) attributions on correctly classified test trials and save per‑fold matrices and heatmaps (channels × time) under `xai_analysis/`.
-- **FR-002 (Core Grad‑CAM)**: System MUST support per‑fold Grad‑CAM; when a target layer is configured, it MUST save per‑fold heatmaps/vectors and include them in grand‑average summaries; when absent, it MUST skip gracefully with a clear log message and proceed.
+- **FR-002 (Core Grad‑CAM)**: System MUST compute per‑fold Grad‑CAM attributions using the configured target layer (always specified for EEGNeX CNN models), save per‑fold heatmaps/vectors, and include them in grand‑average summaries and the consolidated report.
 - **FR-003 (Grand Average)**: System MUST compute grand‑average IG attributions across folds and save a `.npy` matrix and a heatmap; it SHOULD derive overall channel importance and produce an overall topomap when montage is attached.
 - **FR-004 (Per‑Class IG)**: System MUST produce grand‑average IG visualizations per class (heatmaps and, when montage attached, topomaps) to explain class‑specific patterns.
 - **FR-005 (Time‑Frequency View)**: System MUST provide a time‑frequency visualization derived from the grand‑average IG map (defaulting to Wavelet transform) to indicate influential oscillatory bands over time.

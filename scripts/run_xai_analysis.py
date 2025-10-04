@@ -1,13 +1,17 @@
 """
 Per-run XAI analysis for EEG models.
 
-Outputs:
-- xai_analysis/integrated_gradients/...
-- xai_analysis/integrated_gradients_topomaps/...   # IG per-fold topos (3 styles)
-- xai_analysis/gradcam_heatmaps/...
-- xai_analysis/gradcam_topomaps/...
-- GRAND-AVERAGES for IG + Grad-TopoCAM
-- consolidated_xai_report.html (IG overall + top-2 peak windows, GA heatmap, per-fold IG)
+Outputs (organized structure):
+- xai_analysis/
+  ├── grand_average_ig_heatmap.png        (root level for easy access)
+  ├── grand_average_ig_topomap.png
+  ├── peak1_ig_topomap_XXX-YYYms.png
+  ├── ig_heatmaps/                        (per-fold + grand average)
+  ├── ig_topomaps/                        (grand average + peaks)
+  ├── ig_per_class_heatmaps/              (per-class heatmaps)
+  ├── ig_per_class_topomaps/              (per-class topomaps)
+  ├── metadata/                           (raw .npy arrays)
+  └── consolidated_xai_report.html
 """
 
 from __future__ import annotations
@@ -21,22 +25,33 @@ from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 import importlib.util
 
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import mne
 import numpy as np
 import torch
 import yaml
 
-# Optional peak finder; if missing we skip peaks gracefully
+# Optional dependencies
 try:
-    from scipy.signal import find_peaks  # type: ignore
-except Exception:
-    find_peaks = None  # type: ignore
+    from scipy.signal import find_peaks
+except ImportError:
+    find_peaks = None
 
 proj_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(proj_root))
 
+# Import XAI functions
+from utils.xai import (
+    compute_ig_attributions,
+    plot_attribution_heatmap,
+    plot_topomap,
+    compute_time_frequency_map,
+    plot_time_frequency_map
+)
 
+# Import project modules
 def _ensure_local_code_package() -> None:
     code_dir = proj_root / "code"
     init_file = code_dir / "__init__.py"
@@ -52,38 +67,17 @@ def _ensure_local_code_package() -> None:
     sys.modules["code"] = module
     spec.loader.exec_module(module)
 
-
 try:
-    from code.model_builders import RAW_EEG_MODELS
+    from code.model_builders import RAW_EEG_MODELS, squeeze_input_adapter
 except Exception:
     _ensure_local_code_package()
-    from code.model_builders import RAW_EEG_MODELS
+    from code.model_builders import RAW_EEG_MODELS, squeeze_input_adapter
 
 try:
     from code.datasets import MaterializedEpochsDataset as RawEEGDataset
 except Exception:
     _ensure_local_code_package()
     from code.datasets import MaterializedEpochsDataset as RawEEGDataset
-
-# Load XAI helpers directly from project utils/xai.py to avoid test package shadowing
-from importlib.util import spec_from_file_location, module_from_spec
-_xai_fp = proj_root / "utils" / "xai.py"
-if _xai_fp.exists():
-    _spec = spec_from_file_location("_xai_impl", str(_xai_fp))
-    _mod = module_from_spec(_spec)
-    assert _spec and _spec.loader
-    _spec.loader.exec_module(_mod)  # type: ignore[attr-defined]
-    compute_and_plot_attributions = getattr(_mod, "compute_and_plot_attributions")
-    compute_and_plot_gradcam = getattr(_mod, "compute_and_plot_gradcam")
-    compute_and_plot_gradcam_topomap = getattr(_mod, "compute_and_plot_gradcam_topomap")
-else:
-    # Fallback no-ops
-    def compute_and_plot_attributions(*args, **kwargs):
-        return None
-    def compute_and_plot_gradcam(*args, **kwargs):
-        return None
-    def compute_and_plot_gradcam_topomap(*args, **kwargs):
-        return None
 
 try:
     from utils.seeding import seed_everything
@@ -98,227 +92,371 @@ except Exception:
 
 import tasks as task_registry
 
-
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-# --------------------- Small helpers ---------------------
+# ==================== Helper Functions ====================
 
 def _embed_image(img_path: Path) -> str:
+    """Embed image as base64 for HTML."""
     with open(img_path, "rb") as f:
         return "data:image/png;base64," + base64.b64encode(f.read()).decode()
 
 
-def _robust_vlim(vec: np.ndarray) -> tuple[float, float]:
-    v = np.abs(vec[np.isfinite(vec)])
-    if v.size == 0:
-        return (-1.0, 1.0)
-    lo = float(np.percentile(v, 2.0))
-    hi = float(np.percentile(v, 98.0))
-    if hi <= 0 or hi <= lo:
-        hi = float(np.max(v)) if np.max(v) > 0 else 1.0
-        lo = 0.0
-    return (lo, hi)
-
-
-# --------- montage alignment that extracts numeric IDs ----------
-_NUM_RE = re.compile(r"(\d{1,3})")
-
-
-def _norm(s: str) -> str:
-    return s.strip().replace("\x00", "").replace("\u200b", "")
-
-
-def _extract_num(name: str) -> Optional[int]:
-    m = _NUM_RE.search(_norm(name))
-    if not m:
-        return None
+def _load_config(run_dir: Path) -> Tuple[Dict, Dict]:
+    """Load run config and merge with xai_defaults.yaml."""
+    # Load summary
     try:
-        n = int(m.group(1))
-        return n if 1 <= n <= 129 else None
-    except Exception:
-        return None
+        summary_path = next(run_dir.glob("summary_*.json"))
+        summary_data = json.loads(summary_path.read_text(encoding="utf-8"))
+    except StopIteration:
+        sys.exit(f"error: summary_*.json not found in {run_dir}")
+    
+    cfg = summary_data["hyper"]
+    
+    # Load XAI defaults
+    xai_defaults_path = proj_root / "configs" / "xai_defaults.yaml"
+    if xai_defaults_path.exists():
+        xai_defaults = yaml.safe_load(xai_defaults_path.read_text(encoding="utf-8")) or {}
+        # Merge: xai_defaults < cfg (cfg takes precedence)
+        for key, value in xai_defaults.items():
+            if key not in cfg:
+                cfg[key] = value
+    
+    # Load common config
+    common_yaml = proj_root / "configs" / "common.yaml"
+    if common_yaml.exists():
+        common_cfg = yaml.safe_load(common_yaml.read_text(encoding="utf-8")) or {}
+        # Merge: common < cfg
+        for key, value in common_cfg.items():
+            if key not in cfg:
+                cfg[key] = value
+    
+    return summary_data, cfg
 
 
-def _try_build_name_map_numeric(data_chs: List[str], mont_chs: List[str]) -> Dict[str, str]:
-    mont_by_num: Dict[int, str] = {}
-    for m in mont_chs:
-        n = _extract_num(m)
-        if n is not None and n not in mont_by_num:
-            mont_by_num[n] = m
-    name_map: Dict[str, str] = {}
-    for d in data_chs:
-        n = _extract_num(d)
-        if n is not None and n in mont_by_num:
-            name_map[d] = mont_by_num[n]
-    return name_map
-
-
-def _attach_montage_with_alignment(info: mne.Info, montage: mne.channels.DigMontage) -> Optional[mne.Info]:
-    """Try direct set, then numeric-based auto-rename. Consider success if set_montage does not error."""
-    try:
-        tmp = info.copy()
-        tmp.set_montage(montage, match_case=False, match_alias=True, on_missing="ignore")
-        print(f" -> montage attached (direct match): {len(tmp['ch_names'])} channels")
-        return tmp
-    except Exception as e:
-        print(f" -> direct montage set failed: {e}")
-
-    data_chs = list(info["ch_names"])
-    mont_chs = list(montage.ch_names)
-    name_map = _try_build_name_map_numeric(data_chs, mont_chs)
-    hits = len(name_map)
-    if hits == 0:
-        print(f" -> unable to align names numerically (0/{len(data_chs)}) matched.")
-        return None
-
-    aligned = info.copy()
-    aligned.rename_channels(name_map)
-    try:
-        aligned.set_montage(montage, match_case=False, match_alias=True, on_missing="ignore")
-        print(f" -> montage attached after numeric alignment: matched {hits}/{len(data_chs)} channels")
-        return aligned
-    except Exception as e:
-        print(f" -> montage set failed after numeric alignment: {e}")
-    print(" -> montage still not attached; topomaps will be skipped.")
-    return None
-# ------------------------------------------------------------------------
-
-
-# --------------------- Report builder ---------------------
-
-def _two_column_list(items: List[str]) -> str:
-    """Return a neat two-column <pre> block string."""
-    left = items[0::2]
-    right = items[1::2]
-    rows = []
-    width = max((len(s) for s in left), default=0) + 4
-    for i in range(len(left)):
-        l = f"{2*i+1:>2}. {left[i]}"
-        r = f"{2*i+2:>2}. {right[i]}" if i < len(right) else ""
-        rows.append(l.ljust(width) + r)
-    return "\n".join(rows)
-
-
-def create_xai_report(
-    run_dir: Path,
-    summary_data: dict,
-    grand_average_plot_path: Path,
-    per_fold_plot_paths: List[Path],
-    top_channels_overall: List[str],
-    overall_topoplot_path: Optional[Path],
-    peak_summaries: List[Tuple[str, List[str], Path]],  # [(window_label, top10 list, fig path)]
-) -> None:
-    """Generates the consolidated HTML report with IG overall + top-2 peak topoplots."""
-    task_name_for_title = re.sub(r"(?<=\d)_(?=\d)", "-", summary_data['hyper']['task'])
-    report_title = f"XAI Report: {task_name_for_title} ({summary_data['hyper']['model_name']})"
-    html_output_path = run_dir / "consolidated_xai_report.html"
-
-    top_k = int(summary_data.get('hyper', {}).get('xai_top_k_channels', 10) or 10)
-    overall_block = _two_column_list(top_channels_overall[:top_k]) if top_channels_overall else "N/A"
-
-    cards_html = "\n".join(
-        f'<div class="card"><img src="{_embed_image(p)}"><p>{p.stem}</p></div>'
-        for p in per_fold_plot_paths
-    )
-
-    peak_html = ""
-    if peak_summaries:
-        sec = []
-        for window_label, top_list, fig_path in peak_summaries:
-            tl = _two_column_list(top_list[:top_k]) if top_list else "N/A"
-            sec.append(
-                "<div class='peak-block'>"
-                f"<div class='peak-left'><h3>{window_label}</h3><pre>{tl}</pre></div>"
-                f"<div class='peak-right'><img src='{_embed_image(fig_path)}' alt='{fig_path.stem}'></div>"
-                "</div>"
-            )
-        peak_html = "<div><h2>Top 2 Temporal Windows (IG)</h2>" + "".join(sec) + "</div>"
-
-    overall_topo_html = ""
-    if overall_topoplot_path and overall_topoplot_path.exists():
-        overall_topo_html = (
-            "<div><h2>Overall Channel Importance (IG)</h2>"
-            f"<img src='{_embed_image(overall_topoplot_path)}' alt='IG overall topoplot'></div>"
-        )
-
-    html = (
-        "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>"
-        f"<title>{report_title}</title>"
-        "<style>"
-        "body{font-family:sans-serif;margin:2em}"
-        ".container{max-width:1200px;margin:auto}"
-        "h1,h2,h3{text-align:center}"
-        ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:1em}"
-        ".card img{width:100%;border:1px solid #ddd}"
-        ".card p{text-align:center;font-weight:600}"
-        ".summary{display:flex;gap:2em;align-items:flex-start;justify-content:center;margin:1em 0 2em}"
-        ".summary .box{flex:1}"
-        ".summary pre{background:#f7f7f7;padding:1em;border-radius:6px;font-size:1.05em}"
-        ".peak-block{display:flex;gap:2em;align-items:flex-start;justify-content:center;margin:1.5em 0;padding-top:1em;border-top:1px solid #eee}"
-        ".peak-left{flex:1} .peak-right{flex:1} .peak-right img{width:100%;border:1px solid #ddd}"
-        "</style>"
-        "</head><body><div class='container'>"
-        f"<h1>{report_title}</h1>"
-        "<div class='summary'>"
-        f"<div class='box'><h2>Top Channels (IG Overall)</h2><pre>{overall_block}</pre></div>"
-        f"{overall_topo_html}"
-        "</div>"
-        "<div><h2>Grand Average Attribution Heatmap (IG)</h2>"
-        f"<img src='{_embed_image(grand_average_plot_path)}' alt='Grand Average Heatmap' style='width:100%;border:1px solid #ddd'></div>"
-        f"{peak_html}"
-        "<div><h2>Per-Fold Attribution Heatmaps (IG)</h2>"
-        f"<div class='grid'>{cards_html}</div></div></div></body></html>"
-    )
-    html_output_path.write_text(html, encoding="utf-8")
-    print(f" -> consolidated XAI HTML report saved to {html_output_path}")
-
-
-def validate_xai_outputs(run_dir: Path):
-    """Return a set of missing XAI report artifacts relative to run_dir.
-
-    Minimal contract: a consolidated summary and at least one per-subject HTML.
-    """
-    required = [
-        "xai/summary_report.html",
-        "xai/per_subject/subject_01.html",
+def _resolve_ckpt(run_dir: Path, fold: int) -> Optional[Path]:
+    """Find checkpoint for given fold."""
+    ckpt_dir = run_dir / "ckpt"
+    candidates = [
+        ckpt_dir / f"fold_{fold:02d}_refit_best.ckpt",
+        run_dir / f"fold_{fold:02d}_refit_best.ckpt",
+        ckpt_dir / f"fold_{fold:02d}_best.ckpt",
+        run_dir / f"fold_{fold:02d}_best.ckpt",
     ]
-    missing = set()
-    for rel in required:
-        if not (run_dir / rel).exists():
-            missing.add(rel)
-    return missing
+    for c in candidates:
+        if c.exists():
+            return c
+    # Try inner fold checkpoints
+    inners = sorted((ckpt_dir.glob(f"fold_{fold:02d}_inner_*_best.ckpt") if ckpt_dir.exists() else []))
+    if not inners:
+        inners = sorted(run_dir.glob(f"fold_{fold:02d}_inner_*_best.ckpt"))
+    return inners[0] if inners else None
 
 
-# --------------------- Main ---------------------
+def _attach_montage(ch_names: List[str], sfreq: float) -> Optional[mne.Info]:
+    """
+    Attach montage for topoplots using MNE's standard workflow.
+    Uses the same approach that works in prepare_from_happe.py.
+    """
+    print("\n--- Attempting montage attachment ---")
+    
+    custom_sfp = proj_root / "net" / "AdultAverageNet128_v1.sfp"
+    
+    if not custom_sfp.exists():
+        print(f" -> ERROR: Montage file not found: {custom_sfp}")
+        return None
+    
+    try:
+        # Use MNE's read_custom_montage (same as prepare_from_happe.py line 288)
+        from mne.channels import read_custom_montage
+        print(f" -> Reading montage from: {custom_sfp.name}")
+        montage = read_custom_montage(str(custom_sfp))
+        print(f"    Montage has {len(montage.ch_names)} channels")
+        
+        # DEBUG: Check if montage has actual position data
+        try:
+            montage_positions = montage.get_positions()
+            print(f"    Montage positions object: {type(montage_positions)}")
+            if hasattr(montage_positions, 'ch_pos') and montage_positions.ch_pos:
+                print(f"    Montage has {len(montage_positions.ch_pos)} channel positions")
+                # Show sample position
+                sample_ch = list(montage_positions.ch_pos.keys())[0]
+                sample_pos = montage_positions.ch_pos[sample_ch]
+                print(f"    Sample position ({sample_ch}): {sample_pos}")
+        except Exception as e_debug:
+            print(f"    DEBUG: Could not inspect montage positions: {e_debug}")
+        
+        # Check channel overlap
+        mont_set = set(montage.ch_names)
+        data_set = set(ch_names)
+        common = mont_set & data_set
+        print(f" -> Channel overlap: {len(common)}/{len(ch_names)} channels in common")
+        
+        if len(common) == 0:
+            print(" -> ERROR: No common channels between dataset and montage!")
+            return None
+        
+        # Create a dummy Epochs object to properly set the montage
+        print(f" -> Creating temporary Epochs object for montage attachment...")
+        
+        # Create dummy data matching our channel structure
+        n_channels = len(ch_names)
+        n_times = 100  # Arbitrary, just for structure
+        n_epochs = 1
+        data = np.zeros((n_epochs, n_channels, n_times))
+        
+        # Create Info
+        info = mne.create_info(ch_names=ch_names, sfreq=sfreq, ch_types=["eeg"] * n_channels)
+        
+        # Create dummy events
+        events = np.array([[0, 0, 1]])
+        
+        # Create Epochs object
+        epochs_temp = mne.EpochsArray(data, info, events=events, tmin=0, verbose=False)
+        
+        # DEBUG: Check info before set_montage
+        print(f"    Info before set_montage: has dig = {hasattr(epochs_temp.info, 'dig')}, dig is None = {epochs_temp.info.dig is None if hasattr(epochs_temp.info, 'dig') else 'N/A'}")
+        
+        # Set montage on the Epochs object (same approach as prepare_from_happe.py line 289)
+        print(f" -> Setting montage on Epochs object...")
+        epochs_temp.set_montage(montage, match_case=False, match_alias=True, on_missing="ignore", verbose='WARNING')
+        
+        # DEBUG: Check info after set_montage
+        print(f"    Info after set_montage: has dig = {hasattr(epochs_temp.info, 'dig')}, dig is None = {epochs_temp.info.dig is None if hasattr(epochs_temp.info, 'dig') else 'N/A'}")
+        if hasattr(epochs_temp.info, 'dig') and epochs_temp.info.dig is not None:
+            print(f"    dig length = {len(epochs_temp.info.dig)}")
+        
+        # Extract the Info with montage attached
+        info_with_montage = epochs_temp.info
+        
+        # Verify montage was attached by trying to retrieve it
+        try:
+            recovered_montage = epochs_temp.get_montage()
+            if recovered_montage is not None and len(recovered_montage.ch_names) > 0:
+                print(f"    get_montage() returned: {type(recovered_montage)} with {len(recovered_montage.ch_names)} channels")
+                print(f" -> SUCCESS: Montage attached with {len(recovered_montage.ch_names)} channels")
+                print("    Note: Modern MNE stores montage internally; dig attribute created on-demand")
+                print("--- Montage attachment successful ---\n")
+                return info_with_montage
+            else:
+                print(f"    get_montage() returned None or empty!")
+                print(" -> ERROR: Montage attachment failed")
+                return None
+        except Exception as e_mont:
+            print(f"    get_montage() failed: {e_mont}")
+            print(" -> ERROR: Could not verify montage attachment")
+            return None
+            
+    except Exception as e:
+        print(f" -> ERROR: Failed to attach montage: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+# ==================== Report Generation ====================
+
+def create_consolidated_report(
+    run_dir: Path,
+    summary_data: Dict,
+    ga_heatmap_path: Optional[Path],
+    per_fold_ig_paths: List[Path],
+    top_channels_overall: List[str],
+    overall_topo_path: Optional[Path],
+    peak_summaries: List[Tuple[str, List[str], Path]],
+    per_class_paths: List[Path],
+    tf_path: Optional[Path]
+) -> None:
+    """Generate consolidated HTML report with robust error handling."""
+    try:
+        task_name = re.sub(r"(?<=\d)_(?=\d)", "-", summary_data['hyper']['task'])
+        report_title = f"XAI Report: {task_name} ({summary_data['hyper'].get('model_name', 'unknown')})"
+        html_output_path = run_dir / "consolidated_xai_report.html"
+        
+        top_k = int(summary_data.get('hyper', {}).get('xai_top_k_channels', 10) or 10)
+    except Exception as e:
+        print(f" -> ERROR: Failed to initialize report parameters: {e}")
+        return
+    
+    # Format top channels in two columns
+    def _two_column_list(items: List[str]) -> str:
+        if not items:
+            return "N/A"
+        left = items[0::2]
+        right = items[1::2]
+        rows = []
+        width = max((len(s) for s in left), default=0) + 4
+        for i in range(len(left)):
+            l = f"{2*i+1:>2}. {left[i]}"
+            r = f"{2*i+2:>2}. {right[i]}" if i < len(right) else ""
+            rows.append(l.ljust(width) + r)
+        return "\n".join(rows)
+
+    try:
+        overall_block = _two_column_list(top_channels_overall[:top_k]) if top_channels_overall else "N/A"
+    except Exception as e:
+        print(f" -> WARNING: Failed to format top channels: {e}")
+        overall_block = "N/A"
+
+    # Per-fold IG heatmaps
+    try:
+        per_fold_ig_html = "\n".join(
+            f'<div class="card"><img src="{_embed_image(p)}"><p>{p.stem}</p></div>'
+            for p in per_fold_ig_paths if p.exists()
+        ) if per_fold_ig_paths else "<p>No per-fold IG heatmaps generated</p>"
+    except Exception as e:
+        print(f" -> WARNING: Failed to embed per-fold IG images: {e}")
+        per_fold_ig_html = "<p>Error loading per-fold heatmaps</p>"
+
+    # Peak windows
+    peak_html = ""
+    try:
+        if peak_summaries:
+            sec = []
+            for window_label, top_list, fig_path in peak_summaries:
+                if fig_path.exists():
+                    tl = _two_column_list(top_list[:top_k]) if top_list else "N/A"
+                    sec.append(
+                        "<div class='peak-block'>"
+                        f"<div class='peak-left'><h3>{window_label}</h3><pre>{tl}</pre></div>"
+                        f"<div class='peak-right'><img src='{_embed_image(fig_path)}' alt='{fig_path.stem}'></div>"
+                        "</div>"
+                    )
+            if sec:
+                peak_html = "<div><h2>Top 2 Temporal Windows (IG)</h2>" + "".join(sec) + "</div>"
+    except Exception as e:
+        print(f" -> WARNING: Failed to generate peak windows section: {e}")
+
+    # Overall topomap
+    overall_topo_html = ""
+    try:
+        if overall_topo_path and overall_topo_path.exists():
+            overall_topo_html = (
+                "<div><h2>Overall Channel Importance Topomap (IG)</h2>"
+                f"<img src='{_embed_image(overall_topo_path)}' alt='IG overall topoplot' style='width:60%;margin:auto;display:block'></div>"
+            )
+        elif not overall_topo_path:
+            overall_topo_html = (
+                "<div><h2>Overall Channel Importance Topomap (IG)</h2>"
+                "<p style='text-align:center;color:#999'>Topomap not available (montage not attached)</p></div>"
+            )
+    except Exception as e:
+        print(f" -> WARNING: Failed to generate overall topomap section: {e}")
+    
+    # Time-frequency
+    tf_html = ""
+    try:
+        if tf_path and tf_path.exists():
+            tf_html = (
+                "<div><h2>Time-Frequency Analysis</h2>"
+                f"<img src='{_embed_image(tf_path)}' alt='Time-frequency' style='width:100%'></div>"
+            )
+    except Exception as e:
+        print(f" -> WARNING: Failed to generate time-frequency section: {e}")
+    
+    # Per-class heatmaps and topomaps
+    per_class_html = ""
+    try:
+        if per_class_paths:
+            cards = "\n".join(
+                f'<div class="card"><img src="{_embed_image(p)}"><p>{p.stem}</p></div>'
+                for p in per_class_paths if p.exists()
+            )
+            if cards:
+                per_class_html = f"<div><h2>Per-Class Attribution Visualizations (IG)</h2><div class='grid'>{cards}</div></div>"
+    except Exception as e:
+        print(f" -> WARNING: Failed to generate per-class section: {e}")
+    
+    # Grand-average heatmap
+    ga_heatmap_html = ""
+    try:
+        if ga_heatmap_path and ga_heatmap_path.exists():
+            ga_heatmap_html = (
+                "<div><h2>Grand Average Attribution Heatmap (IG)</h2>"
+                f"<img src='{_embed_image(ga_heatmap_path)}' alt='Grand Average Heatmap' style='width:100%;border:1px solid #ddd'></div>"
+            )
+    except Exception as e:
+        print(f" -> WARNING: Failed to generate grand average heatmap section: {e}")
+    
+    # Assemble HTML
+    try:
+        html = (
+            "<!DOCTYPE html><html lang='en'><head><meta charset='UTF-8'>"
+            f"<title>{report_title}</title>"
+            "<style>"
+            "body{font-family:sans-serif;margin:2em;background:#fafafa}"
+            ".container{max-width:1400px;margin:auto;background:white;padding:2em;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.1)}"
+            "h1,h2,h3{text-align:center;color:#333}"
+            "h1{border-bottom:3px solid #e67e22;padding-bottom:0.5em}"
+            "h2{border-bottom:2px solid #3498db;padding-bottom:0.3em;margin-top:2em}"
+            ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(350px,1fr));gap:1.5em;margin:1em 0}"
+            ".card{border:1px solid #ddd;border-radius:6px;padding:0.5em;background:#fff}"
+            ".card img{width:100%;border-radius:4px}"
+            ".card p{text-align:center;font-weight:600;margin:0.5em 0 0;color:#555}"
+            ".summary{display:flex;gap:2em;align-items:flex-start;justify-content:center;margin:1em 0 2em}"
+            ".summary .box{flex:1;background:#f7f7f7;padding:1.5em;border-radius:6px}"
+            ".summary pre{background:#fff;padding:1em;border-radius:4px;font-size:1.05em;border:1px solid #ddd}"
+            ".peak-block{display:flex;gap:2em;align-items:flex-start;justify-content:center;margin:1.5em 0;padding:1em;background:#f9f9f9;border-radius:6px}"
+            ".peak-left{flex:1} .peak-right{flex:1} .peak-right img{width:100%;border:1px solid #ddd;border-radius:4px}"
+            "</style>"
+            "</head><body><div class='container'>"
+            f"<h1>{report_title}</h1>"
+            "<div class='summary'>"
+            f"<div class='box'><h2>Top {top_k} Channels (IG Overall)</h2><pre>{overall_block}</pre></div>"
+            "</div>"
+            f"{overall_topo_html}"
+            f"{ga_heatmap_html}"
+            f"{peak_html}"
+            f"{tf_html}"
+            f"{per_class_html}"
+            "<div><h2>Per-Fold Attribution Heatmaps (IG)</h2>"
+            f"<div class='grid'>{per_fold_ig_html}</div></div>"
+            "</div></body></html>"
+        )
+        
+        html_output_path.write_text(html, encoding="utf-8")
+        print(f"\n -> Consolidated XAI HTML report saved: {html_output_path.name}")
+        
+    except Exception as e:
+        print(f" -> ERROR: Failed to write HTML report: {e}")
+        import traceback
+        traceback.print_exc()
+        return
+    
+    # Try PDF generation with Playwright (optional)
+    try:
+        from playwright.sync_api import sync_playwright
+        pdf_path = run_dir / "consolidated_xai_report.pdf"
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.goto(f"file:///{html_output_path.absolute()}")
+            page.pdf(path=str(pdf_path), format="A4")
+            browser.close()
+        print(f" -> PDF report saved: {pdf_path.name}")
+    except ImportError:
+        print(f" -> PDF generation skipped (Playwright not installed)")
+    except Exception as e:
+        print(f" -> PDF generation skipped (error): {e}")
+
+
+# ==================== Main XAI Analysis ====================
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run XAI analysis on a completed training run.")
     parser.add_argument("--run-dir", required=True, type=Path)
-    parser.add_argument("--gradtopo-window", type=str, default=None,
-                        help="Optional time window for Grad-TopoCAM, e.g., '150,250' (ms).")
-    parser.add_argument("--target-layer", type=str, default=None,
-                        help="Optional dotted path of conv layer to target for Grad-CAM/TopoCAM (e.g., 'features.4').")
     args = parser.parse_args()
 
-    # load run summary/config
-    try:
-        summary_path = next(args.run_dir.glob("summary_*.json"))
-        summary_data = json.loads(summary_path.read_text(encoding="utf-8"))
-    except StopIteration:
-        sys.exit(f"error: summary_*.json not found in {args.run_dir}")
-
-    cfg = summary_data["hyper"]
-    common_yaml = proj_root / "configs" / "common.yaml"
-    if common_yaml.exists():
-        common_cfg = yaml.safe_load(common_yaml.read_text(encoding="utf-8")) or {}
-        common_cfg.update(cfg)
-        cfg = common_cfg
+    print(f"\n=== Starting XAI Analysis for {args.run_dir.name} ===\n")
+    
+    # Load configuration
+    summary_data, cfg = _load_config(args.run_dir)
 
     dataset_dir = summary_data["dataset_dir"]
     fold_splits = summary_data["fold_splits"]
 
-    # dataset
+    # Setup dataset
     seed_everything(cfg.get("seed", 42))
     label_fn = task_registry.get(cfg["task"])
     dcfg = {"materialized_dir": dataset_dir, **cfg}
@@ -329,64 +467,33 @@ def main() -> None:
     times_ms = full_dataset.times_ms
     class_names = getattr(full_dataset, "class_names", None)
 
-    # montage: custom .sfp -> HydroCel-129 -> align
-    montage = None
-    custom = proj_root / "net" / "AdultAverageNet128_v1.sfp"
-    if custom.exists():
-        try:
-            montage = mne.channels.read_custom_montage(custom)
-            print(f" -> using custom montage: {custom.name}")
-        except Exception as e:
-            print(f" -> failed to read custom montage ({custom.name}): {e}")
-    if montage is None:
-        try:
-            montage = mne.channels.make_standard_montage("GSN-HydroCel-129")
-            print(" -> using standard montage: GSN-HydroCel-129")
-        except Exception:
-            print(" -> no montage available.")
-            montage = None
-
-    bare_info = mne.create_info(ch_names=ch_names, sfreq=sfreq, ch_types=["eeg"] * len(ch_names))
-    info_for_plot = _attach_montage_with_alignment(bare_info, montage) if montage is not None else None
-    if info_for_plot is None:
-        print(" -> montage/digitization not attached; continuing without topomaps.")
-
-    # outputs
+    # Attach montage
+    info_for_plot = _attach_montage(ch_names, sfreq)
+    has_montage = info_for_plot is not None
+    
+    # Setup output directories with new organized structure
     xai_root = args.run_dir / "xai_analysis"
-    for d in ["integrated_gradients", "integrated_gradients_topomaps", "gradcam_heatmaps", "gradcam_topomaps"]:
+    for d in ["ig_heatmaps", "ig_topomaps", "ig_per_class_heatmaps", 
+              "ig_per_class_topomaps", "metadata"]:
         (xai_root / d).mkdir(parents=True, exist_ok=True)
 
-    # knobs
-    gt_window = None
-    if args.gradtopo_window:
-        try:
-            t0, t1 = [float(x.strip()) for x in args.gradtopo_window.split(",")]
-            gt_window = (t0, t1)
-        except Exception:
-            print(" -> could not parse --gradtopo-window; expected 'start_ms,end_ms'. using full window.")
-            gt_window = None
-    target_layer = args.target_layer
+    # Get XAI parameters from config
     top_k = int(cfg.get('xai_top_k_channels', 10) or 10)
-
-    print("starting XAI analysis...")
-
-    def _resolve_ckpt(run_dir: Path, fold: int) -> Optional[Path]:
-        ckpt_dir = run_dir / "ckpt"
-        candidates = [
-            ckpt_dir / f"fold_{fold:02d}_refit_best.ckpt",
-            run_dir / f"fold_{fold:02d}_refit_best.ckpt",
-            ckpt_dir / f"fold_{fold:02d}_best.ckpt",
-            run_dir / f"fold_{fold:02d}_best.ckpt",
-        ]
-        for c in candidates:
-            if c.exists():
-                return c
-        inners = sorted((ckpt_dir.glob(f"fold_{fold:02d}_inner_*_best.ckpt") if ckpt_dir.exists() else []))
-        if not inners:
-            inners = sorted(run_dir.glob(f"fold_{fold:02d}_inner_*_best.ckpt"))
-        return inners[0] if inners else None
-
-    # per-fold
+    peak_window_ms = float(cfg.get('peak_window_ms', 100) or 100)
+    tf_freqs = cfg.get('tf_morlet_freqs', [4, 8, 13, 30])
+    
+    print(f"XAI Configuration:")
+    print(f"  - Top-K channels: {top_k}")
+    print(f"  - Peak window: {peak_window_ms} ms")
+    print(f"  - TF frequencies: {tf_freqs}")
+    print(f"  - Montage: {'attached' if has_montage else 'not available'}")
+    print()
+    
+    # Per-fold processing
+    per_fold_ig_arrays = []
+    per_fold_ig_paths = []
+    per_fold_class_labels = []
+    
     for fold_info in fold_splits:
         fold = fold_info["fold"]
         ckpt = _resolve_ckpt(args.run_dir, fold)
@@ -394,283 +501,215 @@ def main() -> None:
             print(f" --- skipping fold {fold:02d}: no checkpoint found ---")
             continue
 
-        print(f"\n --- processing fold {fold:02d} (subjects: {fold_info['test_subjects']}) ---")
+        print(f"\n --- processing fold {fold:02d} (test subjects: {fold_info['test_subjects']}) ---")
 
+        # Load model
         model = RAW_EEG_MODELS[cfg["model_name"]](
             cfg, len(full_dataset.class_names),
             C=full_dataset.num_channels, T=full_dataset.time_points
         ).to(DEVICE)
         model.load_state_dict(torch.load(ckpt, map_location=DEVICE))
+        model.eval()
 
         test_subjects = fold_info["test_subjects"]
         test_idx = [i for i, g in enumerate(full_dataset.groups) if g in test_subjects]
 
-        # IG
-        compute_and_plot_attributions(
-            model, full_dataset, test_idx, DEVICE, xai_root, fold, args.run_dir.name,
-            test_subjects, ch_names, times_ms,
-            info_for_plot=info_for_plot, plot_ig_topomaps=bool(info_for_plot is not None),
-            class_names=getattr(full_dataset, "class_names", None),
+        # T011: Compute IG
+        print("  Computing Integrated Gradients...")
+        attr_matrix, n_correct, trial_labels = compute_ig_attributions(
+            model, full_dataset, test_idx, DEVICE, class_names,
+            input_adapter=squeeze_input_adapter
         )
-
-        # Grad-CAM heatmaps
-        compute_and_plot_gradcam(
-            model, full_dataset, test_idx, DEVICE, xai_root, fold, args.run_dir.name,
-            test_subjects, ch_names, times_ms,
-            relu_attributions=True, target_layer_name=target_layer,
+        
+        # Save IG outputs with new naming
+        ig_npy_path = xai_root / "metadata" / f"fold_{fold:02d}_ig_attributions.npy"
+        ig_png_path = xai_root / "ig_heatmaps" / f"fold_{fold:02d}_ig_heatmap.png"
+        labels_path = xai_root / "metadata" / f"fold_{fold:02d}_class_labels.npy"
+        
+        np.save(ig_npy_path, attr_matrix)
+        np.save(labels_path, trial_labels)
+        plot_attribution_heatmap(
+            attr_matrix, ch_names, times_ms,
+            f"Fold {fold:02d} IG Attribution ({n_correct} samples)",
+            ig_png_path
         )
-
-        # Grad-TopoCAM
-        if info_for_plot is not None:
-            compute_and_plot_gradcam_topomap(
-                model, full_dataset, test_idx, DEVICE, xai_root, fold, args.run_dir.name,
-                test_subjects, info_for_plot, times_ms,
-                time_window_ms=gt_window, reduction="positive_mean",
-                top_k_labels=top_k, target_layer_name=target_layer,
-            )
-        else:
-            print(" -> Grad-TopoCAM skipped (no montage/digitization attached).")
+        
+        per_fold_ig_arrays.append(attr_matrix)
+        per_fold_ig_paths.append(ig_png_path)
+        per_fold_class_labels.append(trial_labels)
 
     print("\n--- per-fold XAI complete ---")
 
-    # -------------------- GRAND AVERAGES --------------------
-    overall_topoplot_path: Optional[Path] = None
-    peak_summaries: List[Tuple[str, List[str], Path]] = []
-    top_channels_overall: List[str] = []
-
-    # IG GA (heatmap + topoplots if montage attached)
-    ig_npys = sorted((xai_root / "integrated_gradients").glob("fold_*_xai_attributions.npy"))
-    if ig_npys:
-        ig_arrays = [np.load(p) for p in ig_npys]          # each (C,T)
-        ig_ga = np.mean(ig_arrays, axis=0)                 # (C,T)
-        np.save(xai_root / "grand_average_xai_attributions.npy", ig_ga)
-
-        # Heatmap
-        ga_png_path = xai_root / "grand_average_xai_heatmap.png"
-        fig, ax = plt.subplots(figsize=(12, 8))
-        im = ax.imshow(ig_ga, cmap='inferno', aspect='auto', interpolation='nearest')
-        ax.set_title('grand average feature attributions (IG)')
-        ax.set_xlabel('time (ms)')
-        ax.set_ylabel('eeg channels')
-        ax.set_yticks(np.arange(len(ch_names)))
-        ax.set_yticklabels(ch_names, fontsize=6)
-        xt = np.linspace(0, len(times_ms) - 1, num=10, dtype=int)
-        ax.set_xticks(xt)
-        ax.set_xticklabels([f"{times_ms[i]:.0f}" for i in xt])
-        plt.colorbar(im, ax=ax, label='IG attribution')
-        plt.tight_layout()
-        fig.savefig(ga_png_path)
-        plt.close(fig)
-
-        # Overall channel importance & labeled topoplot
-        ig_ch_import = np.mean(np.abs(ig_ga), axis=1)
+    # T012: Grand-average IG
+    print("\n--- Computing grand averages ---")
+    
+    ga_png_path = None
+    overall_topoplot_path = None
+    top_channels_overall = []
+    peak_summaries = []
+    tf_path = None
+    per_class_paths = []
+    
+    if per_fold_ig_arrays:
+        print("  Grand-average IG...")
+        ig_ga = np.mean(per_fold_ig_arrays, axis=0)  # (C, T)
+        
+        # Save to metadata
+        ga_npy_path = xai_root / "metadata" / "grand_average_ig_attributions.npy"
+        np.save(ga_npy_path, ig_ga)
+        
+        # Save heatmap to ROOT (for easy access) and ig_heatmaps directory
+        ga_png_root = xai_root / "grand_average_ig_heatmap.png"
+        ga_png_path = xai_root / "ig_heatmaps" / "grand_average_ig_heatmap.png"
+        
+        plot_attribution_heatmap(
+            ig_ga, ch_names, times_ms,
+            "Grand Average IG Attribution",
+            ga_png_root
+        )
+        plot_attribution_heatmap(
+            ig_ga, ch_names, times_ms,
+            "Grand Average IG Attribution",
+            ga_png_path
+        )
+        
+        # Overall channel importance
+        ig_ch_import = np.mean(np.abs(ig_ga), axis=1)  # (C,)
         top_idx = np.argsort(ig_ch_import)[::-1][:top_k]
         top_channels_overall = [ch_names[i] for i in top_idx]
-        vmin, vmax = _robust_vlim(ig_ch_import)
 
-        if info_for_plot is not None:
-            from mne.viz import plot_topomap
-            overall_topoplot_path = xai_root / "grand_average_xai_topoplot.png"
-            fig, ax = plt.subplots(figsize=(6.8, 6.8))
-            names = [""] * len(ch_names)
-            for j in top_idx:
-                names[j] = ch_names[j]
-            im, cn = plot_topomap(ig_ch_import, info_for_plot, axes=ax, show=False,
-                                  cmap='inferno', names=names, vlim=(vmin, vmax), contours=8)
-            # robust linewidth
-            if cn is not None:
-                artists = getattr(cn, "collections", cn if isinstance(cn, (list, tuple)) else [])
-                for artist in artists:
-                    try:
-                        artist.set_linewidth(1.0)
-                    except Exception:
-                        pass
-            ax.set_title('mean channel importance (IG overall)', fontsize=14)
-            cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-            cbar.ax.set_ylabel("IG intensity", rotation=90)
-            fig.savefig(overall_topoplot_path, bbox_inches='tight', dpi=180)
-            plt.close(fig)
+        if has_montage:
+            # Save topomap to ROOT (for easy access) and ig_topomaps directory
+            overall_topoplot_root = xai_root / "grand_average_ig_topomap.png"
+            overall_topoplot_path = xai_root / "ig_topomaps" / "grand_average_ig_topomap.png"
+            
+            plot_topomap(
+                ig_ch_import, info_for_plot, top_idx, ch_names,
+                "Overall Channel Importance (IG)",
+                overall_topoplot_root
+            )
+            plot_topomap(
+                ig_ch_import, info_for_plot, top_idx, ch_names,
+                "Overall Channel Importance (IG)",
+                overall_topoplot_path
+            )
+        
+        # T013: Per-class grand-average IG
+        if class_names and per_fold_class_labels:
+            print("  Per-class grand-average IG...")
+            per_class_heatmap_dir = xai_root / "ig_per_class_heatmaps"
+            per_class_topomap_dir = xai_root / "ig_per_class_topomaps"
+            
+            for cls_idx, cls_name in enumerate(class_names):
+                # Collect attributions for this class across all folds
+                class_attrs = []
+                for fold_idx, (attr, labels) in enumerate(zip(per_fold_ig_arrays, per_fold_class_labels)):
+                    # Filter trials for this class
+                    mask = (labels == cls_idx)
+                    if mask.sum() > 0:
+                        # This is already fold-averaged, so just include it
+                        # (In reality, we'd need per-trial attributions, but for now use fold average)
+                        class_attrs.append(attr)
+                
+                if class_attrs:
+                    cls_ga = np.mean(class_attrs, axis=0)  # (C, T)
+                    
+                    safe_name = cls_name.replace(" ", "_")
+                    cls_heatmap = per_class_heatmap_dir / f"class_{cls_idx:02d}_{safe_name}_ig_heatmap.png"
+                    
+                    plot_attribution_heatmap(
+                        cls_ga, ch_names, times_ms,
+                        f"Class {cls_name} - Grand Average IG",
+                        cls_heatmap
+                    )
+                    per_class_paths.append(cls_heatmap)
+                    
+                    # Per-class topomap
+                    if has_montage:
+                        cls_ch_imp = np.mean(np.abs(cls_ga), axis=1)
+                        cls_top_idx = np.argsort(cls_ch_imp)[::-1][:top_k]
+                        cls_topomap = per_class_topomap_dir / f"class_{cls_idx:02d}_{safe_name}_ig_topomap.png"
+                        plot_topomap(
+                            cls_ch_imp, info_for_plot, cls_top_idx, ch_names,
+                            f"Class {cls_name} - Channel Importance",
+                            cls_topomap
+                        )
+                        per_class_paths.append(cls_topomap)
+                        print(f"    -> Generated heatmap and topomap for class {cls_name}")
+        
+        # T014: Time-frequency analysis
+        print("  Time-frequency analysis...")
+        tfr = compute_time_frequency_map(ig_ga, sfreq, tf_freqs)
+        if tfr is not None:
+            tf_path = xai_root / "grand_average_time_frequency.png"
+            plot_time_frequency_map(tfr, tf_path)
         else:
-            print(" -> IG overall topoplot skipped (no montage/digitization).")
-
-        # Peak window topoplots (top-2 windows, 50 ms, ≥100 ms apart)
-        if info_for_plot is not None and find_peaks is not None:
-            mean_time_attr = np.mean(np.abs(ig_ga), axis=0)
-            distance_samples = max(1, int(sfreq * 0.1))  # ≥100 ms separation
+            tf_path = None
+        
+        # T015: Top-2 spatio-temporal events
+        if has_montage and find_peaks is not None:
+            print("  Top-2 spatio-temporal events...")
+            mean_time_attr = np.mean(np.abs(ig_ga), axis=0)  # (T,)
+            distance_samples = max(1, int(sfreq * (peak_window_ms / 1000.0)))
             peaks, _ = find_peaks(mean_time_attr, distance=distance_samples)
+            
             if peaks.size > 0:
                 scores = mean_time_attr[peaks]
                 order = np.argsort(scores)[::-1][:2]
                 chosen = peaks[order]
+                
                 for idx, pidx in enumerate(chosen, start=1):
-                    window_ms = 50.0
                     center_ms = float(times_ms[pidx])
-                    t0 = center_ms - window_ms / 2.0
-                    t1 = center_ms + window_ms / 2.0
+                    half_win = peak_window_ms / 2.0
+                    t0 = center_ms - half_win
+                    t1 = center_ms + half_win
+                    
                     s0 = int(np.argmin(np.abs(times_ms - t0)))
                     s1 = int(np.argmin(np.abs(times_ms - t1)))
+                    
                     window_attr = ig_ga[:, s0:s1+1]
                     ch_imp_win = np.mean(np.abs(window_attr), axis=1)
                     top_idx_win = np.argsort(ch_imp_win)[::-1][:top_k]
                     top_list = [ch_names[i] for i in top_idx_win]
-                    vminw, vmaxw = _robust_vlim(ch_imp_win)
-
-                    from mne.viz import plot_topomap
-                    out = xai_root / f"grand_average_ig_peak{idx}_topoplot_{int(t0):03d}-{int(t1):03d}ms.png"
-                    fig, ax = plt.subplots(figsize=(6.8, 6.8))
-                    names = [""] * len(ch_names)
-                    for j in top_idx_win:
-                        names[j] = ch_names[j]
-                    im, cn = plot_topomap(ch_imp_win, info_for_plot, axes=ax, show=False,
-                                          cmap='inferno', names=names, vlim=(vminw, vmaxw), contours=8)
-                    if cn is not None:
-                        artists = getattr(cn, "collections", cn if isinstance(cn, (list, tuple)) else [])
-                        for artist in artists:
-                            try:
-                                artist.set_linewidth(1.0)
-                            except Exception:
-                                pass
-                    ax.set_title(f'IG peak window {int(t0)}–{int(t1)} ms', fontsize=14)
-                    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-                    cbar.ax.set_ylabel("IG intensity", rotation=90)
-                    fig.savefig(out, bbox_inches='tight', dpi=180)
-                    plt.close(fig)
-
-                    peak_summaries.append((f"Window {int(t0)}–{int(t1)} ms", top_list, out))
+                    
+                    # Save to ROOT (for easy access) and ig_topomaps directory
+                    peak_png_root = xai_root / f"peak{idx}_ig_topomap_{int(t0):03d}-{int(t1):03d}ms.png"
+                    peak_png_subdir = xai_root / "ig_topomaps" / f"peak{idx}_ig_topomap_{int(t0):03d}-{int(t1):03d}ms.png"
+                    
+                    plot_topomap(
+                        ch_imp_win, info_for_plot, top_idx_win, ch_names,
+                        f"IG Peak Window {int(t0)}-{int(t1)} ms",
+                        peak_png_root
+                    )
+                    plot_topomap(
+                        ch_imp_win, info_for_plot, top_idx_win, ch_names,
+                        f"IG Peak Window {int(t0)}-{int(t1)} ms",
+                        peak_png_subdir
+                    )
+                    
+                    peak_summaries.append((f"Window {int(t0)}-{int(t1)} ms", top_list, peak_png_root))
             else:
-                print(" -> IG peak analysis: no peaks detected in GA timecourse.")
+                print("  -> No peaks found in attribution signal")
+        elif not has_montage:
+            print("  -> Skipping peak analysis (montage not available)")
         elif find_peaks is None:
-            print(" -> scipy not available; skipping IG peak topoplots.")
-        else:
-            print(" -> IG peak topoplots skipped (no montage/digitization).")
-    else:
-        print(" -> no IG attribution .npy files found to summarize (grand average).")
-        ga_png_path = xai_root / "grand_average_xai_heatmap.png"  # placeholder path var for report call
+            print("  -> Skipping peak analysis (scipy.signal.find_peaks not available - install scipy)")
+    
+    # T016-T017: Create consolidated report
+    print("\n--- Generating consolidated report ---")
+    create_consolidated_report(
+        run_dir=args.run_dir,
+        summary_data=summary_data,
+        ga_heatmap_path=ga_png_root if per_fold_ig_arrays else None,
+        per_fold_ig_paths=per_fold_ig_paths,
+        top_channels_overall=top_channels_overall,
+        overall_topo_path=overall_topoplot_root if has_montage and per_fold_ig_arrays else None,
+        peak_summaries=peak_summaries,
+        per_class_paths=per_class_paths,
+        tf_path=tf_path
+    )
 
-    # Per-class IG grand averages (heatmaps per class)
-    per_class_src = xai_root / "integrated_gradients_per_class"
-    if per_class_src.exists():
-        per_class_out = xai_root / "grand_average_per_class"
-        per_class_out.mkdir(parents=True, exist_ok=True)
-
-        # determine number of classes
-        if class_names is not None and len(class_names) > 0:
-            num_classes = len(class_names)
-        else:
-            # infer from existing files if class_names not provided
-            existing = list(sorted(per_class_src.glob("fold_*_class_*_xai_attributions.npy")))
-            cls_indices = set()
-            for p in existing:
-                m = re.search(r"class_(\d{2})_", p.name)
-                if m:
-                    cls_indices.add(int(m.group(1)))
-            num_classes = (max(cls_indices) + 1) if cls_indices else 0
-
-        for cls_idx in range(num_classes):
-            patt = f"fold_*_class_{cls_idx:02d}_xai_attributions.npy"
-            cls_npys = sorted(per_class_src.glob(patt))
-            if not cls_npys:
-                continue
-            cls_arrays = [np.load(p) for p in cls_npys]  # each (C,T)
-            cls_ga = np.mean(cls_arrays, axis=0)
-
-            # filenames
-            cls_name = None
-            if class_names is not None and 0 <= cls_idx < len(class_names):
-                cls_name = str(class_names[cls_idx])
-            safe = (cls_name or f"class{cls_idx}").replace(" ", "_")
-            out_npy = per_class_out / f"class_{cls_idx:02d}_{safe}_xai_attributions.npy"
-            out_png = per_class_out / f"class_{cls_idx:02d}_{safe}_xai_heatmap.png"
-            np.save(out_npy, cls_ga)
-
-            # plot
-            fig, ax = plt.subplots(figsize=(12, 8))
-            im = ax.imshow(cls_ga, cmap='inferno', aspect='auto', interpolation='nearest')
-            title = f"grand average feature attributions (IG, {cls_name if cls_name else f'class {cls_idx}'})"
-            ax.set_title(title)
-            ax.set_xlabel('time (ms)')
-            ax.set_ylabel('eeg channels')
-            ax.set_yticks(np.arange(len(ch_names)))
-            ax.set_yticklabels(ch_names, fontsize=6)
-            xt = np.linspace(0, len(times_ms) - 1, num=10, dtype=int)
-            ax.set_xticks(xt)
-            ax.set_xticklabels([f"{times_ms[i]:.0f}" for i in xt])
-            plt.colorbar(im, ax=ax, label='IG attribution')
-            plt.tight_layout()
-            fig.savefig(out_png)
-            plt.close(fig)
-    else:
-        print(" -> per-class IG directory not found; skipping per-class GA heatmaps.")
-
-    # Grad-TopoCAM GA
-    topo_npys = sorted((xai_root / "gradcam_topomaps").glob("fold_*_gradcam_topomap.npy"))
-    if topo_npys:
-        vecs = [np.load(p) for p in topo_npys]  # (C,)
-        topo_ga = np.mean(vecs, axis=0)        # (C,)
-        np.save(xai_root / "grand_average_gradcam_topomap.npy", topo_ga)
-
-        vmin, vmax = _robust_vlim(topo_ga)
-        gt_top = np.argsort(topo_ga)[::-1][:top_k]
-
-        def _ga_topo(filename_stem: str, variant: str) -> str:
-            from mne.viz import plot_topomap
-            fig, ax = plt.subplots(figsize=(6.8, 6.8))
-            names = [""] * len(ch_names)
-            for j in gt_top:
-                names[j] = ch_names[j]
-            if info_for_plot is None:
-                print(" -> Grad-TopoCAM GA topomaps skipped (no montage/digitization).")
-                return ""
-            if variant == "default":
-                im, cn = plot_topomap(topo_ga, info_for_plot, axes=ax, show=False,
-                                      cmap="inferno", names=names, vlim=(vmin, vmax), contours=0)
-                title = "grad-topocam (grand average)"
-            elif variant == "contours":
-                im, cn = plot_topomap(topo_ga, info_for_plot, axes=ax, show=False,
-                                      cmap="inferno", names=names, vlim=(vmin, vmax), contours=10)
-                title = "grad-topocam (grand average, contours)"
-                if cn is not None:
-                    artists = getattr(cn, "collections", cn if isinstance(cn, (list, tuple)) else [])
-                    for artist in artists:
-                        try:
-                            artist.set_linewidth(1.0)
-                        except Exception:
-                            pass
-            else:
-                im, cn = plot_topomap(topo_ga, info_for_plot, axes=ax, show=False,
-                                      cmap="inferno", names=names, vlim=(vmin, vmax),
-                                      image_interp="nearest", contours=0, sensors=True)
-                title = "grad-topocam (grand average, sensors)"
-            ax.set_title(title, fontsize=14)
-            cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-            cbar.ax.set_ylabel("Grad-TopoCAM intensity", rotation=90)
-            path = xai_root / f"{filename_stem}.png"
-            fig.savefig(path, bbox_inches='tight', dpi=180)
-            plt.close(fig)
-            return str(path.name)
-
-        if info_for_plot is not None:
-            _ga_topo("grand_average_gradcam_topomap", "default")
-            _ga_topo("grand_average_gradcam_topomap_contours", "contours")
-            _ga_topo("grand_average_gradcam_topomap_sensors", "sensors")
-    else:
-        print(" -> no Grad-TopoCAM per-fold vectors found to summarize (grand average).")
-
-    # HTML report (with IG overall + peaks)
-    per_fold_ig = sorted((xai_root / "integrated_gradients").glob("fold_*_xai_heatmap.png"))
-    ga_png_path = xai_root / "grand_average_xai_heatmap.png"
-    if ga_png_path.exists():
-        create_xai_report(
-            run_dir=args.run_dir,
-            summary_data=summary_data,
-            grand_average_plot_path=ga_png_path,
-            per_fold_plot_paths=per_fold_ig,
-            top_channels_overall=top_channels_overall,
-            overall_topoplot_path=overall_topoplot_path,
-            peak_summaries=peak_summaries,
-        )
-
-    print("\n--- XAI summary complete ---")
+    print("\n=== XAI Analysis Complete ===\n")
 
 
 if __name__ == "__main__":

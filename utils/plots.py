@@ -106,7 +106,13 @@ def plot_confusion(
     ax.set_xticklabels(ax.get_xticklabels(), rotation=xtick_rotation)
     ax.set_yticklabels(class_names, rotation=0)
     if title:
-        ax.set_title(title)
+        # Wrap long titles to prevent white space on sides
+        if len(title) > 80:
+            # Split on middle dot separator and wrap
+            parts = title.split(" · ")
+            if len(parts) > 2:
+                title = parts[0] + "\n" + " · ".join(parts[1:])
+        ax.set_title(title, fontsize=9)
 
     # Optional hyper-params on left (monospace, dynamic left margin)
     if hyper_lines:
@@ -114,9 +120,10 @@ def plot_confusion(
         left_margin = min(0.5, 0.15 + max_len * 0.006)
         fig.subplots_adjust(left=left_margin)
         fig.text(0.02, 0.5, "\n".join(hyper_lines), va="center", ha="left", fontsize=7, family="monospace")
-    else:
-        fig.subplots_adjust(left=0.20)
-
+    
+    # Use tight_layout to prevent white space, but keep minimum margins
+    fig.tight_layout(rect=[0, 0, 1, 0.96] if title else [0, 0, 1, 1])
+    
     outfile.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(outfile, dpi=300, bbox_inches="tight")
     plt.close(fig)
@@ -151,15 +158,19 @@ def plot_curves(
         ax2.set_ylim(0, 40)
 
     if title:
-        ax1.set_title(title)
+        # Wrap long titles to prevent white space on sides
+        if len(title) > 80:
+            # Split on middle dot separator and wrap
+            parts = title.split(" · ")
+            if len(parts) > 2:
+                title = parts[0] + "\n" + " · ".join(parts[1:])
+        ax1.set_title(title, fontsize=9)
 
     if hyper_lines:
         max_len = max(len(s) for s in hyper_lines)
         left_margin = min(0.6, 0.25 + max_len * 0.007)
         fig.subplots_adjust(left=left_margin)
         fig.text(0.02, 0.5, "\n".join(hyper_lines), va="center", ha="left", fontsize=6, family="monospace")
-    else:
-        fig.subplots_adjust(left=0.20)
 
     lines, labels = [], []
     for ax in (ax1, ax2):
@@ -167,6 +178,9 @@ def plot_curves(
         lines.extend(lns)
         labels.extend(lbls)
     fig.legend(lines, labels, loc="lower right", fontsize=8, frameon=False)
+    
+    # Use tight_layout to prevent white space
+    fig.tight_layout(rect=[0, 0, 1, 0.96] if title else [0, 0, 1, 1])
 
     outfile.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(outfile, dpi=300, bbox_inches="tight")

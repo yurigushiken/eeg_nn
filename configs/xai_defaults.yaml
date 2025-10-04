@@ -1,12 +1,11 @@
-xai:
-  # Default time window (ms) used for Grad-TopoCAM integration when CLI flag is omitted
-  gradtopo_window_ms: [150, 250]
+# XAI Default Configuration
+# These parameters control the XAI reporting system behavior
 
-  # Default Grad-CAM/TopoCAM target layer (dotted path inside the model wrapper)
-  # Choose an earlier conv that preserves [channels × time] if late layers collapse channels
-  gradcam_target_layer: features.3
+# Peak window analysis
+peak_window_ms: 100  # Duration of temporal window around each peak (milliseconds)
 
-  # Number of channel labels to draw on topomap figures (read elsewhere as xai_top_k_channels)
-  xai_top_k_channels: 10
+# Top-K channel labeling
+xai_top_k_channels: 10  # Number of top channels to label in topomaps
 
-
+# Time-frequency analysis (Morlet wavelet)
+tf_morlet_freqs: [4, 8, 13, 30]  # Frequency bins for time-frequency decomposition (Hz)

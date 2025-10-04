@@ -320,40 +320,105 @@ Tip: To force LOSO in any run that has a resolved config with `n_folds`, either 
 python -X utf8 -u scripts/run_xai_analysis.py --run-dir "results\runs\<run_dir_name>"
 ```
 
-### XAI (IG, Grad‑CAM heatmaps, Grad‑TopoCAM)
-- Outputs are written under `run_dir/xai_analysis/`:
-  - `integrated_gradients/`: per-fold IG arrays `fold_XX_xai_attributions.npy`, heatmaps `.png`, summaries `.json`.
-  - NEW: `integrated_gradients_per_class/`: per-fold, per-class IG arrays and heatmaps for correctly predicted trials by class.
-  - `gradcam_heatmaps/`: per-fold Grad-CAM heatmaps (use an earlier conv that preserves channels×time).
-  - `gradcam_topomaps/`: per-fold Grad-TopoCAM vectors `fold_XX_gradcam_topomap.npy` + three PNG variants.
-  - Grand averages:
-    - IG: `grand_average_xai_attributions.npy`, `grand_average_xai_heatmap.png`, `grand_average_xai_topoplot.png`
-    - Grad-TopoCAM: `grand_average_gradcam_topomap.npy` + three PNGs
-    - NEW: `grand_average_per_class/`: classwise grand-average IG heatmaps (`class_XX_*_xai_attributions.npy/.png`)
-  - `consolidated_xai_report.html`: IG grand average + peak windows + per-fold IG cards.
+### XAI Analysis (Integrated Gradients, Topomaps, Time-Frequency)
 
-- Choosing the conv layer for Grad‑CAM/TopoCAM:
-  - If maps are flat/uniform, you likely targeted a layer that already collapsed the electrode axis. Pick an EARLIER conv with an output that still has a non-trivial channel dimension.
-  - Example (EEGNeX): layers like `block_1.1` or `block_2.0` preserve (electrodes, time); layers from `block_3.0` onward often have spatial size 1 → constant vectors → uniform topomaps.
-  - CLI override:
+The XAI system provides comprehensive interpretability for trained EEG models using Integrated Gradients. After completing a training run, generate XAI artifacts using:
+
 ```powershell
-python -X utf8 -u scripts/run_xai_analysis.py --run-dir "<run_dir>" --target-layer block_1.1
+python -X utf8 -u scripts/run_xai_analysis.py --run-dir "results\runs\<run_dir_name>"
 ```
 
-- Time window for Grad‑TopoCAM:
-  - Pass `--gradtopo-window start_ms,end_ms` (e.g., `150,250`) to integrate over a latency window before projecting to the scalp; omit for full window.
-  - Defaults can be placed in `configs/xai_defaults.yaml`.
+Or enable automatic XAI generation during training:
+```powershell
+python -X utf8 -u train.py --task cardinality_1_3 --engine eeg --base configs/tasks/cardinality_1_3/base.yaml --run-xai
+```
 
-#### XAI defaults YAML
-Create `configs/xai_defaults.yaml` to document team defaults (used when the corresponding CLI flags are omitted):
+#### Output Structure
+
+All XAI artifacts are written to `<run_dir>/xai_analysis/`:
+
+**Per-Fold Outputs:**
+- `integrated_gradients/fold_XX_xai_attributions.npy`: IG attribution matrices (C×T) for correctly classified trials
+- `integrated_gradients/fold_XX_xai_heatmap.png`: Channel×time heatmaps
+- `integrated_gradients_per_class/fold_XX_class_labels.npy`: Per-trial class labels for per-class filtering
+
+**Grand-Average Outputs:**
+- `grand_average_xai_attributions.npy`: Mean IG across all folds (C×T)
+- `grand_average_xai_heatmap.png`: Grand-average channel×time heatmap
+- `grand_average_xai_topoplot.png`: Scalp topography of overall channel importance (requires montage)
+- `grand_average_per_class/class_XX_<name>_xai_heatmap.png`: Per-class attribution heatmaps
+- `grand_average_per_class/class_XX_<name>_xai_topoplot.png`: Per-class topomaps (requires montage)
+- `grand_average_time_frequency.png`: Time-frequency decomposition of grand-average IG (Morlet wavelets)
+- `grand_average_ig_peak1_topoplot_<t0>-<t1>ms.png`: Top temporal window #1 with peak channel importance
+- `grand_average_ig_peak2_topoplot_<t0>-<t1>ms.png`: Top temporal window #2 with peak channel importance
+
+**Consolidated Reports:**
+- `consolidated_xai_report.html`: Interactive HTML report with all visualizations embedded
+- `consolidated_xai_report.pdf`: Printable PDF version (requires Playwright)
+
+The HTML report includes:
+1. **Top-K Channel Summary**: Overall most important channels (default K=10)
+2. **Top-2 Spatio-Temporal Events**: Peak time windows with channel-specific importance
+3. **Grand-Average Visualizations**: Heatmaps, topomaps, time-frequency analysis
+4. **Per-Class Analysis**: Attribution patterns specific to each class
+5. **Per-Fold Gallery**: All fold-wise IG heatmaps
+
+#### Configuration
+
+XAI parameters are controlled via `configs/xai_defaults.yaml`:
+
 ```yaml
-xai:
-  gradtopo_window_ms: [150, 250]
-  gradcam_target_layer: features.3
-  xai_top_k_channels: 10
+# Top-K channels to highlight in reports and topomaps
+xai_top_k_channels: 10
+
+# Peak window duration for spatio-temporal event analysis (ms)
+peak_window_ms: 100
+
+# Frequencies for time-frequency decomposition (Hz)
+tf_morlet_freqs: [4, 8, 13, 30]
 ```
 
-`xai_top_k_channels` can also be set in your training config; the training config takes precedence over the YAML defaults.
+These defaults are merged with the run's config; run config takes precedence.
+
+#### Technical Details
+
+**Integrated Gradients (IG):**
+- Computed using Captum's `IntegratedGradients` with 50 integration steps
+- Applied only to correctly classified test trials
+- Averaged across trials to produce fold-level and grand-average attributions
+- Per-class analysis filters trials by true label before averaging
+
+**Topomaps:**
+- Generated using MNE-Python's `plot_topomap` with sensor positions from `net/AdultAverageNet128_v1.sfp`
+- Requires montage attachment; gracefully skipped if montage unavailable
+- Top-K channels are labeled on the scalp plot
+
+**Time-Frequency Analysis:**
+- Uses MNE's Morlet wavelet decomposition (`tfr_morlet`)
+- Applied to grand-average IG attribution matrix
+- Reveals which frequency bands (e.g., theta, alpha, beta) contributed to model decisions
+- Requires signal length ≥ wavelet duration; gracefully skipped for short epochs
+
+**Spatio-Temporal Events (Top-2 Peaks):**
+- Uses SciPy's `find_peaks` to identify significant temporal windows in the grand-average attribution
+- For each peak: computes window-specific channel importance and generates a topomap
+- Window duration controlled by `peak_window_ms` (default 100ms)
+- Requires montage; skipped if unavailable
+
+#### Troubleshooting
+
+**No topomaps generated:**
+- Verify montage file exists: `net/AdultAverageNet128_v1.sfp`
+- Check that channel names match montage (e.g., standard 10-20 names like Fp1, Fz, Cz)
+- Montage attachment warnings are logged; review console output
+
+**Time-frequency analysis skipped:**
+- Signal too short for lowest frequency wavelet
+- Reduce `tf_morlet_freqs` minimum or use longer epochs (increase `crop_ms` range)
+
+**PDF generation failed:**
+- Install Playwright: `playwright install`
+- HTML report is always generated; PDF is optional
 
 #### Post‑hoc stats defaults YAML
 Create `configs/posthoc_defaults.yaml` to set default flags for post‑hoc statistics (CLI args override these):
@@ -366,18 +431,6 @@ posthoc:
   chance_rate: null  # auto-detected if null
 ```
 
-#### Example commands
-```powershell
-# Use defaults from configs/xai_defaults.yaml
-python -X utf8 -u scripts/run_xai_analysis.py `
-  --run-dir "D:\eeg_nn\results\runs\20250927_1122_cardinality_1_3_eeg_hpf_1.5_lpf_35_baseline-off_seed_42_crop_ms_0_496"
-
-# Override the layer and window on CLI
-python -X utf8 -u scripts/run_xai_analysis.py `
-  --run-dir "D:\eeg_nn\results\runs\20250927_1122_cardinality_1_3_eeg_hpf_1.5_lpf_35_baseline-off_seed_42_crop_ms_0_496" `
-  --target-layer "features.3" `
-  --gradtopo-window 150,250
-```
 
 ### Post‑hoc statistics (group efficacy and subject reliability)
 - Purpose: quantify population‑level efficacy and subject‑level reliability without retraining.

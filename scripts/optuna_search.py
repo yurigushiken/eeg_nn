@@ -161,8 +161,10 @@ def main():
                 subprocess.run(cmd, check=True)
         except Exception:
             pass
-        # Optimize nested-CV inner mean macro-F1
-        obj = summary.get("inner_mean_macro_f1") or summary.get("inner_mean_acc") or 0.0
+        # Optimize based on configured objective metric
+        objective_metric = cfg.get("optuna_objective", "inner_mean_macro_f1")
+        obj = summary.get(objective_metric) or summary.get("inner_mean_macro_f1") or summary.get("inner_mean_acc") or 0.0
+        print(f"[optuna] trial {trial.number:03d} objective={objective_metric}: {obj:.4f}", flush=True)
         return float(obj)
 
     print(f"[optuna] Sampler=TPE, Pruner=Median(n_warmup_steps=10)", flush=True)

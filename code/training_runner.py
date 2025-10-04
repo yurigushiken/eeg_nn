@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 from sklearn.model_selection import LeaveOneGroupOut, GroupShuffleSplit, GroupKFold
 from sklearn.utils.class_weight import compute_class_weight
-from sklearn.metrics import f1_score, classification_report
+from sklearn.metrics import f1_score, classification_report, cohen_kappa_score
 import optuna
 
 try:
@@ -328,11 +328,16 @@ class TrainingRunner:
         overall_y_pred: List[int] = []
         inner_accs: List[float] = []
         inner_macro_f1s: List[float] = []
-        # Per-outer-fold macro-F1 for aggregates and CSV
+        inner_min_per_class_f1s: List[float] = []
+        # Per-outer-fold macro-F1 and kappa for aggregates and CSV
         fold_macro_f1s: List[float] = []
+        fold_kappas: List[float] = []
 
         # Prepare augmentation transform once (stateless transform expected)
         aug_transform = aug_builder(self.cfg, dataset) if aug_builder else None
+        
+        # Extract trial directory name for plot titles
+        trial_dir_name = self.run_dir.name if self.run_dir else ""
 
         # Global step counter for Optuna pruning (increments every epoch across folds)
         global_step = 0
@@ -464,6 +469,7 @@ class TrainingRunner:
                 best_state = None
                 best_inner_acc = 0.0
                 best_inner_macro_f1 = 0.0
+                best_inner_min_per_class_f1 = 0.0
                 patience = 0
                 tr_hist: List[float] = []
                 va_hist: List[float] = []
@@ -587,8 +593,11 @@ class TrainingRunner:
                     val_acc = 100.0 * correct / max(1, total)
                     try:
                         val_macro_f1 = f1_score(y_true_ep, y_pred_ep, average="macro") * 100
+                        val_per_class_f1 = f1_score(y_true_ep, y_pred_ep, average=None)
+                        val_min_per_class_f1 = float(np.min(val_per_class_f1)) * 100 if len(val_per_class_f1) > 0 else 0.0
                     except Exception:
                         val_macro_f1 = 0.0
+                        val_min_per_class_f1 = 0.0
 
                     # Optuna pruning: report inner-val macro-F1 per epoch and allow pruning
                     if optuna_trial is not None:
@@ -633,6 +642,7 @@ class TrainingRunner:
                     if update_ckpt:
                         best_inner_macro_f1 = val_macro_f1
                         best_inner_acc = val_acc
+                        best_inner_min_per_class_f1 = val_min_per_class_f1
                         best_state = copy.deepcopy(model.state_dict())
                         if self.run_dir and self.cfg.get("save_ckpt", True):
                             ckpt_dir = self.run_dir / "ckpt"
@@ -691,54 +701,14 @@ class TrainingRunner:
                         "best_state": best_state,
                         "best_inner_acc": best_inner_acc,
                         "best_inner_macro_f1": best_inner_macro_f1,
+                        "best_inner_min_per_class_f1": best_inner_min_per_class_f1,
                         "tr_hist": tr_hist,
                         "va_hist": va_hist,
                         "va_acc_hist": va_acc_hist,
                     }
                 )
 
-                # Save inner-fold plots (curves always; confusion if best_state available)
-                try:
-                    if self.run_dir:
-                        inner_plots = self.run_dir / "plots_inner"
-                        inner_plots.mkdir(parents=True, exist_ok=True)
-                        title_inner = f"Outer {fold+1} · Inner {inner_fold+1}"
-                        # Curves
-                        plot_curves(
-                            tr_hist,
-                            va_hist,
-                            va_acc_hist,
-                            inner_plots / f"outer{fold+1}_inner{inner_fold+1}_curves.png",
-                            title=title_inner,
-                        )
-                        # Confusion on inner validation set using best state
-                        if best_state is not None:
-                            model.load_state_dict(best_state)
-                            model.eval()
-                            y_true_i: List[int] = []
-                            y_pred_i: List[int] = []
-                            with torch.no_grad():
-                                for xb, yb in va_ld:
-                                    yb_gpu = yb.to(DEVICE)
-                                    xb_gpu = (
-                                        xb.to(DEVICE)
-                                        if not isinstance(xb, (list, tuple))
-                                        else [t.to(DEVICE) for t in xb]
-                                    )
-                                    xb_gpu = input_adapter(xb_gpu) if input_adapter else xb_gpu
-                                    out = model(xb_gpu) if not isinstance(xb_gpu, (list, tuple)) else model(*xb_gpu)
-                                    preds = out.argmax(1).cpu()
-                                    y_true_i.extend(yb.tolist())
-                                    y_pred_i.extend(preds.tolist())
-                            plot_confusion(
-                                y_true_i,
-                                y_pred_i,
-                                class_names,
-                                inner_plots / f"outer{fold+1}_inner{inner_fold+1}_confusion.png",
-                                title=title_inner,
-                            )
-                except Exception:
-                    pass
+                # Individual inner fold plots removed - will create ensemble plots after all inner folds complete
 
             # Aggregate inner metrics for this outer fold
             inner_mean_acc_this_outer = (
@@ -751,15 +721,34 @@ class TrainingRunner:
                 if inner_results_this_outer
                 else 0.0
             )
+            inner_mean_min_per_class_f1_this_outer = (
+                float(np.mean([r["best_inner_min_per_class_f1"] for r in inner_results_this_outer]))
+                if inner_results_this_outer
+                else 0.0
+            )
             inner_accs.append(inner_mean_acc_this_outer)
             inner_macro_f1s.append(inner_mean_macro_f1_this_outer)
+            inner_min_per_class_f1s.append(inner_mean_min_per_class_f1_this_outer)
 
-            # Select best inner model for plotting curves (ensemble used for test predictions)
+            # Select best inner model based on optuna_objective
+            optuna_objective = self.cfg.get("optuna_objective", "inner_mean_macro_f1")
+            
+            # Map objective to the metric key in inner results
+            objective_to_metric = {
+                "inner_mean_macro_f1": "best_inner_macro_f1",
+                "inner_mean_min_per_class_f1": "best_inner_min_per_class_f1",
+                "inner_mean_acc": "best_inner_acc",
+            }
+            
+            metric_key = objective_to_metric.get(optuna_objective, "best_inner_macro_f1")
+            
             if inner_results_this_outer:
                 best_inner_result = max(
                     inner_results_this_outer,
-                    key=lambda r: r["best_inner_macro_f1"],
+                    key=lambda r: r[metric_key],
                 )
+            else:
+                best_inner_result = None
 
             mode = str(self.cfg.get("outer_eval_mode", "ensemble")).lower()
 
@@ -981,7 +970,7 @@ class TrainingRunner:
                 raise ValueError(f"Unknown outer_eval_mode={mode}; use 'ensemble' or 'refit'")
 
             acc = 100.0 * correct / max(1, total)
-            # Per-fold macro F1 and optional per-class F1
+            # Per-fold macro F1, per-class F1, and Cohen's Kappa
             try:
                 macro_f1_fold = (
                     f1_score(y_true_fold, y_pred_fold, average="macro") * 100 if y_true_fold else 0.0
@@ -989,10 +978,15 @@ class TrainingRunner:
                 per_class_f1 = (
                     f1_score(y_true_fold, y_pred_fold, average=None).tolist() if y_true_fold else None
                 )
+                kappa_fold = (
+                    cohen_kappa_score(y_true_fold, y_pred_fold) if y_true_fold else 0.0
+                )
             except Exception:
                 macro_f1_fold = 0.0
                 per_class_f1 = None
+                kappa_fold = 0.0
             fold_macro_f1s.append(macro_f1_fold)
+            fold_kappas.append(kappa_fold)
             # Record outer-fold row
             outer_metrics_rows.append({
                 "outer_fold": int(fold + 1),
@@ -1000,25 +994,39 @@ class TrainingRunner:
                 "n_test_trials": int(len(y_true_fold)),
                 "acc": float(acc),
                 "macro_f1": float(macro_f1_fold),
+                "cohen_kappa": float(kappa_fold),
                 "acc_std": "",
                 "macro_f1_std": "",
+                "cohen_kappa_std": "",
                 "per_class_f1": json.dumps(per_class_f1) if per_class_f1 is not None else "",
             })
             fold_accs.append(acc)
             overall_y_true.extend(y_true_fold)
             overall_y_pred.extend(y_pred_fold)
             print(
-                f"[fold {fold+1}] acc={acc:.2f} inner_mean_acc={inner_mean_acc_this_outer:.2f} inner_mean_macro_f1={inner_mean_macro_f1_this_outer:.2f}",
+                f"[fold {fold+1}] acc={acc:.2f} kappa={kappa_fold:.3f} inner_mean_acc={inner_mean_acc_this_outer:.2f} inner_mean_macro_f1={inner_mean_macro_f1_this_outer:.2f}",
                 flush=True,
             )
 
-            # Plots per outer fold
+            # Plots per outer fold (using model selected by optuna_objective)
             if self.run_dir and best_inner_result:
                 plots_dir = self.run_dir / "plots_outer"
                 plots_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Get objective-specific metric value for title
+                if optuna_objective == "inner_mean_min_per_class_f1":
+                    obj_metric_val = inner_mean_min_per_class_f1_this_outer
+                    obj_metric_label = f"inner-mean min-per-class-F1={obj_metric_val:.2f}"
+                elif optuna_objective == "inner_mean_acc":
+                    obj_metric_val = inner_mean_acc_this_outer
+                    obj_metric_label = f"inner-mean acc={obj_metric_val:.2f}"
+                else:  # inner_mean_macro_f1
+                    obj_metric_val = inner_mean_macro_f1_this_outer
+                    obj_metric_label = f"inner-mean macro-F1={obj_metric_val:.2f}"
+                
                 fold_title = (
-                    f"Fold {fold+1} (Subjects: {test_subjects}) · "
-                    f"inner-mean macro-F1={inner_mean_macro_f1_this_outer:.2f} · acc={acc:.2f}"
+                    f"{trial_dir_name} · Fold {fold+1} (Subjects: {test_subjects}) · "
+                    f"{obj_metric_label} · ensemble acc={acc:.2f}"
                 )
                 plot_confusion(
                     y_true_fold,
@@ -1034,6 +1042,56 @@ class TrainingRunner:
                     plots_dir / f"fold{fold+1}_curves.png",
                     title=fold_title,
                 )
+                
+                # Enhanced plots with inner vs. outer metric comparison
+                plots_enhanced_dir = self.run_dir / "plots_outer_enhanced"
+                plots_enhanced_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Compute outer metrics matching the objective
+                outer_metric_val = None
+                outer_metric_label = ""
+                
+                if optuna_objective == "inner_mean_min_per_class_f1":
+                    if per_class_f1 is not None and len(per_class_f1) > 0:
+                        outer_min_per_class_f1 = float(np.min(per_class_f1)) * 100
+                        outer_metric_val = outer_min_per_class_f1
+                        outer_metric_label = f"outer min-per-class-F1={outer_metric_val:.2f}"
+                elif optuna_objective == "inner_mean_acc":
+                    outer_metric_val = acc
+                    outer_metric_label = f"outer acc={outer_metric_val:.2f}"
+                else:  # inner_mean_macro_f1
+                    outer_metric_val = macro_f1_fold
+                    outer_metric_label = f"outer macro-F1={outer_metric_val:.2f}"
+                
+                # Enhanced title with both inner and outer metrics
+                fold_title_enhanced = (
+                    f"{trial_dir_name} · Fold {fold+1} (Subjects: {test_subjects})\n"
+                    f"inner {obj_metric_label} · {outer_metric_label} · ensemble acc={acc:.2f}"
+                )
+                
+                # Build per-class F1 info for side text
+                per_class_info_lines = []
+                if per_class_f1 is not None and len(per_class_f1) > 0:
+                    per_class_info_lines.append("Per-class F1 (outer):")
+                    for i, f1_val in enumerate(per_class_f1):
+                        class_label = str(class_names[i]) if i < len(class_names) else f"Class {i}"
+                        per_class_info_lines.append(f"  {class_label}: {f1_val*100:.2f}%")
+                
+                plot_confusion(
+                    y_true_fold,
+                    y_pred_fold,
+                    class_names,
+                    plots_enhanced_dir / f"fold{fold+1}_confusion.png",
+                    title=fold_title_enhanced,
+                    hyper_lines=per_class_info_lines if per_class_info_lines else None,
+                )
+                plot_curves(
+                    best_inner_result["tr_hist"],
+                    best_inner_result["va_hist"],
+                    best_inner_result["va_acc_hist"],
+                    plots_enhanced_dir / f"fold{fold+1}_curves.png",
+                    title=fold_title_enhanced,
+                )
 
             # Append fold record after successful processing
             outer_folds_record.append(fold_record)
@@ -1042,6 +1100,8 @@ class TrainingRunner:
         # Overall metrics
         mean_acc = float(np.mean(fold_accs)) if fold_accs else 0.0
         std_acc = float(np.std(fold_accs)) if fold_accs else 0.0
+        mean_kappa = float(np.mean(fold_kappas)) if fold_kappas else 0.0
+        std_kappa = float(np.std(fold_kappas)) if fold_kappas else 0.0
         try:
             macro_f1 = (
                 f1_score(overall_y_true, overall_y_pred, average="macro") * 100 if overall_y_true else 0.0
@@ -1049,22 +1109,39 @@ class TrainingRunner:
             weighted_f1 = (
                 f1_score(overall_y_true, overall_y_pred, average="weighted") * 100 if overall_y_true else 0.0
             )
+            # Overall Cohen's Kappa from all predictions
+            cohen_kappa = (
+                cohen_kappa_score(overall_y_true, overall_y_pred) if overall_y_true else 0.0
+            )
             class_report_str = (
                 classification_report(overall_y_true, overall_y_pred, target_names=class_names)
                 if overall_y_true
                 else "N/A"
             )
         except Exception:
-            macro_f1 = weighted_f1 = 0.0
+            macro_f1 = weighted_f1 = cohen_kappa = 0.0
             class_report_str = "Error generating classification report."
 
         # Overall plot (confusion across all outer test predictions)
         if self.run_dir and overall_y_true:
             plots_dir = self.run_dir / "plots_outer"
             plots_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Get objective-specific metric value for title
+            optuna_objective = self.cfg.get("optuna_objective", "inner_mean_macro_f1")
+            if optuna_objective == "inner_mean_min_per_class_f1":
+                obj_metric_val = float(np.mean(inner_min_per_class_f1s)) if inner_min_per_class_f1s else 0.0
+                obj_metric_label = f"inner-mean min-per-class-F1={obj_metric_val:.2f}"
+            elif optuna_objective == "inner_mean_acc":
+                obj_metric_val = float(np.mean(inner_accs)) if inner_accs else 0.0
+                obj_metric_label = f"inner-mean acc={obj_metric_val:.2f}"
+            else:  # inner_mean_macro_f1
+                obj_metric_val = float(np.mean(inner_macro_f1s)) if inner_macro_f1s else 0.0
+                obj_metric_label = f"inner-mean macro-F1={obj_metric_val:.2f}"
+            
             overall_title = (
-                f"Overall · inner_mean_macro_f1={float(np.mean(inner_macro_f1s)) if inner_macro_f1s else 0.0:.2f} "
-                f"· mean_acc={mean_acc:.2f}"
+                f"{trial_dir_name} · Overall · {obj_metric_label} "
+                f"· ensemble mean_acc={mean_acc:.2f}"
             )
             plot_confusion(
                 overall_y_true,
@@ -1072,6 +1149,48 @@ class TrainingRunner:
                 class_names,
                 plots_dir / "overall_confusion.png",
                 title=overall_title,
+            )
+            
+            # Enhanced overall plot with inner vs. outer metric comparison
+            plots_enhanced_dir = self.run_dir / "plots_outer_enhanced"
+            plots_enhanced_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Compute overall outer metrics matching the objective
+            try:
+                overall_per_class_f1 = f1_score(overall_y_true, overall_y_pred, average=None) if overall_y_true else None
+            except Exception:
+                overall_per_class_f1 = None
+            
+            overall_outer_metric_label = ""
+            if optuna_objective == "inner_mean_min_per_class_f1":
+                if overall_per_class_f1 is not None and len(overall_per_class_f1) > 0:
+                    overall_outer_min_per_class_f1 = float(np.min(overall_per_class_f1)) * 100
+                    overall_outer_metric_label = f"outer min-per-class-F1={overall_outer_min_per_class_f1:.2f}"
+            elif optuna_objective == "inner_mean_acc":
+                overall_outer_metric_label = f"outer acc={mean_acc:.2f}"
+            else:  # inner_mean_macro_f1
+                overall_outer_metric_label = f"outer macro-F1={macro_f1:.2f}"
+            
+            overall_title_enhanced = (
+                f"{trial_dir_name} · Overall\n"
+                f"inner {obj_metric_label} · {overall_outer_metric_label} · ensemble mean_acc={mean_acc:.2f}"
+            )
+            
+            # Build per-class F1 info for overall plot side text
+            overall_per_class_info_lines = []
+            if overall_per_class_f1 is not None and len(overall_per_class_f1) > 0:
+                overall_per_class_info_lines.append("Per-class F1 (outer):")
+                for i, f1_val in enumerate(overall_per_class_f1):
+                    class_label = str(class_names[i]) if i < len(class_names) else f"Class {i}"
+                    overall_per_class_info_lines.append(f"  {class_label}: {f1_val*100:.2f}%")
+            
+            plot_confusion(
+                overall_y_true,
+                overall_y_pred,
+                class_names,
+                plots_enhanced_dir / "overall_confusion.png",
+                title=overall_title_enhanced,
+                hyper_lines=overall_per_class_info_lines if overall_per_class_info_lines else None,
             )
 
         # Write split indices artifact once per run
@@ -1168,6 +1287,8 @@ class TrainingRunner:
                         "acc_std",
                         "macro_f1",
                         "macro_f1_std",
+                        "cohen_kappa",
+                        "cohen_kappa_std",
                         "per_class_f1",
                     ]
                     with csv_fp2.open("w", newline="") as f:
@@ -1185,6 +1306,8 @@ class TrainingRunner:
                                 "acc_std": float(std_acc),
                                 "macro_f1": float(np.mean(fold_macro_f1s)) if fold_macro_f1s else 0.0,
                                 "macro_f1_std": float(np.std(fold_macro_f1s)) if fold_macro_f1s else 0.0,
+                                "cohen_kappa": float(mean_kappa),
+                                "cohen_kappa_std": float(std_kappa),
                                 "per_class_f1": "",
                             }
                             writer2.writerow(agg_row)
@@ -1247,14 +1370,19 @@ class TrainingRunner:
         return {
             "mean_acc": mean_acc,
             "std_acc": std_acc,
+            "cohen_kappa": float(cohen_kappa),
+            "mean_kappa": float(mean_kappa),
+            "std_kappa": float(std_kappa),
             "macro_f1": float(macro_f1),
             "weighted_f1": float(weighted_f1),
             "classification_report": class_report_str,
             "fold_accuracies": fold_accs,
             "fold_macro_f1s": fold_macro_f1s,
+            "fold_kappas": fold_kappas,
             "fold_splits": fold_split_info,
             "inner_mean_acc": float(np.mean(inner_accs)) if inner_accs else 0.0,
             "inner_mean_macro_f1": float(np.mean(inner_macro_f1s)) if inner_macro_f1s else 0.0,
+            "inner_mean_min_per_class_f1": float(np.mean(inner_min_per_class_f1s)) if inner_min_per_class_f1s else 0.0,
             "num_classes": int(num_cls),
         }
 

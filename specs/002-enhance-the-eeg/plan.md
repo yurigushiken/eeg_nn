@@ -76,7 +76,7 @@ utils/
 └── xai.py               # HEAVILY MODIFIED
 
 configs/
-└── xai_defaults.yaml    # NEW
+└── xai_defaults.yaml    # existing
 
 tests/
 ├── contract/
