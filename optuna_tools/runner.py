@@ -26,7 +26,9 @@ def _pick_best_dirname(df) -> Optional[str]:
 
 
 def _sort_trials(df):
-    preferred_order_cols = ["inner_mean_macro_f1", "inner_mean_acc", "mean_acc"]
+    # Prioritize min-per-class-F1 to align with common optimization objectives
+    # Falls back to macro-F1, then accuracy if min-per-class-F1 is not available
+    preferred_order_cols = ["inner_mean_min_per_class_f1", "inner_mean_macro_f1", "inner_mean_acc", "mean_acc"]
     for col in preferred_order_cols:
         if col in df.columns:
             return df.sort_values(col, ascending=False).reset_index(drop=True)

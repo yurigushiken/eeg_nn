@@ -297,7 +297,7 @@ class TrainingRunner:
         try:
             outer_mode = "GroupKFold" if self.cfg.get("n_folds") else "LOSO"
             print(
-                f"[config] seed={self.cfg.get('seed')} random_state={self.cfg.get('random_state')} outer_mode={outer_mode}",
+                f"[config] seed={self.cfg.get('seed')} outer_mode={outer_mode}",
                 flush=True,
             )
         except Exception:
@@ -329,8 +329,9 @@ class TrainingRunner:
         inner_accs: List[float] = []
         inner_macro_f1s: List[float] = []
         inner_min_per_class_f1s: List[float] = []
-        # Per-outer-fold macro-F1 and kappa for aggregates and CSV
+        # Per-outer-fold macro-F1, min-per-class-F1, and kappa for aggregates and CSV
         fold_macro_f1s: List[float] = []
+        fold_min_per_class_f1s: List[float] = []
         fold_kappas: List[float] = []
 
         # Prepare augmentation transform once (stateless transform expected)
@@ -599,6 +600,24 @@ class TrainingRunner:
                         val_macro_f1 = 0.0
                         val_min_per_class_f1 = 0.0
 
+                    # Collect learning curve data for CSV export
+                    try:
+                        learning_curve_rows.append({
+                            "outer_fold": int(fold + 1),
+                            "inner_fold": int(inner_fold + 1),
+                            "epoch": int(epoch),
+                            "train_loss": float(train_loss),
+                            "val_loss": float(val_loss),
+                            "val_acc": float(val_acc),
+                            "val_macro_f1": float(val_macro_f1),
+                            "n_train": int(len(inner_tr_abs)),
+                            "n_val": int(len(inner_va_abs)),
+                            "optuna_trial_id": int(optuna_trial.number) if optuna_trial else -1,
+                            "param_hash": "",  # Could compute hash of hyperparams if needed
+                        })
+                    except Exception:
+                        pass
+
                     # Optuna pruning: report inner-val macro-F1 per epoch and allow pruning
                     if optuna_trial is not None:
                         global_step += 1
@@ -731,7 +750,12 @@ class TrainingRunner:
             inner_min_per_class_f1s.append(inner_mean_min_per_class_f1_this_outer)
 
             # Select best inner model based on optuna_objective
-            optuna_objective = self.cfg.get("optuna_objective", "inner_mean_macro_f1")
+            if "optuna_objective" not in self.cfg:
+                raise ValueError(
+                    "'optuna_objective' must be explicitly specified in config for scientific validity. "
+                    "No fallback allowed. Choose from: inner_mean_macro_f1, inner_mean_min_per_class_f1, inner_mean_acc"
+                )
+            optuna_objective = self.cfg["optuna_objective"]
             
             # Map objective to the metric key in inner results
             objective_to_metric = {
@@ -740,7 +764,12 @@ class TrainingRunner:
                 "inner_mean_acc": "best_inner_acc",
             }
             
-            metric_key = objective_to_metric.get(optuna_objective, "best_inner_macro_f1")
+            if optuna_objective not in objective_to_metric:
+                raise ValueError(
+                    f"Invalid optuna_objective: '{optuna_objective}'. "
+                    f"Must be one of: {list(objective_to_metric.keys())}"
+                )
+            metric_key = objective_to_metric[optuna_objective]
             
             if inner_results_this_outer:
                 best_inner_result = max(
@@ -750,7 +779,12 @@ class TrainingRunner:
             else:
                 best_inner_result = None
 
-            mode = str(self.cfg.get("outer_eval_mode", "ensemble")).lower()
+            if "outer_eval_mode" not in self.cfg:
+                raise ValueError(
+                    "'outer_eval_mode' must be explicitly specified in config. "
+                    "Choose 'ensemble' (default recommendation) or 'refit'. No fallback allowed for scientific validity."
+                )
+            mode = str(self.cfg["outer_eval_mode"]).lower()
 
             # Test-time evaluation
             correct = 0
@@ -987,6 +1021,10 @@ class TrainingRunner:
                 kappa_fold = 0.0
             fold_macro_f1s.append(macro_f1_fold)
             fold_kappas.append(kappa_fold)
+            # Compute min-per-class F1 for this fold
+            min_f1_fold = float(np.min(per_class_f1)) * 100 if per_class_f1 is not None and len(per_class_f1) > 0 else 0.0
+            fold_min_per_class_f1s.append(min_f1_fold)
+            
             # Record outer-fold row
             outer_metrics_rows.append({
                 "outer_fold": int(fold + 1),
@@ -994,9 +1032,11 @@ class TrainingRunner:
                 "n_test_trials": int(len(y_true_fold)),
                 "acc": float(acc),
                 "macro_f1": float(macro_f1_fold),
+                "min_per_class_f1": float(min_f1_fold),
                 "cohen_kappa": float(kappa_fold),
                 "acc_std": "",
                 "macro_f1_std": "",
+                "min_per_class_f1_std": "",
                 "cohen_kappa_std": "",
                 "per_class_f1": json.dumps(per_class_f1) if per_class_f1 is not None else "",
             })
@@ -1128,7 +1168,8 @@ class TrainingRunner:
             plots_dir.mkdir(parents=True, exist_ok=True)
             
             # Get objective-specific metric value for title
-            optuna_objective = self.cfg.get("optuna_objective", "inner_mean_macro_f1")
+            # (optuna_objective already validated earlier, no fallback)
+            optuna_objective = self.cfg["optuna_objective"]
             if optuna_objective == "inner_mean_min_per_class_f1":
                 obj_metric_val = float(np.mean(inner_min_per_class_f1s)) if inner_min_per_class_f1s else 0.0
                 obj_metric_label = f"inner-mean min-per-class-F1={obj_metric_val:.2f}"
@@ -1287,6 +1328,8 @@ class TrainingRunner:
                         "acc_std",
                         "macro_f1",
                         "macro_f1_std",
+                        "min_per_class_f1",
+                        "min_per_class_f1_std",
                         "cohen_kappa",
                         "cohen_kappa_std",
                         "per_class_f1",
@@ -1306,6 +1349,8 @@ class TrainingRunner:
                                 "acc_std": float(std_acc),
                                 "macro_f1": float(np.mean(fold_macro_f1s)) if fold_macro_f1s else 0.0,
                                 "macro_f1_std": float(np.std(fold_macro_f1s)) if fold_macro_f1s else 0.0,
+                                "min_per_class_f1": float(np.mean(fold_min_per_class_f1s)) if fold_min_per_class_f1s else 0.0,
+                                "min_per_class_f1_std": float(np.std(fold_min_per_class_f1s)) if fold_min_per_class_f1s else 0.0,
                                 "cohen_kappa": float(mean_kappa),
                                 "cohen_kappa_std": float(std_kappa),
                                 "per_class_f1": "",
@@ -1378,6 +1423,7 @@ class TrainingRunner:
             "classification_report": class_report_str,
             "fold_accuracies": fold_accs,
             "fold_macro_f1s": fold_macro_f1s,
+            "fold_min_per_class_f1s": fold_min_per_class_f1s,
             "fold_kappas": fold_kappas,
             "fold_splits": fold_split_info,
             "inner_mean_acc": float(np.mean(inner_accs)) if inner_accs else 0.0,

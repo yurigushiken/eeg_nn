@@ -10,25 +10,24 @@ This repository implements a streamlined EEG decoding pipeline aligned with the 
 
 ### Key ideas
 - Preprocessing is performed externally with HAPPE; we convert EEGLAB `.set` to `.fif` once with `scripts/prepare_from_happe.py`.
-- Optuna search runs directly on materialized `.fif` via `scripts/optuna_search.py` with a `--stage` flag; we use TPE with MedianPruner (warmup=10) and per‑epoch pruning on inner macro‑F1.
+- Optuna search runs directly on materialized `.fif` via `scripts/optuna_search.py` with a `--stage` flag; we use TPE with MedianPruner (warmup=10) and per‑epoch pruning on the metric specified by `optuna_objective` (e.g., `inner_mean_min_per_class_f1` for worst-class focus, or `inner_mean_macro_f1` for average performance).
 - Stage progression is manual (by design): you choose the next stage and feed winners via YAML overlays; the runner does not auto‑chain stages.
 - Behavior alignment is strict by default; any epochs↔behavior mismatch raises and aborts.
 - Default channel policy excludes non‑scalp channels (`use_channel_list: non_scalp`). The Cz‑ring knob (`cz_step`) is disabled by default.
 - Every run writes `resolved_config.yaml` in its run directory for reproducibility and re‑use.
 - Final evaluation can average across ≥10 seeds and generate XAI reports.
-- Outer test predictions use an inner‑fold ensemble (mean of softmax across inner K models) for stability; plots use the best inner fold’s curves.
- - Alternatively, set `outer_eval_mode: refit` to refit one model on the full outer‑train (optional subject‑aware val via `refit_val_frac`) before testing; both modes are YAML‑switchable.
+- Outer test predictions: set `outer_eval_mode: ensemble` to average softmax across inner K models for stability (recommended), or `outer_eval_mode: refit` to refit one model on the full outer‑train (optional subject‑aware val via `refit_val_frac`) before testing.
  - Determinism: strict seeding for Python/NumPy/Torch, per‑worker DataLoader seeding. A determinism banner is printed and persisted into reports.
  - Provenance: reports include the exact model class (e.g., `braindecode.models.EEGNeX`), library versions (torch, numpy, sklearn, mne, braindecode, captum, optuna, python), and determinism flags.
  - Dataset caching:
    - `dataset_cache_memory: true` enables an in-process RAM cache of the fully built dataset (X, y, groups, channels, times). The first trial in a Python process builds it; subsequent trials reuse instantly (skips repeated MNE loads and cropping). Restarting the Python process clears it.
 
 ### Per‑run artifacts (besides checkpoints/plots)
-- `summary_<TASK>_<ENGINE>.json`: metrics + hyper + determinism + lib versions + model class + hardware (+ config_hash, exclusion summary, telemetry reference)
+- `summary_<TASK>_<ENGINE>.json`: metrics + hyper + determinism + lib versions + model class + hardware (+ config_hash, exclusion summary, telemetry reference). Includes per-fold values for `min_per_class_f1` and `cohen_kappa`.
 - `resolved_config.yaml`: the frozen config used for the run
 - `splits_indices.json`: exact outer/inner indices and subjects for all folds (auditable splits)
 - `learning_curves_inner.csv`: all inner‑fold learning curves across outer folds (epoch‑wise train/val loss/acc/macro‑F1)
-- `outer_eval_metrics.csv`: one row per outer fold with held‑out subjects, n_test, acc, macro‑F1 (+ OVERALL row)
+- `outer_eval_metrics.csv`: one row per outer fold with held‑out subjects, n_test, acc, macro‑F1, weighted‑F1, per‑class F1, min‑per‑class‑F1, and Cohen's kappa (+ OVERALL row with means and standard deviations)
 - `test_predictions_outer.csv`: one row per out‑of‑fold test trial (outer) — subject_id, trial_index, true/pred labels, p_trueclass, logp_trueclass, full probs — ready for mixed‑effects models
 - `test_predictions_inner.csv`: one row per inner validation trial — outer_fold, inner_fold, subject_id, trial_index, true/pred labels, p_trueclass, logp_trueclass, full probs — useful for inner vs outer performance comparison
 - `logs/runtime.jsonl`: JSONL event log (fold boundaries, class-weights saved, chance-level computed, split export, posthoc start/end)
@@ -37,7 +36,8 @@ This repository implements a streamlined EEG decoding pipeline aligned with the 
 ### Run directory structure
 - Run root contains text/JSON/CSV/HTML/PDF summaries and tables
 - Subdirectories:
-  - `plots/` — per‑fold confusion and curves; overall confusion
+  - `plots_outer/` — standard confusion matrices and learning curves per outer fold; overall confusion matrix
+  - `plots_outer_enhanced/` — enhanced plots with inner vs outer metric comparison and per-class F1 scores as side text (used in Optuna Top-3 reports)
   - `ckpt/` — all checkpoints (e.g., `fold_XX_inner_YY_best.ckpt`, `fold_XX_refit_best.ckpt`)
   - `xai_analysis/` — XAI outputs (per‑fold heatmaps, grand average, topoplots, summaries)
 
@@ -73,8 +73,8 @@ python -X utf8 -u train.py `
 
 ### Entry points (when to use what)
 - `train.py`: Single run or multi‑seed runs for a given task/engine using layered configs; ideal for validating a resolved YAML and optionally running XAI on completion (`--run-xai`). Multi‑seed: add `seeds: [41, 42, ...]` in YAML.
-- Outer evaluation mode:
-  - `outer_eval_mode: ensemble` (default): mean-softmax over K inner models for test predictions.
+- Outer evaluation mode (must be explicitly specified):
+  - `outer_eval_mode: ensemble` (recommended): mean-softmax over K inner models for test predictions.
   - `outer_eval_mode: refit`: refit one model on full outer-train (set `refit_val_frac>0` to enable subject-aware early stop).
 - `scripts/optuna_search.py`: Unified Optuna driver for Stage 1/2/3 sweeps (`--stage step1|step2|step3`) over a search space YAML; prunes per‑epoch on inner macro‑F1 and seeds the TPE sampler from config.
 - `scripts/final_eval.py`: Multi-seed final evaluation; writes aggregate metrics JSON.
@@ -261,11 +261,11 @@ config.py – builds paths/settings (env-aware).
 
 discovery.py – finds studies & trials.
 
-csv_io.py – writes !all_trials-<study>.csv (sorted by best inner metric).
+csv_io.py – writes !all_trials-<study>.csv (sorted by `inner_mean_min_per_class_f1` if available, else `inner_mean_macro_f1`, then `inner_mean_acc`).
 
 db.py, plotting.py – loads Optuna SQLite and exports plots (HTML + PNG).
 
-reports.py – Top-3 report (HTML + PDF; Playwright w/ matplotlib fallback).
+reports.py – Top-3 report (HTML + PDF; Playwright w/ matplotlib fallback). Prioritizes trials by `inner_mean_min_per_class_f1` (worst-class performance) to ensure all classes are decodable. Uses enhanced plots from `plots_outer_enhanced/`.
 
 meta.py – cache to skip up-to-date studies.
 
@@ -282,15 +282,16 @@ Double-click (Windows): results\optuna\refresh_all_studies.bat
 - HAPPE produces cleaned `.set` per subject. `prepare_from_happe.py` aligns behavior, removes `Condition==99`, encodes labels, attaches montage, and saves per‑subject `.fif`.
 - Default at train time: `use_channel_list: non_scalp`. The Cz‑ring (`cz_step`) heuristic is disabled by default (can be re‑enabled by adding it to YAML). You can still set `crop_ms` and/or explicit `include_channels`.
 
-## Reproducibility
-- Outer split: `GroupKFold` when `n_folds` is set; otherwise `LOSO`.
-- Strict inner subject‑aware K‑fold: set `inner_n_folds` (≥2). If infeasible (too few unique subjects), the run raises with a clear error.
-- Determinism: `PYTHONHASHSEED`, Python/NumPy/Torch seeds, per‑worker DataLoader seeding, `torch.backends.cudnn.deterministic=True`, `torch.backends.cudnn.benchmark=False`, `torch.use_deterministic_algorithms(True)`, and `CUBLAS_WORKSPACE_CONFIG` to stabilize CUDA GEMM. Determinism banner is printed and persisted.
-- Provenance: model class path, library versions, and determinism flags are included in the TXT/HTML report and JSON.
-- Seeds: set a single `seed: 42` or a list `seeds: [41, 42, ...]` (multi‑seed loop). Run directories include `seed_<N>` in the name; a cross‑seed aggregate JSON is written.
-- Optuna: TPE sampler is seeded from config; pruning signal is inner macro‑F1; objective is inner‑CV mean macro‑F1.
-- Audit artifacts: `splits_indices.json`, `learning_curves_inner.csv`, `outer_eval_metrics.csv`, `test_predictions_outer.csv`, and `test_predictions_inner.csv` capture splits, pruning traces, outer‑fold metrics, per‑trial out‑of‑fold predictions (ready for mixed‑effects models), and inner validation predictions (for inner vs outer comparison).
-- XAI checkpoint resolution order per fold: `fold_XX_refit_best.ckpt` → `fold_XX_best.ckpt` → first `fold_XX_inner_YY_best.ckpt`.
+## Reproducibility & Scientific Rigor
+- **Outer split:** `GroupKFold` when `n_folds` is set; otherwise `LOSO`.
+- **Strict inner subject‑aware K‑fold:** set `inner_n_folds` (≥2). If infeasible (too few unique subjects), the run raises with a clear error.
+- **Determinism:** `PYTHONHASHSEED`, Python/NumPy/Torch seeds, per‑worker DataLoader seeding, `torch.backends.cudnn.deterministic=True`, `torch.backends.cudnn.benchmark=False`, `torch.use_deterministic_algorithms(True)`, and `CUBLAS_WORKSPACE_CONFIG` to stabilize CUDA GEMM. Determinism banner is printed and persisted.
+- **Provenance:** model class path, library versions, and determinism flags are included in the TXT/HTML report and JSON.
+- **Seeds (REQUIRED):** set a single `seed: 1` (or any integer) or a list `seeds: [41, 42, ...]` for multi‑seed loops. **No fallback is provided**—if `seed` is missing, the run fails immediately to prevent untracked randomness. Run directories include `seed_<N>` in the name; a cross‑seed aggregate JSON is written. The parameter `random_state` is no longer used (removed project-wide).
+- **Optuna objective (REQUIRED):** TPE sampler is seeded from config. You **must** explicitly specify `optuna_objective` in your config (e.g., `inner_mean_min_per_class_f1` for worst-class focus, `inner_mean_macro_f1` for average performance, or `inner_mean_acc` for accuracy). **No fallback is provided**—this ensures you consciously choose your research objective. Pruning signal is the configured objective metric. Top-3 reports prioritize `inner_mean_min_per_class_f1` to identify trials where all classes are decodable.
+- **Outer eval mode (REQUIRED):** You must explicitly set `outer_eval_mode: ensemble` (recommended) or `outer_eval_mode: refit` in your config. **No fallback is provided**—this forces conscious choice of your evaluation strategy.
+- **Audit artifacts:** `splits_indices.json`, `learning_curves_inner.csv`, `outer_eval_metrics.csv`, `test_predictions_outer.csv`, and `test_predictions_inner.csv` capture splits, pruning traces, outer‑fold metrics (including min-per-class-F1 and Cohen's kappa), per‑trial out‑of‑fold predictions (ready for mixed‑effects models), and inner validation predictions (for inner vs outer comparison).
+- **XAI checkpoint resolution order per fold:** `fold_XX_refit_best.ckpt` → `fold_XX_best.ckpt` → first `fold_XX_inner_YY_best.ckpt`.
 
 Tip: To force LOSO in any run that has a resolved config with `n_folds`, either set `n_folds: null` inside the YAML, or pass `--set n_folds=null` on the CLI.
 
@@ -301,6 +302,9 @@ Tip: To force LOSO in any run that has a resolved config with `n_folds`, either 
 
 ### Configuration knobs
 - `configs/tasks/<task>/base.yaml`:
+  - **`seed` (REQUIRED):** integer seed for reproducibility. No fallback—run fails if missing.
+  - **`optuna_objective` (REQUIRED for Optuna):** metric to optimize. Choose: `inner_mean_min_per_class_f1` (worst-class focus), `inner_mean_macro_f1` (average F1), or `inner_mean_acc` (accuracy). No fallback—ensures conscious research objective choice.
+  - **`outer_eval_mode` (REQUIRED):** `ensemble` (recommended, averages K inner models) or `refit` (single model on full outer-train). No fallback.
   - `n_folds`: number of outer folds (uses GroupKFold). If omitted, uses LOSO.
   - `inner_n_folds`: number of inner folds (must be ≥2). Strictly enforced; insufficient subjects → error.
   - `epochs`, `early_stop`, `batch_size`, `lr`, etc. apply to each inner fold training.

@@ -457,7 +457,9 @@ def main() -> None:
     fold_splits = summary_data["fold_splits"]
 
     # Setup dataset
-    seed_everything(cfg.get("seed", 42))
+    if "seed" not in cfg:
+        raise ValueError("'seed' must be specified in config. No fallback allowed for reproducibility.")
+    seed_everything(cfg["seed"])
     label_fn = task_registry.get(cfg["task"])
     dcfg = {"materialized_dir": dataset_dir, **cfg}
     full_dataset = RawEEGDataset(dcfg, label_fn)

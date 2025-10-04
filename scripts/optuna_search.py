@@ -82,7 +82,9 @@ def main():
         db_path.parent.mkdir(parents=True, exist_ok=True)
         storage = f"sqlite:///{db_path.as_posix()}"
     # Enable TPE sampling and median pruning (prunes after warmup steps)
-    seed = int(common.get("seed", common.get("random_state", 42)))
+    if "seed" not in common:
+        raise ValueError("'seed' must be specified in common.yaml or base config. No fallback allowed for reproducibility.")
+    seed = int(common["seed"])
     sampler = optuna.samplers.TPESampler(seed=seed)
     pruner = optuna.pruners.MedianPruner(n_warmup_steps=10)
     study = optuna.create_study(
@@ -162,8 +164,18 @@ def main():
         except Exception:
             pass
         # Optimize based on configured objective metric
-        objective_metric = cfg.get("optuna_objective", "inner_mean_macro_f1")
-        obj = summary.get(objective_metric) or summary.get("inner_mean_macro_f1") or summary.get("inner_mean_acc") or 0.0
+        if "optuna_objective" not in cfg:
+            raise ValueError(
+                "'optuna_objective' must be explicitly specified in config. "
+                "Choose from: inner_mean_macro_f1, inner_mean_min_per_class_f1, inner_mean_acc. No fallback allowed."
+            )
+        objective_metric = cfg["optuna_objective"]
+        if objective_metric not in summary:
+            raise KeyError(
+                f"Objective metric '{objective_metric}' not found in summary.json. "
+                f"Available metrics: {list(summary.keys())}"
+            )
+        obj = summary[objective_metric]
         print(f"[optuna] trial {trial.number:03d} objective={objective_metric}: {obj:.4f}", flush=True)
         return float(obj)
 

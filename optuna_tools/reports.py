@@ -20,9 +20,15 @@ def _embed_image_as_data_uri(png_path: Path) -> str:
 
 
 def _resolve_confusion_png(trial_dir: Path) -> Path:
-    """Search for a confusion-matrix PNG in new/legacy layouts."""
+    """Search for a confusion-matrix PNG in new/legacy layouts. Prefers enhanced plots with per-class F1 breakdown."""
+    plots_dir_enhanced = trial_dir / "plots_outer_enhanced"
     plots_dir_new = trial_dir / "plots_outer"
     plots_dir_legacy = trial_dir / "plots"
+
+    # Prefer enhanced plots (with per-class F1 info) if available
+    primary_enhanced = plots_dir_enhanced / "overall_confusion.png"
+    if primary_enhanced.exists():
+        return primary_enhanced
 
     primary_new = plots_dir_new / "overall_confusion.png"
     if primary_new.exists():
@@ -74,13 +80,16 @@ def write_top3_report(study_dir: Path, df: pd.DataFrame, study_name: str) -> Non
         data_uri = _embed_image_as_data_uri(cm_path)
 
         acc = row.get("mean_acc")
+        inner_min_f1 = row.get("inner_mean_min_per_class_f1")
         inner_f1 = row.get("inner_mean_macro_f1")
         inner_acc = row.get("inner_mean_acc")
         bits = []
         if pd.notna(acc):
             bits.append(f"acc={float(acc):.2f}%")
+        if pd.notna(inner_min_f1):
+            bits.append(f"inner min-F1={float(inner_min_f1):.2f}")
         if pd.notna(inner_f1):
-            bits.append(f"inner F1={float(inner_f1):.2f}")
+            bits.append(f"inner macro-F1={float(inner_f1):.2f}")
         if pd.notna(inner_acc):
             bits.append(f"inner acc={float(inner_acc):.2f}%")
         for k in ("lr", "batch_size"):
@@ -166,7 +175,7 @@ def write_top3_report(study_dir: Path, df: pd.DataFrame, study_name: str) -> Non
 </head>
 <body>
   <h1>{title}</h1>
-  <div class="subtitle">Confusion matrices for the top three trials (best by inner macro-F1/acc)</div>
+  <div class="subtitle">Confusion matrices for the top three trials (best by inner min-per-class-F1 or inner macro-F1)</div>
 
   <div class="hero">
     <div>
