@@ -14,10 +14,15 @@ from pub_style_v4 import COLORS, save_publication_figure
 from pathlib import Path
 
 def create_nested_cv_v4():
-    """Create nested CV schematic with no occlusions."""
+    """Create nested CV schematic with no occlusions and real subject IDs."""
     
-    fig = plt.figure(figsize=(10, 8.5))  # Slightly taller to prevent occlusion
-    gs = fig.add_gridspec(3, 1, height_ratios=[1.2, 2.5, 2.2], hspace=0.35)
+    # Real subject IDs (24 subjects, but IDs go up to 33 with gaps)
+    real_subject_ids = ['02', '03', '04', '05', '08', '09', '10', '11', '12', '13', 
+                        '14', '15', '17', '21', '22', '23', '25', '26', '27', '28', 
+                        '29', '31', '32', '33']
+    
+    fig = plt.figure(figsize=(10, 9.2))  # Increased height to prevent occlusions
+    gs = fig.add_gridspec(3, 1, height_ratios=[1.2, 2.5, 2.5], hspace=0.35)
     
     box_height = 0.45
     subject_width = 0.85
@@ -34,7 +39,7 @@ def create_nested_cv_v4():
         rect = Rectangle((i + 0.6, 1), subject_width, box_height,
                         facecolor=COLORS['data'], edgecolor='#333', linewidth=0.8)
         ax1.add_patch(rect)
-        ax1.text(i + 1.03, 1.225, f'S{i+1}', ha='center', va='center',
+        ax1.text(i + 1.03, 1.225, f'S{real_subject_ids[i]}', ha='center', va='center',
                 fontsize=6, color='white', weight='bold')
     
     arrow = FancyArrowPatch(
@@ -48,22 +53,22 @@ def create_nested_cv_v4():
     # ========== Panel B: Outer Loop ==========
     ax2 = fig.add_subplot(gs[1])
     ax2.set_xlim(0, 26)
-    ax2.set_ylim(0, 6.5)
+    ax2.set_ylim(0, 7.0)  # Increased for more space
     ax2.axis('off')
     
-    ax2.text(13, 6.2, 'Outer Loop: LOSO (24 folds)', ha='center', fontsize=10, weight='bold')
+    ax2.text(13, 6.7, 'Outer Loop: LOSO (24 folds)', ha='center', fontsize=10, weight='bold')
     
     fold_info = [
-        (5.0, 'Fold 1', 0),
-        (3.0, 'Fold 12', 11),
-        (1.0, 'Fold 24', 23)
+        (5.5, 'Fold 1', 0),     # Moved up
+        (3.5, 'Fold 12', 11),   # Moved up
+        (1.5, 'Fold 24', 23)    # Moved up
     ]
     
     for y_pos, fold_label, test_idx in fold_info:
-        ax2.text(0.3, y_pos + 0.225, fold_label, fontsize=9, weight='bold', va='center')
+        ax2.text(0.5, y_pos + 0.225, fold_label, fontsize=9, weight='bold', va='center')  # Moved right slightly
         
         for i in range(24):
-            x_pos = i + 1.5
+            x_pos = i + 1.8  # Shifted right to give more space for labels
             
             if i == test_idx:
                 color = COLORS['test']
@@ -76,7 +81,7 @@ def create_nested_cv_v4():
                             facecolor=color, edgecolor='#333', linewidth=0.7)
             ax2.add_patch(rect)
             ax2.text(x_pos + subject_width/2, y_pos + box_height/2,
-                    f'S{i+1}', ha='center', va='center',
+                    f'S{real_subject_ids[i]}', ha='center', va='center',
                     fontsize=5.5, color='#333', weight='bold')
     
     # Legend (top right, clear)
@@ -89,7 +94,7 @@ def create_nested_cv_v4():
     
     # Arrow to inner loop
     arrow_mid = FancyArrowPatch(
-        (13, 0.6), (13, 0.1),
+        (13, 1.0), (13, 0.1),
         arrowstyle='-|>', mutation_scale=12,
         linewidth=1.5, color='#555'
     )
@@ -98,19 +103,19 @@ def create_nested_cv_v4():
     # ========== Panel C: Inner Loop ==========
     ax3 = fig.add_subplot(gs[2])
     ax3.set_xlim(0, 26)
-    ax3.set_ylim(0, 5.5)  # Increased from 5 to 5.5 for more bottom space
+    ax3.set_ylim(0, 6.2)  # Increased for more bottom space to prevent text occlusion
     ax3.axis('off')
     
-    ax3.text(13, 5.2, 'Inner Loop: 5-fold CV on Outer-Train (Fold 1 example)',
+    ax3.text(13, 5.9, 'Inner Loop: 5-fold CV on Outer-Train (Fold 1 example)',
             ha='center', fontsize=10, weight='bold')
     
     n_inner_subjects = 23
     inner_folds = [
-        (4.0, 'Inner Fold 1', [0, 1, 2, 3]),
-        (3.0, 'Inner Fold 2', [4, 5, 6, 7]),
-        (2.0, 'Inner Fold 3', [8, 9, 10, 11]),
-        (1.5, 'Inner Fold 4', [12, 13, 14, 15]),
-        (0.5, 'Inner Fold 5', [16, 17, 18, 19])  # Moved up from 0.5 to prevent occlusion
+        (4.8, 'Inner Fold 1', [0, 1, 2, 3]),    # Moved up significantly
+        (3.8, 'Inner Fold 2', [4, 5, 6, 7]),    # Moved up
+        (2.8, 'Inner Fold 3', [8, 9, 10, 11]),  # Moved up
+        (1.8, 'Inner Fold 4', [12, 13, 14, 15]), # Moved up
+        (0.8, 'Inner Fold 5', [16, 17, 18, 19])  # Moved up to prevent occlusion
     ]
     
     for y_pos, fold_label, val_indices in inner_folds:
@@ -136,8 +141,8 @@ def create_nested_cv_v4():
     ax3.legend(legend_elements_inner, ['Train (inner)', 'Validation (inner)'],
               loc='upper right', fontsize=8, ncol=2, frameon=False)
     
-    # Note at BOTTOM with more clearance (moved up significantly)
-    ax3.text(13, -0.3, 'Objective: inner_mean_min_per_class_f1 (averaged across inner folds)',
+    # Note at BOTTOM with adequate clearance
+    ax3.text(13, 0.0, 'Objective: composite (65% min F1 + 35% diagonal dominance) — averaged across inner folds',
             ha='center', fontsize=7, style='italic', color='#555')
     
     return fig

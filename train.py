@@ -177,9 +177,14 @@ def main():
         summary_raw = engine_run(cfg, label_fn)
 
         ds_dir = cfg.get("materialized_dir") or cfg.get("dataset_dir")
+        
+        # Capture command line for reproducibility
+        command = " ".join(sys.argv)
+        
         summary = {
             "run_id": launch_run_id,
             "dataset_dir": ds_dir,
+            "command": command,  # Add command line
             **summary_raw,
             "determinism": det_banner,
             # Persist only run-relevant hyperparameters; omit large/env/path-like keys
@@ -225,6 +230,30 @@ def main():
                 print("[posthoc] finished successfully.")
         except Exception as e:
             print(f"[posthoc] post-hoc stats failed: {e}")
+
+        # Optional: XAI analysis (triggered by --run-xai flag)
+        if args.run_xai:
+            print("\n--- Running XAI analysis on completed run ---", flush=True)
+            try:
+                xai_script = proj_root / "scripts" / "run_xai_analysis.py"
+                if not xai_script.exists():
+                    print(f"[xai] ERROR: XAI script not found at {xai_script}")
+                else:
+                    xai_cmd = [
+                        sys.executable, "-X", "utf8", "-u", str(xai_script),
+                        "--run-dir", str(run_dir)
+                    ]
+                    print(f"[xai] invoking: {' '.join(map(str, xai_cmd))}")
+                    subprocess.run(xai_cmd, check=True)
+                    print("[xai] finished successfully.")
+                    print(f"[xai] outputs saved to: {run_dir / 'xai_analysis'}")
+            except subprocess.CalledProcessError as e:
+                print(f"[xai] XAI analysis failed with exit code {e.returncode}")
+                print(f"[xai] This is not fatal - training results are still valid")
+            except Exception as e:
+                print(f"[xai] XAI analysis failed: {e}")
+                print(f"[xai] You can run XAI manually with:")
+                print(f"[xai]   python scripts/run_xai_analysis.py --run-dir \"{run_dir}\"")
 
         return {
             "run_dir": str(run_dir),

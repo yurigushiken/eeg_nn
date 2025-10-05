@@ -160,6 +160,11 @@ def write_summary(run_dir: Path, summary: dict, task: str, engine: str):
     # Header
     report_lines.append(f"--- Run Summary: {task} ({engine}) ---")
     report_lines.append(f"Run Directory: {run_dir.name}")
+    
+    # Command line (if available)
+    if summary.get("command"):
+        report_lines.append(f"Command: {summary['command']}")
+    
     report_lines.append("")
 
     # Environment banner
@@ -190,6 +195,14 @@ def write_summary(run_dir: Path, summary: dict, task: str, engine: str):
     report_lines.append(f"Weighted F1-Score: {summary.get('weighted_f1', 0.0):.2f}")
     report_lines.append(f"Inner Val Mean Acc: {summary.get('inner_mean_acc', 0.0):.2f}%")
     report_lines.append(f"Inner Val Mean Macro F1: {summary.get('inner_mean_macro_f1', 0.0):.2f}")
+    # Add inner_mean_min_per_class_f1 if available (key metric for optimization)
+    if summary.get('inner_mean_min_per_class_f1') is not None:
+        report_lines.append(f"Inner Val Mean Min-Per-Class F1: {summary.get('inner_mean_min_per_class_f1', 0.0):.2f}")
+    # Add inner_mean_diag_dom if available (diagonal dominance metric)
+    if summary.get('inner_mean_diag_dom') is not None:
+        report_lines.append(f"Inner Val Mean Diagonal Dominance: {summary.get('inner_mean_diag_dom', 0.0):.2f}%")
+    if summary.get('mean_diag_dom') is not None:
+        report_lines.append(f"Mean Diagonal Dominance: {summary.get('mean_diag_dom', 0.0):.2f}% (std: {summary.get('std_diag_dom', 0.0):.2f})")
     # Chance level (if known)
     try:
         ch = _compute_chance_level(summary.get("num_classes"))

@@ -55,49 +55,49 @@ def create_pipeline_v4():
     box_height_tall = 1.0
     x_center = 1
     
-    # Stage 1: Data Acquisition (light blue)
+    # Stage 1: Data Acquisition (lighter blue)
     y_pos = 19
     create_flowchart_box(
         ax, (x_center, y_pos), box_width, box_height_std,
-        'Raw Data Acquisition\n24 subjects, ~360 trials/subject, 128-channel EEG',
-        facecolor=BLUES_PALETTE['light'], fontsize=8
+        'Raw Data Acquisition\n24 subjects, ~300 trials/subject, 128-channel EEG',
+        facecolor='#D6E9F5', fontsize=8  # Lighter uniform blue
     )
     create_arrow(ax, (5, y_pos), (5, y_pos - 0.4))
     
-    # Stage 2: Preprocessing (medium blue)
+    # Stage 2: Preprocessing (lighter blue)
     y_pos -= 1.3
     create_flowchart_box(
         ax, (x_center, y_pos), box_width, box_height_tall,
-        'Preprocessing (HAPPE)\nBandpass 1.5–40 Hz · ICA artifact rejection\nBad channel interpolation · Epoch −200 to +800 ms',
-        facecolor=BLUES_PALETTE['medium'], fontsize=8
+        'Preprocessing (HAPPE)\n18 datasets: 3 HPF (1.0/1.5/2.0 Hz) × 3 LPF (35/40/45 Hz) × 2 baseline (on/off)\nICA artifact rejection · Bad channel interpolation · Epoch −200 to +800 ms',
+        facecolor='#B8D9EE', fontsize=7.5
     )
     create_arrow(ax, (5, y_pos), (5, y_pos - 0.5))
     
-    # Stage 3: Data Finalization (medium-light blue)
+    # Stage 3: Data Finalization (lighter blue)
     y_pos -= 1.8
     create_flowchart_box(
         ax, (x_center, y_pos), box_width, box_height_std,
-        'Data Finalization & QC\nBehavioral alignment · Min trials/class · Channel intersection (100 ch)',
-        facecolor=BLUES_PALETTE['medium_light'], fontsize=8
+        'Data Finalization & QC\nBehavioral & condition alignment · Min trials/class · Channel intersection (~100 ch)',
+        facecolor='#A8D0EA', fontsize=8
     )
     create_arrow(ax, (5, y_pos), (5, y_pos - 0.4))
     
-    # Stage 4: Task Split (very light blue)
+    # Stage 4: Task Split (lighter blue)
     y_pos -= 1.2
     create_flowchart_box(
         ax, (0.5, y_pos), 4, 0.6,
         'Cardinality 1–3\n(n = 3 classes)',
-        facecolor=BLUES_PALETTE['very_light'], fontsize=8
+        facecolor='#E8F3FA', fontsize=8
     )
     create_flowchart_box(
         ax, (5.5, y_pos), 4, 0.6,
         'Cardinality 4–6\n(n = 3 classes)',
-        facecolor=BLUES_PALETTE['very_light'], fontsize=8
+        facecolor='#E8F3FA', fontsize=8
     )
     create_arrow(ax, (2.5, y_pos), (5, y_pos - 0.6))
     create_arrow(ax, (7.5, y_pos), (5, y_pos - 0.6))
     
-    # Stage 5: Optuna (3-stage - medium-dark blues)
+    # Stage 5: Optuna (3-stage - lighter blues)
     y_pos -= 1.8
     # Outer box
     outer_box = FancyBboxPatch(
@@ -122,44 +122,47 @@ def create_pipeline_v4():
     for x_pos, label in stages:
         create_flowchart_box(
             ax, (x_pos, y_pos - 0.45), stage_width, 0.85,
-            label, facecolor=BLUES_PALETTE['medium_dark'], fontsize=7
+            label, facecolor='#8FC5E8', fontsize=7  # Lighter uniform blue
         )
     
-    ax.text(5, y_pos - 1.15, 'Objective: inner_mean_min_per_class_f1 (ensures all classes decodable)',
-            ha='center', fontsize=7, style='italic', color='#555')
+    ax.text(5, y_pos - 1.15, 'Objective: composite (65% min F1 + 35% diagonal dominance) — ensures decodability & distinctness',
+            ha='center', fontsize=6.5, style='italic', color='#555')
     
     create_arrow(ax, (5, y_pos - 0.7), (5, y_pos - 1.4))
     
-    # Stage 6: Final Evaluation (dark blue)
+    # Stage 6: Final Evaluation (lighter blue)
     y_pos -= 3.2
     create_flowchart_box(
         ax, (x_center, y_pos), box_width, box_height_tall,
-        'Final Evaluation (Multi-seed LOSO-CV)\n10 independent seeds · Leave-One-Subject-Out\nNested 5-fold inner CV · Ensemble predictions',
-        facecolor=BLUES_PALETTE['dark'], fontsize=8
+        'Final Evaluation (Multi-seed LOSO-CV)\n10 independent seeds · Leave-One-Subject-Out\nNested 5-fold inner CV · Refit predictions',
+        facecolor='#7AB8DD', fontsize=8
     )
     create_arrow(ax, (5, y_pos), (5, y_pos - 0.5))
     
-    # Stage 7: Analysis (split - very dark blue)
-    y_pos -= 1.8
+    # Stage 7: Statistical Validation (lighter blue, on its own row)
+    y_pos -= 1.4
     create_flowchart_box(
-        ax, (0.5, y_pos), 4, 0.9,
-        'Statistical Validation\nPermutation testing (n = 200)\nPer-subject significance\nMixed-effects modeling',
-        facecolor=BLUES_PALETTE['very_dark'], fontsize=7
+        ax, (x_center, y_pos), box_width, 0.9,
+        'Statistical Validation\nPermutation testing (n = 200) · Per-subject significance · Mixed-effects modeling',
+        facecolor='#6AAFD1', fontsize=7.5
     )
-    create_flowchart_box(
-        ax, (5.5, y_pos), 4, 0.9,
-        'Explainable AI (XAI)\nIntegrated Gradients\nChannel importance\nSpatiotemporal patterns',
-        facecolor=BLUES_PALETTE['very_dark'], fontsize=7
-    )
-    create_arrow(ax, (2.5, y_pos), (5, y_pos - 0.6))
-    create_arrow(ax, (7.5, y_pos), (5, y_pos - 0.6))
+    create_arrow(ax, (5, y_pos), (5, y_pos - 0.4))
     
-    # Stage 8: Results (deepest blue)
-    y_pos -= 1.8
+    # Stage 8: Explainable AI (lighter blue, on its own row)
+    y_pos -= 1.2
+    create_flowchart_box(
+        ax, (x_center, y_pos), box_width, 0.9,
+        'Explainable AI (XAI)\nIntegrated Gradients · Channel importance · Spatiotemporal patterns',
+        facecolor='#5AA6C5', fontsize=7.5
+    )
+    create_arrow(ax, (5, y_pos), (5, y_pos - 0.4))
+    
+    # Stage 9: Results (lighter blue)
+    y_pos -= 1.2
     create_flowchart_box(
         ax, (x_center, y_pos), box_width, 0.7,
         'Publication Results\nAccuracy 48–52% (chance 33.3%) · All classes decodable · p < 0.01',
-        facecolor=BLUES_PALETTE['deepest'], fontsize=8
+        facecolor='#4A9DBF', fontsize=8
     )
     
     return fig

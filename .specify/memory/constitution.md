@@ -31,7 +31,9 @@ III. Deterministic Training & Search
 
 All search and training procedures will enforce determinism to ensure that repeated executions produce bit-for-bit identical results where hardware allows. We will set Python, NumPy, and PyTorch seeds from a single, canonical seed in the run configuration. We will also enable all available deterministic algorithm flags in the PyTorch and cuDNN backend environments. Optuna studies will persist their state to a database to ensure that searches can be archived and reproduced.
 
-Critical configuration parameters that affect reproducibility or scientific validity must be explicitly specified. The pipeline will fail immediately if required parameters are missing, rather than silently falling back to defaults, ensuring that randomness sources and research objectives are consciously tracked.
+Critical configuration parameters that affect reproducibility or scientific validity must be explicitly specified. The pipeline will fail immediately if required parameters are missing, rather than silently falling back to defaults, ensuring that randomness sources and research objectives are consciously tracked. 
+
+All reporting and model selection tools must respect the specified optimization objective.
 IV. Rigorous Validation & Reporting
 
 Our evaluation protocol is designed to produce an unbiased estimate of how well our models generalize to new, unseen individuals. All validation will be subject-aware, using GroupKFold or Leave-One-Subject-Out cross-validation to prevent data leakage. Final, reported results will be aggregated across multiple random seeds to provide a stable and reliable measure of performance. All summary reports will include per-fold metrics, macro-F1 scores, worst-class performance metrics, and confusion matrices to ensure full transparency. Hyperparameter searches require explicit specification of the optimization objective, ensuring conscious alignment between research questions and model selection criteria. Permutation tests, when used, will reuse the original data splits to maintain valid paired comparisons.

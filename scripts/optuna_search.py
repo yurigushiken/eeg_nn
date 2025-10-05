@@ -136,9 +136,14 @@ def main():
         # Remove non-serializable runtime objects before persisting
         cfg.pop("optuna_trial", None)
         safe_hyper = {k: v for k, v in cfg.items() if k not in {"run_dir", "optuna_trial"}}
+        
+        # Capture command line for reproducibility
+        command = " ".join(sys.argv)
+        
         summary = {
             "run_id": ts,
             "dataset_dir": cfg.get("materialized_dir"),
+            "command": command,  # Add command line
             **summary_raw,
             "study": study_name,
             "trial_id": trial.number,
@@ -167,7 +172,7 @@ def main():
         if "optuna_objective" not in cfg:
             raise ValueError(
                 "'optuna_objective' must be explicitly specified in config. "
-                "Choose from: inner_mean_macro_f1, inner_mean_min_per_class_f1, inner_mean_acc. No fallback allowed."
+                "Choose from: inner_mean_macro_f1, inner_mean_min_per_class_f1, inner_mean_diag_dom, inner_mean_acc, composite_min_f1_diag_dom. No fallback allowed."
             )
         objective_metric = cfg["optuna_objective"]
         if objective_metric not in summary:

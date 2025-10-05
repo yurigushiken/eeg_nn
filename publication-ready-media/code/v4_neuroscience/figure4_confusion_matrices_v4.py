@@ -148,14 +148,14 @@ def create_confusion_figure_v4():
     
     # Colorbar at bottom
     cbar = fig.colorbar(im2, ax=axes, location='bottom',
-                       pad=0.15, aspect=30, shrink=0.6)
+                       pad=0.18, aspect=30, shrink=0.6)
     cbar.set_label('Percentage (%)', fontsize=8)
     cbar.ax.tick_params(labelsize=7)
     
-    # Footnote with MORE bottom space
-    fig.subplots_adjust(bottom=0.20)  # Increased from 0.15
+    # Footnote with EXTRA bottom space to prevent occlusion
+    fig.subplots_adjust(bottom=0.24)  # Increased from 0.20 to 0.24
     note = 'Values show row-normalized percentages. Chance = 33.3% for 3-class problem.'
-    fig.text(0.5, 0.02, note, ha='center', fontsize=7, style='italic')
+    fig.text(0.5, 0.03, note, ha='center', fontsize=7, style='italic')
     
     return fig
 

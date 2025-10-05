@@ -10,7 +10,7 @@ This repository implements a streamlined EEG decoding pipeline aligned with the 
 
 ### Key ideas
 - Preprocessing is performed externally with HAPPE; we convert EEGLAB `.set` to `.fif` once with `scripts/prepare_from_happe.py`.
-- Optuna search runs directly on materialized `.fif` via `scripts/optuna_search.py` with a `--stage` flag; we use TPE with MedianPruner (warmup=10) and per‑epoch pruning on the metric specified by `optuna_objective` (e.g., `inner_mean_min_per_class_f1` for worst-class focus, or `inner_mean_macro_f1` for average performance).
+- Optuna search runs directly on materialized `.fif` via `scripts/optuna_search.py` with a `--stage` flag; we use TPE with MedianPruner (warmup=10) and per‑epoch pruning on the metric specified by `optuna_objective` (e.g., `inner_mean_min_per_class_f1` for worst-class focus, `inner_mean_diag_dom` for diagonal dominance, or `inner_mean_macro_f1` for average performance).
 - Stage progression is manual (by design): you choose the next stage and feed winners via YAML overlays; the runner does not auto‑chain stages.
 - Behavior alignment is strict by default; any epochs↔behavior mismatch raises and aborts.
 - Default channel policy excludes non‑scalp channels (`use_channel_list: non_scalp`). The Cz‑ring knob (`cz_step`) is disabled by default.
@@ -279,8 +279,26 @@ Double-click (Windows): results\optuna\refresh_all_studies.bat
 
 
 ## Preprocessing details
-- HAPPE produces cleaned `.set` per subject. `prepare_from_happe.py` aligns behavior, removes `Condition==99`, encodes labels, attaches montage, and saves per‑subject `.fif`.
-- Default at train time: `use_channel_list: non_scalp`. The Cz‑ring (`cz_step`) heuristic is disabled by default (can be re‑enabled by adding it to YAML). You can still set `crop_ms` and/or explicit `include_channels`.
+- HAPPE produces cleaned `.set` per subject. `prepare_from_happe.py` aligns behavior, removes `Condition==99`, encodes labels, attaches montage (`net/AdultAverageNet128_v1.sfp`), and saves per‑subject `.fif`.
+- Default at train time: `use_channel_list: non_scalp` (excludes 28 non-scalp channels, leaving 100 channels). The Cz‑ring (`cz_step`) heuristic is disabled by default (`cz_step: 0`). You can still set `crop_ms` and/or explicit `include_channels`.
+
+### Spatial channel selection (`cz_step`)
+The `cz_step` parameter enables progressive spatial sampling centered on Cz:
+- **`cz_step: 0`** or **`null`** (default): DISABLED — keeps all channels after non_scalp exclusion (~100 channels)
+- **`cz_step: 1`**: Keeps 20% of channels closest to Cz (tight central ring, ~20 channels)
+- **`cz_step: 2`**: Keeps 40% of channels closest to Cz (~40 channels)
+- **`cz_step: 3`**: Keeps 60% of channels closest to Cz (~60 channels)
+- **`cz_step: 4`**: Keeps 80% of channels closest to Cz (~80 channels)
+- **`cz_step: 5`**: Keeps 100% of channels (all, same as disabled)
+
+Implementation: `code/preprocessing/epoch_utils.py` uses 3D Euclidean distance from Cz (formula: `frac = min(1.0, max(0.1, cz_step * 0.2))`). Requires montage attachment during data prep. Gracefully degrades to no-op if Cz unavailable.
+
+To include in Optuna searches, add to your `step1_space_*.yaml` or `step2_space_*.yaml`:
+```yaml
+cz_step:
+  type: choice
+  options: [2, 3, 4]  # Recommended: 40%, 60%, 80% coverage
+```
 
 ## Reproducibility & Scientific Rigor
 - **Outer split:** `GroupKFold` when `n_folds` is set; otherwise `LOSO`.
@@ -288,7 +306,7 @@ Double-click (Windows): results\optuna\refresh_all_studies.bat
 - **Determinism:** `PYTHONHASHSEED`, Python/NumPy/Torch seeds, per‑worker DataLoader seeding, `torch.backends.cudnn.deterministic=True`, `torch.backends.cudnn.benchmark=False`, `torch.use_deterministic_algorithms(True)`, and `CUBLAS_WORKSPACE_CONFIG` to stabilize CUDA GEMM. Determinism banner is printed and persisted.
 - **Provenance:** model class path, library versions, and determinism flags are included in the TXT/HTML report and JSON.
 - **Seeds (REQUIRED):** set a single `seed: 1` (or any integer) or a list `seeds: [41, 42, ...]` for multi‑seed loops. **No fallback is provided**—if `seed` is missing, the run fails immediately to prevent untracked randomness. Run directories include `seed_<N>` in the name; a cross‑seed aggregate JSON is written. The parameter `random_state` is no longer used (removed project-wide).
-- **Optuna objective (REQUIRED):** TPE sampler is seeded from config. You **must** explicitly specify `optuna_objective` in your config (e.g., `inner_mean_min_per_class_f1` for worst-class focus, `inner_mean_macro_f1` for average performance, or `inner_mean_acc` for accuracy). **No fallback is provided**—this ensures you consciously choose your research objective. Pruning signal is the configured objective metric. Top-3 reports prioritize `inner_mean_min_per_class_f1` to identify trials where all classes are decodable.
+- **Optuna objective (REQUIRED):** TPE sampler is seeded from config. You **must** explicitly specify `optuna_objective` in your config (e.g., `inner_mean_min_per_class_f1` for worst-class focus, `inner_mean_diag_dom` for diagonal dominance, `inner_mean_macro_f1` for average performance, or `inner_mean_acc` for accuracy). **No fallback is provided**—this ensures you consciously choose your research objective. Pruning signal is the configured objective metric. Top-3 reports prioritize `inner_mean_min_per_class_f1` to identify trials where all classes are decodable.
 - **Outer eval mode (REQUIRED):** You must explicitly set `outer_eval_mode: ensemble` (recommended) or `outer_eval_mode: refit` in your config. **No fallback is provided**—this forces conscious choice of your evaluation strategy.
 - **Audit artifacts:** `splits_indices.json`, `learning_curves_inner.csv`, `outer_eval_metrics.csv`, `test_predictions_outer.csv`, and `test_predictions_inner.csv` capture splits, pruning traces, outer‑fold metrics (including min-per-class-F1 and Cohen's kappa), per‑trial out‑of‑fold predictions (ready for mixed‑effects models), and inner validation predictions (for inner vs outer comparison).
 - **XAI checkpoint resolution order per fold:** `fold_XX_refit_best.ckpt` → `fold_XX_best.ckpt` → first `fold_XX_inner_YY_best.ckpt`.
@@ -303,7 +321,7 @@ Tip: To force LOSO in any run that has a resolved config with `n_folds`, either 
 ### Configuration knobs
 - `configs/tasks/<task>/base.yaml`:
   - **`seed` (REQUIRED):** integer seed for reproducibility. No fallback—run fails if missing.
-  - **`optuna_objective` (REQUIRED for Optuna):** metric to optimize. Choose: `inner_mean_min_per_class_f1` (worst-class focus), `inner_mean_macro_f1` (average F1), or `inner_mean_acc` (accuracy). No fallback—ensures conscious research objective choice.
+  - **`optuna_objective` (REQUIRED for Optuna):** metric to optimize. Choose: `inner_mean_min_per_class_f1` (worst-class focus), `inner_mean_diag_dom` (diagonal dominance/row-wise plurality), `inner_mean_macro_f1` (average F1), or `inner_mean_acc` (accuracy). No fallback—ensures conscious research objective choice.
   - **`outer_eval_mode` (REQUIRED):** `ensemble` (recommended, averages K inner models) or `refit` (single model on full outer-train). No fallback.
   - `n_folds`: number of outer folds (uses GroupKFold). If omitted, uses LOSO.
   - `inner_n_folds`: number of inner folds (must be ≥2). Strictly enforced; insufficient subjects → error.
@@ -313,6 +331,48 @@ Tip: To force LOSO in any run that has a resolved config with `n_folds`, either 
   - `lr_warmup_frac`: fraction of epochs (0–1) for linear LR warm-up from `lr_warmup_init * lr` to `lr`. Default 0.
   - `lr_warmup_init`: initial LR scale (0–1) at epoch 1 during warm-up. Default 0.
   - `aug_warmup_frac`: fraction of epochs (0–1) to ramp augmentation probabilities and magnitudes from 0→full. Default 0.
+
+### Optimization Objectives Explained
+
+The `optuna_objective` parameter controls what metric the hyperparameter search optimizes for. Each has distinct implications for model behavior:
+
+#### `inner_mean_min_per_class_f1` (Worst-Class Focus)
+- **What it measures:** The minimum F1 score across all classes (averaged across inner folds)
+- **When to use:** When you want to ensure the model performs adequately on ALL classes, including the hardest one
+- **Example:** If class "2" is difficult to distinguish, this metric forces the model to not ignore it
+- **Scientific rationale:** Ensures balanced performance; prevents "taking the easy way out" by only learning easy classes
+
+#### `inner_mean_diag_dom` (Diagonal Dominance / Row-Wise Plurality) **NEW**
+- **What it measures:** The proportion of classes where the correct prediction is the most frequent prediction (averaged across inner folds)
+- **Formula:** For each true class (row in confusion matrix), check if the diagonal element is the row maximum. Return the proportion where this is true (0.0 to 1.0)
+- **When to use:** When you want to ensure the model has the "right bias" for each class—even if not perfectly accurate, the correct class should be the plurality prediction
+- **Example confusion matrix:**
+  ```
+          Pred:  1   2   3
+  True 1: [100  30  20]  ← max is 100 (diagonal) ✓ counts as 1
+  True 2: [ 40  60  50]  ← max is 60 (diagonal) ✓ counts as 1
+  True 3: [ 10  80  30]  ← max is 80 (OFF-diagonal) ✗ counts as 0
+  
+  Diagonal Dominance = 2/3 = 0.667 (67%)
+  ```
+- **Scientific rationale:** Ensures the model's strongest prediction for each true class is the correct one, preventing systematic misclassification patterns (e.g., always predicting "3" when the answer is "2")
+- **Interpretation:**
+  - 1.0 (100%) = Perfect diagonal dominance (for every class, correct prediction is most frequent)
+  - 0.67 (67%) = 2 out of 3 classes have correct prediction as plurality
+  - 0.33 (33%) = Only 1 class has correct prediction as plurality
+  - 0.0 (0%) = No class has correct prediction as plurality (worst case—model systematically wrong)
+
+#### `inner_mean_macro_f1` (Average Performance)
+- **What it measures:** The average F1 score across all classes (averaged across inner folds)
+- **When to use:** When you want good overall performance across classes, but are willing to accept some imbalance
+- **Scientific rationale:** Balances precision and recall across classes; standard metric for multi-class problems
+
+#### `inner_mean_acc` (Raw Accuracy)
+- **What it measures:** The proportion of correct predictions (averaged across inner folds)
+- **When to use:** When classes are balanced and you care about overall correctness
+- **Caveat:** Can be misleading with class imbalance; model may ignore minority classes
+
+**Recommendation:** For numerosity/cognitive research where all stimulus classes are equally important, use `inner_mean_diag_dom` to ensure the model learns the correct association for each class, or `inner_mean_min_per_class_f1` to ensure no class is left behind.
 
 ## Commands cheat-sheet
 - Convert: `python scripts/prepare_from_happe.py`
@@ -483,11 +543,45 @@ python -X utf8 -u scripts/analyze_nloso_subject_performance.py `
     - `inner_vs_outer_subject_metrics.csv`: per‑subject inner vs outer accuracy with delta
     - `inner_vs_outer_scatter.png`: scatter plot of inner vs outer accuracy by subject
 
-## update github example: 
+## Publication-ready figures
+
+The project includes a comprehensive system for generating publication-ready figures meeting neuroscience journal standards (Journal of Neuroscience, Nature Neuroscience, Neuron, eNeuro). All figures use white backgrounds, colorblind-safe palettes (Wong 8-color), 600 DPI resolution, and vector formats with embedded fonts.
+
+**Location:** `publication-ready-media/`
+
+**Key features:**
+- 10 publication-ready figures (pipeline, nested CV, Optuna optimization, confusion matrices, learning curves, permutation testing, per-subject performance, XAI spatiotemporal, XAI per-class, performance box plots)
+- 3 formats per figure (PDF vector, PNG 600 DPI, SVG editable)
+- Comprehensive documentation (publication guide, quick reference, complete standards)
+- Regeneration scripts with consistent styling (`code/v4_neuroscience/`)
+
+**Quick start:**
+```powershell
+# View documentation
+cd publication-ready-media
+# Read README.md for complete guide
+
+# Regenerate all figures (if needed)
+cd code/v4_neuroscience
+conda activate eegnex-env
+python generate_all_v4_figures.py
+
+# Outputs appear in: publication-ready-media/outputs/v4/
+```
+
+**For manuscript submission:**
+- Use PNG files for initial submission (universal compatibility)
+- Use PDF files for final version (vector, scalable)
+- See `publication-ready-media/PUBLICATION_GUIDE.md` for complete neuroscience standards
+- See `publication-ready-media/QUICK_REFERENCE.md` for 1-page quick start
+
+All figures meet requirements for major neuroscience journals and are ready for immediate submission.
+
+---
+
+## Update github example
 PS D:\eeg_nn> conda activate eegnex-env
 (eegnex-env) PS D:\eeg_nn> git add .
-warning: in the working copy of 'README.md', LF will be replaced by CRLF the next time Git touches it
-warning: in the working copy of 'code/training_runner.py', LF will be replaced by CRLF the next time Git touches it
 (eegnex-env) PS D:\eeg_nn> git status
 On branch main
 Your branch is up to date with 'origin/main'.
@@ -496,25 +590,6 @@ Changes to be committed:
   (use "git restore --staged <file>..." to unstage)
         modified:   README.md
         modified:   code/training_runner.py
-        modified:   configs/common.yaml
-        modified:   configs/tasks/cardinality_1_3/base.yaml
-        new file:   configs/tasks/cardinality_1_3/resolved_config_20250924_062508_cardinality_1_3_eeg_step1_t142.yaml
-        new file:   configs/tasks/cardinality_1_3/step1.5_space_deep_spatial.yaml
-        modified:   configs/tasks/cardinality_1_3/step1_space_deep_spatial.yaml
 
-(eegnex-env) PS D:\eeg_nn> git commit -m "Add resolved config and update search space"
-[main 9627fa9] Add resolved config and update search space
- 7 files changed, 286 insertions(+), 123 deletions(-)
- create mode 100644 configs/tasks/cardinality_1_3/resolved_config_20250924_062508_cardinality_1_3_eeg_step1_t142.yaml
- create mode 100644 configs/tasks/cardinality_1_3/step1.5_space_deep_spatial.yaml
-(eegnex-env) PS D:\eeg_nn> git push origin main
-Enumerating objects: 22, done.
-Counting objects: 100% (22/22), done.
-Delta compression using up to 32 threads
-Compressing objects: 100% (13/13), done.
-Writing objects: 100% (13/13), 4.19 KiB | 715.00 KiB/s, done.
-Total 13 (delta 9), reused 0 (delta 0), pack-reused 0 (from 0)
-remote: Resolving deltas: 100% (9/9), completed with 8 local objects.
-To https://github.com/yurigushiken/eeg_nn.git
-   5899feb..9627fa9  main -> main
-(eegnex-env) PS D:\eeg_nn> 
+(eegnex-env) PS D:\eeg_nn> git commit -m "Add publication figures and cz_step documentation"
+(eegnex-env) PS D:\eeg_nn> git push origin main 

@@ -1,10 +1,12 @@
 # Stage 1 — Scaffold (Clean)
 
-# # add cz_step
-# cz_step:
-#   method: categorical
-#   choices: [1, 2, 3, 4, 5]
-
+materialized_dir:
+  method: categorical
+  choices:
+    - data_preprocessed/hpf_1.5_lpf_35_baseline-on
+    - data_preprocessed/hpf_1.5_lpf_35_baseline-off
+    - data_preprocessed/hpf_1.0_lpf_35_baseline-on
+    - data_preprocessed/hpf_2.0_lpf_35_baseline-off 
 # --- modest training budget (clean) ---
 epochs:
   method: int

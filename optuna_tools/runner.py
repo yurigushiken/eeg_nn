@@ -26,9 +26,33 @@ def _pick_best_dirname(df) -> Optional[str]:
 
 
 def _sort_trials(df):
-    # Prioritize min-per-class-F1 to align with common optimization objectives
-    # Falls back to macro-F1, then accuracy if min-per-class-F1 is not available
-    preferred_order_cols = ["inner_mean_min_per_class_f1", "inner_mean_macro_f1", "inner_mean_acc", "mean_acc"]
+    """
+    Sort trials by the optimization objective.
+    
+    Priority:
+    1. composite_min_f1_diag_dom (if present - composite objective)
+    2. inner_mean_min_per_class_f1 (legacy default)
+    3. inner_mean_macro_f1, inner_mean_diag_dom, inner_mean_acc (fallbacks)
+    4. mean_acc (last resort)
+    
+    Scientific rationale: Ranking must align with the actual Optuna objective
+    to maintain scientific integrity and proper trial selection.
+    """
+    # Check for composite objective first (new recommended approach)
+    if "composite_min_f1_diag_dom" in df.columns:
+        # Filter out None values for composite (only present when that objective is used)
+        composite_data = df["composite_min_f1_diag_dom"]
+        if composite_data.notna().any():
+            return df.sort_values("composite_min_f1_diag_dom", ascending=False).reset_index(drop=True)
+    
+    # Fallback to legacy ranking order
+    preferred_order_cols = [
+        "inner_mean_min_per_class_f1",
+        "inner_mean_macro_f1", 
+        "inner_mean_diag_dom",
+        "inner_mean_acc", 
+        "mean_acc"
+    ]
     for col in preferred_order_cols:
         if col in df.columns:
             return df.sort_values(col, ascending=False).reset_index(drop=True)

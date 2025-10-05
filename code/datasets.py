@@ -96,7 +96,7 @@ class MaterializedEpochsDataset(BaseEEGDataset):
             payload = {
                 "materialized_dir": str(cfg.get("materialized_dir") or cfg.get("dataset_dir") or ""),
                 "crop_ms": _canonicalize(cfg.get("crop_ms")),
-                "use_channel_list": _canonicalize(cfg.get("use_channel_list")),
+                "exclude_channel_list": _canonicalize(cfg.get("exclude_channel_list")),
                 "include_channels": _canonicalize(cfg.get("include_channels")),
                 "cz_step": int(cfg.get("cz_step") or 0),
                 "cz_name": str(cfg.get("cz_name", "Cz")),
@@ -130,7 +130,7 @@ class MaterializedEpochsDataset(BaseEEGDataset):
             # Optional channel selection for materialized data (named lists / include / Cz ring)
             ep = spatial_sample(
                 ep,
-                cfg.get("use_channel_list"),
+                cfg.get("exclude_channel_list"),
                 cfg.get("include_channels"),
                 cz_step=cfg.get("cz_step"),
                 cz_name=cfg.get("cz_name", "Cz"),

@@ -73,7 +73,7 @@ def create_optuna_figure():
                label=f'Winner: {s1_best:.1f}%', zorder=5)
     
     ax1.set_xlabel('Trial', fontsize=9)
-    ax1.set_ylabel('Objective: inner_mean_min_per_class_f1 (%)', fontsize=9)
+    ax1.set_ylabel('Objective: composite (%)', fontsize=9)
     ax1.set_title('Stage 1: Architecture & Spatial\n~50 trials', fontsize=10, pad=8)
     ax1.legend(fontsize=7, loc='lower right')
     ax1.grid(True, alpha=0.2, linestyle='--', linewidth=0.5)
@@ -93,7 +93,7 @@ def create_optuna_figure():
                label=f'Winner: {s2_best:.1f}%', zorder=5)
     
     ax2.set_xlabel('Trial', fontsize=9)
-    ax2.set_ylabel('Objective: inner_mean_min_per_class_f1 (%)', fontsize=9)
+    ax2.set_ylabel('Objective: composite (%)', fontsize=9)
     ax2.set_title('Stage 2: Learning Dynamics\n~50 trials', fontsize=10, pad=8)
     ax2.legend(fontsize=7, loc='lower right')
     ax2.grid(True, alpha=0.2, linestyle='--', linewidth=0.5)
@@ -113,7 +113,7 @@ def create_optuna_figure():
                label=f'Winner: {s3_best:.1f}%', zorder=5)
     
     ax3.set_xlabel('Trial', fontsize=9)
-    ax3.set_ylabel('Objective: inner_mean_min_per_class_f1 (%)', fontsize=9)
+    ax3.set_ylabel('Objective: composite (%)', fontsize=9)
     ax3.set_title('Stage 3: Augmentation\n~30 trials', fontsize=10, pad=8)
     ax3.legend(fontsize=7, loc='lower right')
     ax3.grid(True, alpha=0.2, linestyle='--', linewidth=0.5)
@@ -122,7 +122,7 @@ def create_optuna_figure():
     
     # Note
     note = ('TPE sampler provides Bayesian optimization. MedianPruner enables early stopping. '
-           'Winner from each stage passed to next stage.')
+           'Winner from each stage passed to next stage. Objective: composite (65% min F1 + 35% diagonal dominance).')
     fig.text(0.5, 0.01, note, ha='center', fontsize=7, style='italic')
     
     return fig

@@ -282,13 +282,28 @@ def process_dataset(dataset_root: str, output_root: str):
                 final_epochs = epochs_with_metadata
                 print(f"  Keeping all {len(final_epochs)} trials.")
 
-            # Attach 3D montage so Cz-ring (cz_step) can work downstream (best-effort)
+            # Attach 3D montage (REQUIRED for spatial analyses: cz_step, XAI topomaps)
+            # FAIL-FAST: Must succeed for scientific validity
             try:
                 from mne.channels import read_custom_montage
                 mont = read_custom_montage("net/AdultAverageNet128_v1.sfp")
-                final_epochs.set_montage(mont, match_case=False, match_alias=True, on_missing="ignore")
-            except Exception as _e_mont:
-                print(f"[montage] skip ({_e_mont})")
+                final_epochs.set_montage(mont, match_case=False, match_alias=True, on_missing="warn")
+                
+                # CRITICAL: Verify montage was actually attached
+                attached_montage = final_epochs.get_montage()
+                if attached_montage is None:
+                    raise RuntimeError("Montage attachment failed - get_montage() returned None")
+                
+                # Verify Cz exists (required for cz_step)
+                pos = attached_montage.get_positions()
+                if 'Cz' not in pos.get('ch_pos', {}):
+                    raise RuntimeError("Montage missing Cz channel - cz_step will not work")
+                
+                print(f"  [montage] OK: {len(attached_montage.ch_names)} channels, Cz present")
+                
+            except Exception as e:
+                print(f"  [montage] CRITICAL ERROR: {e}")
+                raise RuntimeError(f"Cannot proceed without valid montage for subject {subject_id}") from e
 
             output_filename = f"sub-{subject_id}_preprocessed-epo.fif"
             output_path = os.path.join(output_dir, output_filename)

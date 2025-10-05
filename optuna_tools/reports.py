@@ -70,6 +70,11 @@ def write_top3_report(study_dir: Path, df: pd.DataFrame, study_name: str) -> Non
     if top.empty:
         return
 
+    # Determine ranking metric for subtitle
+    ranking_metric = "composite score (min-F1 + diag-dom)"
+    if "composite_min_f1_diag_dom" not in df.columns or df["composite_min_f1_diag_dom"].isna().all():
+        ranking_metric = "inner min-per-class-F1 or inner macro-F1"
+
     entries = []
     for _, row in top.iterrows():
         trial_dir_name = str(row.get("trial_dir") or row.get("run_id") or "")
@@ -83,11 +88,18 @@ def write_top3_report(study_dir: Path, df: pd.DataFrame, study_name: str) -> Non
         inner_min_f1 = row.get("inner_mean_min_per_class_f1")
         inner_f1 = row.get("inner_mean_macro_f1")
         inner_acc = row.get("inner_mean_acc")
+        composite = row.get("composite_min_f1_diag_dom")
+        diag_dom = row.get("inner_mean_diag_dom")
+        
         bits = []
         if pd.notna(acc):
             bits.append(f"acc={float(acc):.2f}%")
+        if pd.notna(composite):
+            bits.append(f"composite={float(composite):.2f}")
         if pd.notna(inner_min_f1):
             bits.append(f"inner min-F1={float(inner_min_f1):.2f}")
+        if pd.notna(diag_dom):
+            bits.append(f"inner diag-dom={float(diag_dom):.2f}")
         if pd.notna(inner_f1):
             bits.append(f"inner macro-F1={float(inner_f1):.2f}")
         if pd.notna(inner_acc):
@@ -175,7 +187,7 @@ def write_top3_report(study_dir: Path, df: pd.DataFrame, study_name: str) -> Non
 </head>
 <body>
   <h1>{title}</h1>
-  <div class="subtitle">Confusion matrices for the top three trials (best by inner min-per-class-F1 or inner macro-F1)</div>
+  <div class="subtitle">Confusion matrices for the top three trials (best by {ranking_metric})</div>
 
   <div class="hero">
     <div>

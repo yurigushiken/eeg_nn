@@ -24,7 +24,7 @@ def apply_crop_ms(epochs: mne.Epochs, crop_ms):
 
 def spatial_sample(
     epochs: mne.Epochs,
-    use_channel_list: Any,
+    exclude_channel_list: Any,
     include_channels: Any,
     cz_step: int | None = None,
     cz_name: str = "Cz",
@@ -33,7 +33,7 @@ def spatial_sample(
     """Apply optional channel exclusion/inclusion, then optional Cz-centric sampling.
 
     Order of operations:
-      1) Exclude channels by named list (use_channel_list)
+      1) Exclude channels by named list (exclude_channel_list)
       2) Keep-only explicit include_channels (if provided)
       3) Else, optionally apply Cz ring heuristic via cz_step
     """
@@ -41,12 +41,12 @@ def spatial_sample(
 
     # 1) Exclusion by named list
     excl_names = []
-    if use_channel_list:
-        if isinstance(use_channel_list, str) and isinstance(channel_lists, dict):
-            excl_names = list(channel_lists.get(use_channel_list, []))
-        elif isinstance(use_channel_list, (list, tuple)):
-            excl_names = list(use_channel_list)
-        elif use_channel_list is True and isinstance(channel_lists, dict) and "non_scalp" in channel_lists:
+    if exclude_channel_list:
+        if isinstance(exclude_channel_list, str) and isinstance(channel_lists, dict):
+            excl_names = list(channel_lists.get(exclude_channel_list, []))
+        elif isinstance(exclude_channel_list, (list, tuple)):
+            excl_names = list(exclude_channel_list)
+        elif exclude_channel_list is True and isinstance(channel_lists, dict) and "non_scalp" in channel_lists:
             excl_names = list(channel_lists.get("non_scalp", []))
     if excl_names:
         drop = [ch for ch in excl_names if ch in ep.ch_names]
@@ -55,10 +55,18 @@ def spatial_sample(
 
     # 2) Keep-only explicit include list
     if include_channels:
-        wanted = [ch for ch in include_channels if ch in ep.ch_names]
-        if wanted:
-            picks = mne.pick_channels(ep.ch_names, include=wanted, ordered=True)
-            ep = ep.copy().pick(picks).reorder_channels(wanted)
+        # Handle named list (string reference) or explicit list
+        incl_names = []
+        if isinstance(include_channels, str) and isinstance(channel_lists, dict):
+            incl_names = list(channel_lists.get(include_channels, []))
+        elif isinstance(include_channels, (list, tuple)):
+            incl_names = list(include_channels)
+        
+        if incl_names:
+            wanted = [ch for ch in incl_names if ch in ep.ch_names]
+            if wanted:
+                picks = mne.pick_channels(ep.ch_names, include=wanted, ordered=True)
+                ep = ep.copy().pick(picks).reorder_channels(wanted)
         return ep
 
     # 3) Optional Cz-based spatial sampling
