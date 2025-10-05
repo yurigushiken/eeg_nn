@@ -1,57 +1,69 @@
-# Stage 2 — Recipe (Clean)
-# Use Stage-1 resolved winner as --base; do not change architecture or data.
+# Stage 2 — Architecture sanity with very light augmentation (train-only)
+# Run only on top-2 architectures from Step 1 (use their resolved .yaml as --base separately).
 
-# --- training budget / loader ---
+# --- short budget ---
 epochs:
   method: int
-  low: 50
-  high: 90
+  low: 30
+  high: 40
 early_stop:
   method: int
-  low: 10
-  high: 14
+  low: 8
+  high: 10
 batch_size:
   method: categorical
   choices: [8, 16]
 
-# --- optimizer & intrinsic regularization ---
+# --- small recipe search (narrow) to keep fairness ---
 lr:
   method: log_uniform
-  low: 7.0e-6
-  high: 7.0e-4
+  low: 5.0e-5
+  high: 4.0e-4
 weight_decay:
   method: log_uniform
   low: 1.0e-6
-  high: 6.0e-4
+  high: 3.0e-4
 drop_prob:
   method: uniform
   low: 0.20
-  high: 0.60
+  high: 0.50
 scheduler_patience:
   method: int
   low: 6
-  high: 12
-
-# --- LR warm-up (now enabled) ---
+  high: 10
 lr_warmup_frac:
   method: uniform
   low: 0.00
-  high: 0.30
+  high: 0.20
 lr_warmup_init:
   method: uniform
   low: 0.00
-  high: 0.40
+  high: 0.30
 
-# --- augmentation stays OFF in Stage 2 ---
+# --- very light augmentation ---
 mixup_alpha:
   method: categorical
-  choices: [0.0]
+  choices: [0.0]  # keep off here
+
 shift_p:
-  method: categorical
-  choices: [0.0]
+  method: uniform
+  low: 0.00
+  high: 0.15
 shift_max_frac:
-  method: categorical
-  choices: [0.0]
+  method: uniform
+  low: 0.00
+  high: 0.02
+
+noise_p:
+  method: uniform
+  low: 0.00
+  high: 0.20
+noise_std:
+  method: uniform
+  low: 0.0015
+  high: 0.008
+
+# keep masking/scaling off to avoid erasing transients
 scale_p:
   method: categorical
   choices: [0.0]
@@ -61,12 +73,6 @@ scale_min:
 scale_max:
   method: categorical
   choices: [1.0]
-noise_p:
-  method: categorical
-  choices: [0.0]
-noise_std:
-  method: categorical
-  choices: [0.0]
 time_mask_p:
   method: categorical
   choices: [0.0]
@@ -79,6 +85,8 @@ chan_mask_p:
 chan_mask_ratio:
   method: categorical
   choices: [0.0]
+
 aug_warmup_frac:
-  method: categorical
-  choices: [0.0]
+  method: uniform
+  low: 0.10
+  high: 0.30

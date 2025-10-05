@@ -34,8 +34,12 @@ def generate_synthetic_subject_data():
     """Generate realistic per-subject performance"""
     np.random.seed(42)
     
-    n_subjects = 24
-    subjects = np.arange(1, n_subjects + 1)
+    # Real subject IDs (24 subjects, but IDs go up to 33 with gaps)
+    real_subject_ids = ['02', '03', '04', '05', '08', '09', '10', '11', '12', '13', 
+                        '14', '15', '17', '21', '22', '23', '25', '26', '27', '28', 
+                        '29', '31', '32', '33']
+    n_subjects = len(real_subject_ids)
+    subjects = real_subject_ids
     n_trials = np.random.randint(95, 140, n_subjects)
     accuracies = np.random.normal(48, 8, n_subjects)
     accuracies = np.clip(accuracies, 30, 65)
@@ -103,9 +107,9 @@ def create_forest_plot():
     
     # X-axis
     ax.set_xlabel('Accuracy (%)', fontsize=9)
-    ax.set_xlim([25, 78])  # PI: Extended to accommodate external text
+    ax.set_xlim([25, 82])  # Extended further right for trial counts
     
-    # PI feedback: Move legend OUTSIDE plot area (right side)
+    # PI feedback: Move legend OUTSIDE plot area (right side with more space)
     handles, labels = ax.get_legend_handles_labels()
     from matplotlib.patches import Patch
     handles.extend([
@@ -115,28 +119,28 @@ def create_forest_plot():
               label=f'Not sig. (n={(~above_chance).sum()})')
     ])
     
-    legend = ax.legend(handles=handles, loc='upper left', bbox_to_anchor=(1.02, 1),
+    legend = ax.legend(handles=handles, loc='upper left', bbox_to_anchor=(1.05, 1),
                       fontsize=7, frameon=False, borderaxespad=0)
     
     # Subtle grid (PI feedback)
     ax.grid(True, alpha=0.15, linestyle='--', linewidth=0.4, axis='x', zorder=0)
     
-    # Trial counts (right side, well-positioned)
+    # Trial counts (right side, well-positioned with more space)
     for i, (subj, n) in enumerate(zip(subjects, n_trials)):
         y_pos = len(subjects) - i
-        ax.text(76, y_pos, f'n={n}', fontsize=6, va='center', ha='left')
+        ax.text(79, y_pos, f'n={n}', fontsize=6, va='center', ha='left')
     
-    ax.text(76, len(subjects) + 1, 'Trials', fontsize=7, weight='bold', ha='left')
+    ax.text(79, len(subjects) + 1.3, 'Trials', fontsize=7, weight='bold', ha='left')
     
-    # PI feedback: Move statistics box OUTSIDE to avoid occlusion of S1-S3
+    # PI feedback: Move statistics box to UPPER LEFT corner to avoid plot occlusion
     n_sig = above_chance.sum()
     stats_text = (f'Above chance: {n_sig}/{len(subjects)} ({100*n_sig/len(subjects):.0f}%)\n'
                  f'Group mean: {group_mean:.1f}% ± {np.std(accs):.1f}%\n'
                  f'95% CI: [{np.percentile(accs, 2.5):.1f}, '
                  f'{np.percentile(accs, 97.5):.1f}]%')
     
-    ax.text(0.02, 0.02, stats_text, transform=ax.transAxes,
-           fontsize=7, va='bottom', ha='left', family='monospace',
+    ax.text(0.02, 0.98, stats_text, transform=ax.transAxes,
+           fontsize=7, va='top', ha='left', family='monospace',
            bbox=dict(boxstyle='round,pad=0.4', facecolor='white',
                     edgecolor='#333', linewidth=0.8, alpha=0.95))
     

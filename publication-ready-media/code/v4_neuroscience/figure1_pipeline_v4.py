@@ -97,11 +97,11 @@ def create_pipeline_v4():
     create_arrow(ax, (2.5, y_pos), (5, y_pos - 0.6))
     create_arrow(ax, (7.5, y_pos), (5, y_pos - 0.6))
     
-    # Stage 5: Optuna (3-stage - lighter blues)
+    # Stage 5: Optuna (4-stage - lighter blues)
     y_pos -= 1.8
-    # Outer box
+    # Outer box - taller for 4 stages
     outer_box = FancyBboxPatch(
-        (0.8, y_pos - 0.6), 8.4, 1.5,
+        (0.6, y_pos - 0.6), 8.8, 1.7,
         boxstyle='round,pad=0.08',
         facecolor='#F5F5F5',
         edgecolor='#666',
@@ -109,26 +109,29 @@ def create_pipeline_v4():
     )
     ax.add_patch(outer_box)
     
-    ax.text(5, y_pos + 0.75, '3-Stage Hyperparameter Optimization (Optuna/TPE)',
+    ax.text(5, y_pos + 0.95, '4-Stage Hyperparameter Optimization (Optuna/TPE)',
             ha='center', fontsize=8, weight='bold')
     
-    # Three stages
-    stage_width = 2.6
+    # Four stages - narrower boxes to fit
+    stage_width = 2.0
     stages = [
-        (1.2, 'Stage 1\nArchitecture\n~50 trials'),
-        (4.1, 'Stage 2\nLearning\n~50 trials'),
-        (7.0, 'Stage 3\nAugmentation\n~30 trials')
+        (0.9, 'Stage 1\nArchitecture\n~50 trials'),
+        (3.1, 'Stage 2\nSanity Check\n~50 trials'),
+        (5.3, 'Stage 3\nRecipe\n~50 trials'),
+        (7.5, 'Stage 4\nAugmentation\n~30 trials')
     ]
     for x_pos, label in stages:
         create_flowchart_box(
             ax, (x_pos, y_pos - 0.45), stage_width, 0.85,
-            label, facecolor='#8FC5E8', fontsize=7  # Lighter uniform blue
+            label, facecolor='#8FC5E8', fontsize=6.5  # Lighter uniform blue
         )
     
-    ax.text(5, y_pos - 1.15, 'Objective: composite (65% min F1 + 35% diagonal dominance) — ensures decodability & distinctness',
+    # Objective text - moved down more for clearance from boxes
+    ax.text(5, y_pos - 1.40, 'Objective: composite (65% min F1 + 35% diagonal dominance) — ensures decodability & distinctness',
             ha='center', fontsize=6.5, style='italic', color='#555')
     
-    create_arrow(ax, (5, y_pos - 0.7), (5, y_pos - 1.4))
+    # Arrow - positioned lower to avoid objective text
+    create_arrow(ax, (5, y_pos - 0.7), (5, y_pos - 1.70))
     
     # Stage 6: Final Evaluation (lighter blue)
     y_pos -= 3.2

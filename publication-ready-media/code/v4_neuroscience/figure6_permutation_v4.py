@@ -120,11 +120,11 @@ def create_v4_permutation():
     
     add_panel_label(ax2, 'B', x=-0.12, y=1.05)
     
-    # v4 FIX: Increased bottom margin
-    increase_bottom_margin(fig, 0.08)
+    # v4 FIX: Significantly increased bottom margin to prevent occlusion
+    increase_bottom_margin(fig, 0.15)
     method_text = ('Permutation test: labels shuffled 200× within-subject '
                   '(preserving class balance) with fixed train/test splits')
-    fig.text(0.5, 0.01, method_text, ha='center', fontsize=7, style='italic')
+    fig.text(0.5, 0.03, method_text, ha='center', fontsize=7, style='italic')
     
     return fig
 

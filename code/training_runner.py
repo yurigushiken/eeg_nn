@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
-from sklearn.model_selection import LeaveOneGroupOut, GroupShuffleSplit, GroupKFold
+from sklearn.model_selection import LeaveOneGroupOut, GroupKFold
 from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import f1_score, classification_report, cohen_kappa_score, confusion_matrix
 import optuna
@@ -95,7 +95,7 @@ Outer CV:
 
 Inner CV:
   - Strict GroupKFold with cfg['inner_n_folds'] (≥2), per outer split (subject-aware)
-  - Early stopping on inner validation loss; pruning reports inner macro‑F1 (robust to imbalance)
+  - Early stopping on inner validation loss; pruning reports the objective-aligned metric.
 
 Evaluation:
   - For each outer split, predictions on the held-out subjects are obtained via
@@ -169,6 +169,67 @@ class TrainingRunner:
         self.run_dir = self._ensure_run_dir(cfg)
         self.stage = str(cfg.get("stage", "") or "")
         self.stage_context = self._resolve_stage_context()
+    
+    def _get_composite_weight(self):
+        """
+        Get composite weight with constitutional fail-fast validation.
+        
+        Per constitution Section III: critical parameters must be explicitly specified.
+        No silent defaults allowed for scientifically important parameters.
+        
+        Returns:
+            float: Weight for min-F1 in composite objective (range: 0.0-1.0)
+        
+        Raises:
+            ValueError: If weight not specified or out of valid range
+        """
+        if "composite_min_f1_weight" not in self.cfg:
+            raise ValueError(
+                "composite_min_f1_weight must be explicitly specified when using "
+                "composite_min_f1_diag_dom objective (constitutional requirement). "
+                "Add to config: composite_min_f1_weight: 0.50  # value in [0.0, 1.0]"
+            )
+        
+        weight = float(self.cfg["composite_min_f1_weight"])
+        
+        # Validate range
+        if not (0.0 <= weight <= 1.0):
+            raise ValueError(
+                f"composite_min_f1_weight must be in range [0.0, 1.0], got {weight}"
+            )
+        
+        return weight
+    
+    def _compute_objective_metric(self, val_acc, val_macro_f1, val_min_per_class_f1, val_diag_dom):
+        """
+        Compute the per-epoch metric aligned with the configured Optuna objective.
+        
+        This ensures that pruning and checkpoint selection use the same metric
+        that Optuna is optimizing for, maintaining scientific integrity.
+        
+        Args:
+            val_acc: Validation accuracy (0-100)
+            val_macro_f1: Validation macro-F1 (0-100)
+            val_min_per_class_f1: Validation min per-class F1 (0-100)
+            val_diag_dom: Validation diagonal dominance (0-100)
+        
+        Returns:
+            float: The metric value aligned with the optimization objective (to be maximized)
+        """
+        objective = self.cfg.get("optuna_objective", "inner_mean_macro_f1")
+        
+        if objective == "inner_mean_min_per_class_f1":
+            return val_min_per_class_f1
+        elif objective == "inner_mean_acc":
+            return val_acc
+        elif objective == "inner_mean_diag_dom":
+            return val_diag_dom
+        elif objective == "composite_min_f1_diag_dom":
+            # Constitutional requirement: weight must be explicitly specified (no default)
+            weight = self._get_composite_weight()
+            return weight * val_min_per_class_f1 + (1.0 - weight) * val_diag_dom
+        else:  # "inner_mean_macro_f1" (default/fallback)
+            return val_macro_f1
 
     def _ensure_run_dir(self, cfg: Dict):
         from pathlib import Path
@@ -539,12 +600,13 @@ class TrainingRunner:
                 except Exception:
                     pass
 
-                best_val = float("inf")
+                best_val = float("inf")  # early stopping tracker
                 best_state = None
                 best_inner_acc = 0.0
                 best_inner_macro_f1 = 0.0
                 best_inner_min_per_class_f1 = 0.0
                 best_inner_diag_dom = 0.0
+                best_checkpoint_loss = float("inf")  # checkpoint tie-breaker (separate from early stopping)
                 patience = 0
                 tr_hist: List[float] = []
                 va_hist: List[float] = []
@@ -686,6 +748,13 @@ class TrainingRunner:
                             "val_loss": float(val_loss),
                             "val_acc": float(val_acc),
                             "val_macro_f1": float(val_macro_f1),
+                            "val_min_per_class_f1": float(val_min_per_class_f1),
+                            "val_diag_dom": float(val_diag_dom),
+                            "val_objective_metric": float(
+                                self._compute_objective_metric(
+                                    val_acc, val_macro_f1, val_min_per_class_f1, val_diag_dom
+                                )
+                            ),
                             "n_train": int(len(inner_tr_abs)),
                             "n_val": int(len(inner_va_abs)),
                             "optuna_trial_id": int(optuna_trial.number) if optuna_trial else -1,
@@ -694,11 +763,15 @@ class TrainingRunner:
                     except Exception:
                         pass
 
-                    # Optuna pruning: report inner-val macro-F1 per epoch and allow pruning
+                    # Optuna pruning: report objective-aligned metric per epoch
                     if optuna_trial is not None:
                         global_step += 1
                         try:
-                            optuna_trial.report(val_macro_f1, global_step)
+                            # Report the metric that matches our optimization objective
+                            objective_metric = self._compute_objective_metric(
+                                val_acc, val_macro_f1, val_min_per_class_f1, val_diag_dom
+                            )
+                            optuna_trial.report(objective_metric, global_step)
                             if optuna_trial.should_prune():
                                 print(
                                     f"  [prune] Trial pruned at epoch {epoch} of fold {fold+1} inner {inner_fold+1}.",
@@ -726,12 +799,19 @@ class TrainingRunner:
                     else:
                         patience += 1
 
-                    # Checkpoint selection aligns with objective: maximize macro‑F1
+                    # Checkpoint selection: maximize objective-aligned metric
+                    current_objective_metric = self._compute_objective_metric(
+                        val_acc, val_macro_f1, val_min_per_class_f1, val_diag_dom
+                    )
+                    best_objective_metric = self._compute_objective_metric(
+                        best_inner_acc, best_inner_macro_f1, best_inner_min_per_class_f1, best_inner_diag_dom
+                    )
+                    
                     update_ckpt = False
-                    if val_macro_f1 > best_inner_macro_f1:
+                    if current_objective_metric > best_objective_metric:
                         update_ckpt = True
-                    elif (val_macro_f1 == best_inner_macro_f1) and (val_loss < best_val):
-                        # Tie-break by lower validation loss
+                    elif (current_objective_metric == best_objective_metric) and (val_loss < best_checkpoint_loss):
+                        # Tie-break by lower validation loss among checkpointed epochs (not early stopping best_val)
                         update_ckpt = True
 
                     if update_ckpt:
@@ -739,6 +819,7 @@ class TrainingRunner:
                         best_inner_acc = val_acc
                         best_inner_min_per_class_f1 = val_min_per_class_f1
                         best_inner_diag_dom = val_diag_dom
+                        best_checkpoint_loss = val_loss
                         best_state = copy.deepcopy(model.state_dict())
                         if self.run_dir and self.cfg.get("save_ckpt", True):
                             ckpt_dir = self.run_dir / "ckpt"
@@ -846,7 +927,7 @@ class TrainingRunner:
             if optuna_objective == "composite_min_f1_diag_dom":
                 # For composite objective, compute weighted score per inner fold
                 # Select the inner fold with best composite score
-                min_f1_weight = float(self.cfg.get("composite_min_f1_weight", 0.65))
+                min_f1_weight = self._get_composite_weight()
                 diag_dom_weight = 1.0 - min_f1_weight
                 
                 if inner_results_this_outer:
@@ -1172,7 +1253,7 @@ class TrainingRunner:
                     obj_metric_label = f"inner-mean acc={obj_metric_val:.2f}"
                 elif optuna_objective == "composite_min_f1_diag_dom":
                     # Show both metrics and composite score
-                    min_f1_w = float(self.cfg.get("composite_min_f1_weight", 0.65))
+                    min_f1_w = self._get_composite_weight()
                     composite_val = min_f1_w * inner_mean_min_per_class_f1_this_outer + (1.0 - min_f1_w) * inner_mean_diag_dom_this_outer
                     obj_metric_label = f"composite={composite_val:.2f} (minF1={inner_mean_min_per_class_f1_this_outer:.2f} diagDom={inner_mean_diag_dom_this_outer:.2f})"
                     obj_metric_val = composite_val
@@ -1221,7 +1302,7 @@ class TrainingRunner:
                 elif optuna_objective == "composite_min_f1_diag_dom":
                     # Show both metrics and composite for outer
                     outer_min_f1 = float(np.min(per_class_f1)) * 100 if per_class_f1 is not None and len(per_class_f1) > 0 else 0.0
-                    min_f1_w = float(self.cfg.get("composite_min_f1_weight", 0.65))
+                    min_f1_w = self._get_composite_weight()
                     outer_composite = min_f1_w * outer_min_f1 + (1.0 - min_f1_w) * diag_dom_fold
                     outer_metric_label = f"outer composite={outer_composite:.2f} (minF1={outer_min_f1:.2f} diagDom={diag_dom_fold:.2f})"
                     outer_metric_val = outer_composite
@@ -1310,7 +1391,7 @@ class TrainingRunner:
             elif optuna_objective == "composite_min_f1_diag_dom":
                 inner_mean_min_f1_overall = float(np.mean(inner_min_per_class_f1s)) if inner_min_per_class_f1s else 0.0
                 inner_mean_diag_dom_overall = float(np.mean(inner_diag_doms)) if inner_diag_doms else 0.0
-                min_f1_w = float(self.cfg.get("composite_min_f1_weight", 0.65))
+                min_f1_w = self._get_composite_weight()
                 composite_overall = min_f1_w * inner_mean_min_f1_overall + (1.0 - min_f1_w) * inner_mean_diag_dom_overall
                 obj_metric_label = f"composite={composite_overall:.2f} (minF1={inner_mean_min_f1_overall:.2f} diagDom={inner_mean_diag_dom_overall:.2f})"
                 obj_metric_val = composite_overall
@@ -1352,7 +1433,7 @@ class TrainingRunner:
                 overall_outer_metric_label = f"outer acc={mean_acc:.2f}"
             elif optuna_objective == "composite_min_f1_diag_dom":
                 overall_outer_min_f1 = float(np.min(overall_per_class_f1)) * 100 if overall_per_class_f1 is not None and len(overall_per_class_f1) > 0 else 0.0
-                min_f1_w = float(self.cfg.get("composite_min_f1_weight", 0.65))
+                min_f1_w = self._get_composite_weight()
                 overall_outer_composite = min_f1_w * overall_outer_min_f1 + (1.0 - min_f1_w) * mean_diag_dom
                 overall_outer_metric_label = f"outer composite={overall_outer_composite:.2f} (minF1={overall_outer_min_f1:.2f} diagDom={mean_diag_dom:.2f})"
             elif optuna_objective == "inner_mean_diag_dom":
@@ -1444,6 +1525,9 @@ class TrainingRunner:
                         "val_loss",
                         "val_acc",
                         "val_macro_f1",
+                        "val_min_per_class_f1",
+                        "val_diag_dom",
+                        "val_objective_metric",
                         "n_train",
                         "n_val",
                         "optuna_trial_id",
@@ -1571,7 +1655,7 @@ class TrainingRunner:
         # Compute composite objective if configured
         summary_composite_min_f1_diag_dom = None
         if self.cfg.get("optuna_objective") == "composite_min_f1_diag_dom":
-            min_f1_weight = float(self.cfg.get("composite_min_f1_weight", 0.65))
+            min_f1_weight = self._get_composite_weight()
             diag_dom_weight = 1.0 - min_f1_weight
             summary_composite_min_f1_diag_dom = (
                 min_f1_weight * summary_inner_mean_min_per_class_f1 + 

@@ -126,13 +126,13 @@ def create_boxplots():
     ax4.legend(handles=[legend_elements[1]], fontsize=7, loc='upper left',
               frameon=False)
     
-    # PI feedback: Increased bottom margin to avoid footnote overlap (increased further)
-    increase_bottom_margin(fig, 0.15)
+    # PI feedback: Significantly increased bottom margin to prevent occlusion
+    increase_bottom_margin(fig, 0.18)
     
-    # PI feedback: Move note below figure with adequate clearance (moved up more)
+    # PI feedback: Move note much further down with maximum clearance
     note = ('Box plots show median (line), IQR (box), 1.5×IQR whiskers. '
            'Points: individual outer folds (n = 24 per task).')
-    fig.text(0.5, 0.03, note, ha='center', fontsize=7, style='italic')
+    fig.text(0.5, 0.06, note, ha='center', fontsize=7, style='italic')
     
     return fig
 

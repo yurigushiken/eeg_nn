@@ -26,16 +26,16 @@ weight_decay:
   choices: [2.5e-5]
 drop_prob:
   method: categorical
-  choices: [0.55]
+  choices: [0.30,0.55, 0.70]
 scheduler_patience:
   method: categorical
   choices: [8]
 lr_warmup_frac:
   method: categorical
-  choices: [0.0]
+  choices: [0.0, 0.1, 0.2]
 lr_warmup_init:
   method: categorical
-  choices: [0.0]
+  choices: [0.0, 0.1]
 
 # --- architecture knobs (tuned only in Stage 1) ---
 filter_1:

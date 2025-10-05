@@ -52,7 +52,7 @@ def create_nested_cv_v4():
     
     # ========== Panel B: Outer Loop ==========
     ax2 = fig.add_subplot(gs[1])
-    ax2.set_xlim(0, 26)
+    ax2.set_xlim(-0.5, 26.5)  # Extended left for labels
     ax2.set_ylim(0, 7.0)  # Increased for more space
     ax2.axis('off')
     
@@ -65,10 +65,11 @@ def create_nested_cv_v4():
     ]
     
     for y_pos, fold_label, test_idx in fold_info:
-        ax2.text(0.5, y_pos + 0.225, fold_label, fontsize=9, weight='bold', va='center')  # Moved right slightly
+        # Labels further left to avoid occlusion
+        ax2.text(-0.2, y_pos + 0.225, fold_label, fontsize=9, weight='bold', va='center', ha='right')
         
         for i in range(24):
-            x_pos = i + 1.8  # Shifted right to give more space for labels
+            x_pos = i + 1.5  # Back to original position since labels moved left
             
             if i == test_idx:
                 color = COLORS['test']
@@ -102,7 +103,7 @@ def create_nested_cv_v4():
     
     # ========== Panel C: Inner Loop ==========
     ax3 = fig.add_subplot(gs[2])
-    ax3.set_xlim(0, 26)
+    ax3.set_xlim(-0.5, 26.5)  # Extended left for labels
     ax3.set_ylim(0, 6.2)  # Increased for more bottom space to prevent text occlusion
     ax3.axis('off')
     
@@ -119,7 +120,8 @@ def create_nested_cv_v4():
     ]
     
     for y_pos, fold_label, val_indices in inner_folds:
-        ax3.text(0.2, y_pos + 0.15, fold_label, fontsize=7.5, va='center')
+        # Labels further left with right alignment to avoid occlusion
+        ax3.text(-0.1, y_pos + 0.15, fold_label, fontsize=7.5, va='center', ha='right')
         
         for i in range(n_inner_subjects):
             x_pos = i + 1.5

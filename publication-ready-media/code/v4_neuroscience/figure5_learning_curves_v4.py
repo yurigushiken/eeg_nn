@@ -119,10 +119,10 @@ def create_learning_curves():
     ax4.set_ylim([0, 45])
     add_panel_label(ax4, 'D', x=-0.15, y=1.05)
     
-    # Note - moved up significantly to prevent occlusion
+    # Note - moved much further down to prevent occlusion
     note = ('Mean across 24 outer folds (LOSO-CV). Early stopping criterion: '
            'patience = 20 epochs without improvement.')
-    fig.text(0.5, 0.03, note, ha='center', fontsize=7, style='italic')
+    fig.text(0.5, 0.06, note, ha='center', fontsize=7, style='italic')
     
     return fig
 

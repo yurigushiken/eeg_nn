@@ -14,33 +14,46 @@ python -X utf8 -u scripts/optuna_search.py `
   --task cardinality_1_3 `
   --base  configs/tasks/cardinality_1_3/base.yaml `
   --cfg   configs/tasks/cardinality_1_3/step1_search.yaml `
-  --space configs/tasks/cardinality_1_3/step1_space_deep_spatial.yaml `
+  --space configs/tasks/cardinality_1_3/step1_space_scaffold.yaml `
   --trials 48
 ```
 - Output: `results/optuna/<study>/...` per-trial artifacts, plus per-trial summaries under the study; a best.json persisted under `results/optuna_studies/<task>/step1/`
 
-## Stage 2: Architectural Refinement (manual handoff)
+## Stage 2: Architecture Sanity Check (manual handoff)
 ```powershell
 python -X utf8 -u scripts/optuna_search.py `
   --stage step2 `
   --task cardinality_1_3 `
   --base  configs/tasks/cardinality_1_3/base.yaml `
   --cfg   configs/tasks/cardinality_1_3/step2_search.yaml `
-  --space configs/tasks/cardinality_1_3/step2_space_deep_spatial.yaml `
+  --space configs/tasks/cardinality_1_3/step2_space_arch_sanity.yaml `
   --trials 48
 ```
-- Use step1 champion params (best.json) as input overlay when authoring the step2 search controller.
+- Use step1 champion params as base; validate top architectures with light augmentation.
 
-## Stage 3: Augmentation + Optimizer Sweep (optional)
+## Stage 3: Recipe Refinement (manual handoff)
 ```powershell
 python -X utf8 -u scripts/optuna_search.py `
   --stage step3 `
   --task cardinality_1_3 `
   --base  configs/tasks/cardinality_1_3/base.yaml `
   --cfg   configs/tasks/cardinality_1_3/step3_search.yaml `
-  --space configs/tasks/cardinality_1_3/step3_space_aug.yaml `
+  --space configs/tasks/cardinality_1_3/step3_space_recipe.yaml `
   --trials 48
 ```
+- Use step1 winner; optimize learning rate, weight decay, dropout, and training budget.
+
+## Stage 4: Joint Augmentation Sweep (optional)
+```powershell
+python -X utf8 -u scripts/optuna_search.py `
+  --stage step4 `
+  --task cardinality_1_3 `
+  --base  configs/tasks/cardinality_1_3/base.yaml `
+  --cfg   configs/tasks/cardinality_1_3/step4_search.yaml `
+  --space configs/tasks/cardinality_1_3/step4_space_joint.yaml `
+  --trials 48
+```
+- Use step3 winner; tune augmentation jointly with optimization knobs.
 
 ## Final Evaluation: LOSO Champion Refit (multi-seed supported)
 ```powershell
