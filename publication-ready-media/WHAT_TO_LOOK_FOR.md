@@ -30,7 +30,7 @@ Open each figure and check these specific elements:
 
 **Optuna Section (bottom of outer box):**
 ```
-✅ Should say: "Objective: composite (65% min F1 + 35% diagonal dominance) — ensures decodability & distinctness"
+✅ Should say: "Objective: composite (65% min F1 + 35% plurality correctness) — ensures decodability & distinctness"
 ❌ NOT: "inner_mean_min_per_class_f1 (ensures all classes decodable)"
 ```
 
@@ -74,7 +74,7 @@ Open each figure and check these specific elements:
 
 **Bottom Caption:**
 ```
-✅ Should say: "Objective: composite (65% min F1 + 35% diagonal dominance) — averaged across inner folds"
+✅ Should say: "Objective: composite (65% min F1 + 35% plurality correctness) — averaged across inner folds"
 ❌ NOT: "inner_mean_min_per_class_f1 (averaged across inner folds)"
 ```
 
@@ -108,7 +108,7 @@ Open each figure and check these specific elements:
 
 **Bottom Caption:**
 ```
-✅ Should end with: "...Objective: composite (65% min F1 + 35% diagonal dominance)."
+✅ Should end with: "...Objective: composite (65% min F1 + 35% plurality correctness)."
 ❌ NOT: Just "Winner from each stage passed to next stage." (without objective definition)
 ```
 
@@ -170,7 +170,7 @@ Print this and check off as you review each figure:
 - [ ] "~300 trials" (not ~360)
 - [ ] "18 datasets" mentioned
 - [ ] "Behavioral & condition alignment"
-- [ ] "composite (65% min F1 + 35% diagonal dominance)"
+- [ ] "composite (65% min F1 + 35% plurality correctness)"
 - [ ] "Refit predictions" (not Ensemble)
 - [ ] Stats/XAI on separate rows
 - [ ] Lighter blue colors

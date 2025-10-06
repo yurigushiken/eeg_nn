@@ -24,7 +24,7 @@ Successfully updated 6 publication-ready figures with accuracy corrections, layo
 2. Preprocessing: Added **18 datasets** (3 HPF × 3 LPF × 2 baseline)
 3. Data finalization: Added **condition alignment**
 4. Subject IDs: S1-S24 → **Real IDs S02-S33**
-5. Objective metric: Updated to **composite (65% min F1 + 35% diagonal dominance)** in 6 locations
+5. Objective metric: Updated to **composite (65% min F1 + 35% plurality correctness)** in 6 locations
 6. Evaluation mode: Ensemble → **Refit**
 
 ### Layout & Design (8 fixes)
@@ -79,7 +79,7 @@ publication-ready-media/outputs/v4/
 **Figure 1 (Pipeline):**
 - Top box: "~300 trials/subject" ✅
 - Second box: "18 datasets: 3 HPF × 3 LPF × 2 baseline" ✅
-- Optuna caption: "composite (65% min F1 + 35% diagonal dominance)" ✅
+- Optuna caption: "composite (65% min F1 + 35% plurality correctness)" ✅
 - Final eval: "Refit predictions" ✅
 - Stats/XAI: Separate rows ✅
 
@@ -133,7 +133,7 @@ publication-ready-media/outputs/v4/
 ### 1. The Composite Objective
 Your optimization balances two goals:
 - **65% min F1**: All classes decodable (no class left behind)
-- **35% diagonal dominance**: Correct prediction is plurality for each class
+- **35% plurality correctness**: Correct prediction is plurality for each class
 
 This prevents both class neglect AND systematic misclassification.
 
@@ -214,7 +214,7 @@ Figure 1. EEG Decoding Pipeline Overview.
 Complete workflow from raw data acquisition (24 subjects, ~300 trials/subject, 
 128-channel EEG) through preprocessing (18 systematic parameter combinations), 
 data quality control (~100 channel intersection), 3-stage hyperparameter optimization 
-(Optuna/TPE with composite objective: 65% min F1 + 35% diagonal dominance), 
+(Optuna/TPE with composite objective: 65% min F1 + 35% plurality correctness), 
 final evaluation (multi-seed LOSO-CV with refit), statistical validation 
 (permutation testing), and explainable AI analysis (Integrated Gradients).
 ```
@@ -225,7 +225,7 @@ Figure 2. Nested Cross-Validation Strategy.
 Leave-One-Subject-Out (LOSO) outer loop with 5-fold inner cross-validation. 
 Real subject IDs shown (N=24, IDs 02-33 with gaps due to quality control). 
 For each outer fold, one subject held out for testing while remaining 23 subjects 
-used for 5-fold inner CV. Composite objective (65% min F1 + 35% diagonal dominance) 
+used for 5-fold inner CV. Composite objective (65% min F1 + 35% plurality correctness) 
 optimized across inner folds to ensure both class decodability and prediction distinctness.
 ```
 

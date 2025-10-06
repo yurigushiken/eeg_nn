@@ -1,7 +1,7 @@
 model_name: eegnex
-seed: 44
-optuna_objective: composite_min_f1_diag_dom  # Composite: always balance min F1 (decodability) and diagonal dominance (distinctness)
-composite_min_f1_weight: 0.50  # 50% weight on min F1 (ensures all classes decodable), 50% on diagonal dominance
+seed: 45
+optuna_objective: composite_min_f1_plur_corr  # Threshold approach: maximize distinctness while ensuring decodability
+min_f1_threshold: 38.0  # All classes must be > 35% F1 (above 33.3% chance + margin)
 save_ckpt: true
 # Data sources (relative)
 materialized_dir: data_preprocessed/hpf_1.5_lpf_40_baseline-off

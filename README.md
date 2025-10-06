@@ -10,7 +10,7 @@ This repository implements a streamlined EEG decoding pipeline aligned with the 
 
 ### Key ideas
 - Preprocessing is performed externally with HAPPE; we convert EEGLAB `.set` to `.fif` once with `scripts/prepare_from_happe.py`.
-- Optuna search runs directly on materialized `.fif` via `scripts/optuna_search.py` with a `--stage` flag; we use TPE with MedianPruner (warmup=10) and per‑epoch pruning on the metric specified by `optuna_objective` (e.g., `composite_min_f1_diag_dom` for balanced decodability+distinctness (recommended), `inner_mean_min_per_class_f1` for worst-class focus, `inner_mean_diag_dom` for diagonal dominance, or `inner_mean_macro_f1` for average performance). Per-epoch pruning and checkpoint selection now align with the configured objective to prevent metric drift.
+- Optuna search runs directly on materialized `.fif` via `scripts/optuna_search.py` with a `--stage` flag; we use TPE with MedianPruner (warmup=10) and per‑epoch pruning on the metric specified by `optuna_objective` (e.g., `composite_min_f1_plur_corr` for balanced decodability+distinctness (recommended), `inner_mean_min_per_class_f1` for worst-class focus, `inner_mean_plur_corr` for plurality correctness, or `inner_mean_macro_f1` for average performance). Per-epoch pruning and checkpoint selection now align with the configured objective to prevent metric drift.
 - Stage progression is manual (by design): you choose the next stage and feed winners via YAML overlays; the runner does not auto‑chain stages.
 - Behavior alignment is strict by default; any epochs↔behavior mismatch raises and aborts.
 - Default channel policy excludes non‑scalp channels (`use_channel_list: non_scalp`). The Cz‑ring knob (`cz_step`) is disabled by default.
@@ -76,7 +76,7 @@ python -X utf8 -u train.py `
 - Outer evaluation mode (must be explicitly specified):
   - `outer_eval_mode: ensemble` (recommended): mean-softmax over K inner models for test predictions.
   - `outer_eval_mode: refit`: refit one model on full outer-train (set `refit_val_frac>0` to enable subject-aware early stop).
-- `scripts/optuna_search.py`: Unified Optuna driver for Stage 1/2/3/4 sweeps (`--stage step1|step2|step3|step4`) over a search space YAML; prunes per‑epoch on inner macro‑F1 and seeds the TPE sampler from config.
+- `scripts/optuna_search.py`: Unified Optuna driver for Stage 1/2/3 sweeps (`--stage step1|step2|step3`) over a search space YAML; prunes per‑epoch on inner macro‑F1 and seeds the TPE sampler from config.
 - `scripts/final_eval.py`: Multi-seed final evaluation; writes aggregate metrics JSON.
 - `scripts/run_posthoc_stats.py`: Post‑hoc stats (GLMM/forest/caterpillar) under `stats/`.
 - `scripts/run_xai_analysis.py`: Per‑fold attributions and consolidated XAI HTML.
@@ -98,11 +98,9 @@ python -X utf8 -u train.py `
     - step1_search.yaml — controller for Step 1
     - step1_space_*.yaml — Step 1 search space (architecture/spatial/big levers)
     - step2_search.yaml — controller for Step 2
-    - step2_space_*.yaml — Step 2 space (architecture sanity check)
+    - step2_space_*.yaml — Step 2 space (recipe refinement/stability)
     - step3_search.yaml — controller for Step 3
-    - step3_space_*.yaml — Step 3 space (recipe refinement/stability)
-    - step4_search.yaml — controller for Step 4
-    - step4_space_*.yaml — Step 4 space (augmentations)
+    - step3_space_*.yaml — Step 3 space (augmentations)
 - scripts/
   - prepare_from_happe.py — convert HAPPE EEGLAB `.set` to per‑subject `.fif` with metadata + montage
   - optuna_search.py — Unified Optuna TPE driver (Stage 1/2/3/4 via --stage)
@@ -203,31 +201,22 @@ python -X utf8 -u scripts/optuna_search.py `
   --space configs/tasks/cardinality_1_3/step1_space_scaffold.yaml `
   --trials 48
 
-# Step 2 (architecture sanity check)
+# Step 2 (recipe refinement/stability)
 python -X utf8 -u scripts/optuna_search.py `
   --stage step2 `
   --task cardinality_1_3 `
   --base  configs/tasks/cardinality_1_3/base.yaml `
   --cfg   configs/tasks/cardinality_1_3/step2_search.yaml `
-  --space configs/tasks/cardinality_1_3/step2_space_arch_sanity.yaml `
+  --space configs/tasks/cardinality_1_3/step2_space_recipe.yaml `
   --trials 48
 
-# Step 3 (recipe refinement/stability)
+# Step 3 (augmentations; optional)
 python -X utf8 -u scripts/optuna_search.py `
   --stage step3 `
   --task cardinality_1_3 `
   --base  configs/tasks/cardinality_1_3/base.yaml `
   --cfg   configs/tasks/cardinality_1_3/step3_search.yaml `
-  --space configs/tasks/cardinality_1_3/step3_space_recipe.yaml `
-  --trials 48
-
-# Step 4 (augmentations; optional)
-python -X utf8 -u scripts/optuna_search.py `
-  --stage step4 `
-  --task cardinality_1_3 `
-  --base  configs/tasks/cardinality_1_3/base.yaml `
-  --cfg   configs/tasks/cardinality_1_3/step4_search.yaml `
-  --space configs/tasks/cardinality_1_3/step4_space_joint.yaml `
+  --space configs/tasks/cardinality_1_3/step3_space_joint.yaml `
   --trials 48
 ```
 
@@ -239,7 +228,7 @@ dataset_cache_memory: true
 ```
 - Cache persists only for the current Python process. Restarting clears it.
 
-3) Final evaluation (multi‑seed, LOSO). With `--use-best`, merges best from step1 → step2 → step3 → step4 → finalist (last wins).
+3) Final evaluation (multi‑seed, LOSO). With `--use-best`, merges best from step1 → step2 → step3 → finalist (last wins).
 ```powershell
 python scripts/final_eval.py `
   --task cardinality_1_3 `
@@ -317,9 +306,9 @@ cz_step:
 - **Determinism:** `PYTHONHASHSEED`, Python/NumPy/Torch seeds, per‑worker DataLoader seeding, `torch.backends.cudnn.deterministic=True`, `torch.backends.cudnn.benchmark=False`, `torch.use_deterministic_algorithms(True)`, and `CUBLAS_WORKSPACE_CONFIG` to stabilize CUDA GEMM. Determinism banner is printed and persisted.
 - **Provenance:** model class path, library versions, and determinism flags are included in the TXT/HTML report and JSON.
 - **Seeds (REQUIRED):** set a single `seed: 1` (or any integer) or a list `seeds: [41, 42, ...]` for multi‑seed loops. **No fallback is provided**—if `seed` is missing, the run fails immediately to prevent untracked randomness. Run directories include `seed_<N>` in the name; a cross‑seed aggregate JSON is written. The parameter `random_state` is no longer used (removed project-wide).
-- **Optuna objective (REQUIRED):** TPE sampler is seeded from config. You **must** explicitly specify `optuna_objective` in your config (e.g., `inner_mean_min_per_class_f1` for worst-class focus, `inner_mean_diag_dom` for diagonal dominance, `inner_mean_macro_f1` for average performance, or `inner_mean_acc` for accuracy). **No fallback is provided**—this ensures you consciously choose your research objective. Pruning signal is the configured objective metric. Top-3 reports prioritize `inner_mean_min_per_class_f1` to identify trials where all classes are decodable.
+- **Optuna objective (REQUIRED):** TPE sampler is seeded from config. You **must** explicitly specify `optuna_objective` in your config (e.g., `inner_mean_min_per_class_f1` for worst-class focus, `inner_mean_plur_corr` for plurality correctness, `inner_mean_macro_f1` for average performance, or `inner_mean_acc` for accuracy). **No fallback is provided**—this ensures you consciously choose your research objective. Pruning signal is the configured objective metric. Top-3 reports prioritize `inner_mean_min_per_class_f1` to identify trials where all classes are decodable.
 - **Outer eval mode (REQUIRED):** You must explicitly set `outer_eval_mode: ensemble` (recommended) or `outer_eval_mode: refit` in your config. **No fallback is provided**—this forces conscious choice of your evaluation strategy.
-- **Objective-aligned pruning and checkpointing:** Optuna's per-epoch pruning signal and checkpoint selection ("best inner epoch") now use the same metric as `optuna_objective`, ensuring scientific consistency. Previously (before Oct 5, 2025), these always used `val_macro_f1` regardless of objective, potentially leading to suboptimal model selection. Current behavior: if you optimize for `composite_min_f1_diag_dom`, pruning decisions and checkpoint selection also use the composite score.
+- **Objective-aligned pruning and checkpointing:** Optuna's per-epoch pruning signal and checkpoint selection ("best inner epoch") now use the same metric as `optuna_objective`, ensuring scientific consistency. Previously (before Oct 5, 2025), these always used `val_macro_f1` regardless of objective, potentially leading to suboptimal model selection. Current behavior: if you optimize for `composite_min_f1_plur_corr`, pruning decisions and checkpoint selection also use the composite score.
 - **Audit artifacts:** `splits_indices.json`, `learning_curves_inner.csv`, `outer_eval_metrics.csv`, `test_predictions_outer.csv`, and `test_predictions_inner.csv` capture splits, pruning traces, outer‑fold metrics (including min-per-class-F1 and Cohen's kappa), per‑trial out‑of‑fold predictions (ready for mixed‑effects models), and inner validation predictions (for inner vs outer comparison).
 - **XAI checkpoint resolution order per fold:** `fold_XX_refit_best.ckpt` → `fold_XX_best.ckpt` → first `fold_XX_inner_YY_best.ckpt`.
 
@@ -333,8 +322,8 @@ Tip: To force LOSO in any run that has a resolved config with `n_folds`, either 
 ### Configuration knobs
 - `configs/tasks/<task>/base.yaml`:
   - **`seed` (REQUIRED):** integer seed for reproducibility. No fallback—run fails if missing.
-  - **`optuna_objective` (REQUIRED for Optuna):** metric to optimize. Choose: `composite_min_f1_diag_dom` (balanced decodability+distinctness, recommended), `inner_mean_min_per_class_f1` (worst-class focus), `inner_mean_diag_dom` (diagonal dominance/row-wise plurality), `inner_mean_macro_f1` (average F1), or `inner_mean_acc` (accuracy). No fallback—ensures conscious research objective choice.
-  - **`composite_min_f1_weight` (REQUIRED if using `composite_min_f1_diag_dom`):** Weight for min-per-class F1 in the composite objective (0.0–1.0). Higher values (e.g., 0.65) prioritize decodability; lower values prioritize distinctness. Constitutional requirement: must be explicitly specified (no default fallback). Example: `composite_min_f1_weight: 0.50` balances both metrics equally.
+  - **`optuna_objective` (REQUIRED for Optuna):** metric to optimize. Choose: `composite_min_f1_plur_corr` (balanced decodability+distinctness, recommended), `inner_mean_min_per_class_f1` (worst-class focus), `inner_mean_plur_corr` (plurality correctness/row-wise plurality), `inner_mean_macro_f1` (average F1), or `inner_mean_acc` (accuracy). No fallback—ensures conscious research objective choice.
+  - **`composite_min_f1_weight` (REQUIRED if using `composite_min_f1_plur_corr`):** Weight for min-per-class F1 in the composite objective (0.0–1.0). Higher values (e.g., 0.65) prioritize decodability; lower values prioritize distinctness. Constitutional requirement: must be explicitly specified (no default fallback). Example: `composite_min_f1_weight: 0.50` balances both metrics equally.
   - **`outer_eval_mode` (REQUIRED):** `ensemble` (recommended, averages K inner models) or `refit` (single model on full outer-train). No fallback.
   - `n_folds`: number of outer folds (uses GroupKFold). If omitted, uses LOSO.
   - `inner_n_folds`: number of inner folds (must be ≥2). Strictly enforced; insufficient subjects → error.
@@ -349,24 +338,24 @@ Tip: To force LOSO in any run that has a resolved config with `n_folds`, either 
 
 The `optuna_objective` parameter controls what metric the hyperparameter search optimizes for. Each has distinct implications for model behavior:
 
-#### `composite_min_f1_diag_dom` (Balanced Decodability + Distinctness) **RECOMMENDED** ⭐
+#### `composite_min_f1_plur_corr` (Balanced Decodability + Distinctness) **RECOMMENDED** ⭐
 
-- **What it measures:** A weighted sum of min-per-class F1 and diagonal dominance, ensuring both decodability and distinctness are continuously optimized
-- **Formula:** `composite = (composite_min_f1_weight × min_per_class_f1) + ((1 - composite_min_f1_weight) × diagonal_dominance)`
+- **What it measures:** A weighted sum of min-per-class F1 and plurality correctness, ensuring both decodability and distinctness are continuously optimized
+- **Formula:** `composite = (composite_min_f1_weight × min_per_class_f1) + ((1 - composite_min_f1_weight) × plurality_correctness)`
 - **When to use:** **DEFAULT CHOICE for cognitive neuroscience research.** Prevents "metric gaming" where a model sacrifices one property to maximize the other
 - **Configuration:** Requires `composite_min_f1_weight: 0.50` (or any value in [0.0, 1.0]) in your config YAML
 - **Why it's superior to optimizing metrics separately:**
-  - **Prevents diagonal dominance gaming:** A model can achieve 100% diagonal dominance with terrible F1 (e.g., 10% accuracy) by making one class hyper-confident while others collapse. The composite prevents this by requiring BOTH metrics remain high.
+  - **Prevents plurality correctness gaming:** A model can achieve 100% plurality correctness with terrible F1 (e.g., 10% accuracy) by making one class hyper-confident while others collapse. The composite prevents this by requiring BOTH metrics remain high.
   - **Prevents min-F1 stagnation:** Optimizing only min-F1 may produce models where classes barely meet threshold but lack distinct neural signatures. The composite ensures classes remain distinguishable.
   - **Continuous optimization:** Unlike threshold-based objectives (which create discontinuities), the composite always balances both goals throughout the search space.
 - **Example with weight=0.65 (prioritizing decodability):**
   ```
-  Trial A: min_F1=40%, diag_dom=100% → composite = 0.65×40 + 0.35×100 = 61.0
-  Trial B: min_F1=50%, diag_dom=67%  → composite = 0.65×50 + 0.35×67  = 56.0
-  Trial C: min_F1=45%, diag_dom=100% → composite = 0.65×45 + 0.35×100 = 64.3 ← BEST
+  Trial A: min_F1=40%, plur_corr=100% → composite = 0.65×40 + 0.35×100 = 61.0
+  Trial B: min_F1=50%, plur_corr=67%  → composite = 0.65×50 + 0.35×67  = 56.0
+  Trial C: min_F1=45%, plur_corr=100% → composite = 0.65×45 + 0.35×100 = 64.3 ← BEST
   ```
-  Trial C wins because it balances strong diagonal dominance (100%) with decent decodability (45%).
-- **Scientific rationale:** Your research claim requires BOTH properties: (1) all classes must be decodable (operationalized by min-per-class F1), and (2) each class must have a distinct neural signature (operationalized by diagonal dominance). The composite objective is the mathematically sound way to enforce both simultaneously.
+  Trial C wins because it balances strong plurality correctness (100%) with decent decodability (45%).
+- **Scientific rationale:** Your research claim requires BOTH properties: (1) all classes must be decodable (operationalized by min-per-class F1), and (2) each class must have a distinct neural signature (operationalized by plurality correctness). The composite objective is the mathematically sound way to enforce both simultaneously.
 - **Per-epoch behavior:** Pruning and checkpoint selection use the same composite score, ensuring consistency between hyperparameter optimization, early stopping, and final model selection.
 
 #### `inner_mean_min_per_class_f1` (Worst-Class Focus)
@@ -375,7 +364,7 @@ The `optuna_objective` parameter controls what metric the hyperparameter search 
 - **Example:** If class "2" is difficult to distinguish, this metric forces the model to not ignore it
 - **Scientific rationale:** Ensures balanced performance; prevents "taking the easy way out" by only learning easy classes
 
-#### `inner_mean_diag_dom` (Diagonal Dominance / Row-Wise Plurality) **NEW**
+#### `inner_mean_plur_corr` (Plurality Correctness / Plurality Correctness) **NEW**
 - **What it measures:** The proportion of classes where the correct prediction is the most frequent prediction (averaged across inner folds)
 - **Formula:** For each true class (row in confusion matrix), check if the diagonal element is the row maximum. Return the proportion where this is true (0.0 to 1.0)
 - **When to use:** When you want to ensure the model has the "right bias" for each class—even if not perfectly accurate, the correct class should be the plurality prediction
@@ -386,25 +375,25 @@ The `optuna_objective` parameter controls what metric the hyperparameter search 
   True 2: [ 40  60  50]  ← max is 60 (diagonal) ✓ counts as 1
   True 3: [ 10  80  30]  ← max is 80 (OFF-diagonal) ✗ counts as 0
   
-  Diagonal Dominance = 2/3 = 0.667 (67%)
+  Plurality Correctness = 2/3 = 0.667 (67%)
   ```
 - **Scientific rationale:** Ensures the model's strongest prediction for each true class is the correct one, preventing systematic misclassification patterns (e.g., always predicting "3" when the answer is "2")
 - **Interpretation:**
-  - 1.0 (100%) = Perfect diagonal dominance (for every class, correct prediction is most frequent)
+  - 1.0 (100%) = Perfect plurality correctness (for every class, correct prediction is most frequent)
   - 0.67 (67%) = 2 out of 3 classes have correct prediction as plurality
   - 0.33 (33%) = Only 1 class has correct prediction as plurality
   - 0.0 (0%) = No class has correct prediction as plurality (worst case—model systematically wrong)
 
-**⚠️ WARNING: Using `inner_mean_diag_dom` alone is scientifically unsound.**
+**⚠️ WARNING: Using `inner_mean_plur_corr` alone is scientifically unsound.**
 
-Optimizing ONLY for diagonal dominance can produce models with perfect diagonal dominance but useless performance (e.g., 10% accuracy). Example:
+Optimizing ONLY for plurality correctness can produce models with perfect plurality correctness but useless performance (e.g., 10% accuracy). Example:
 - Class 1: 10% correct (diagonal), 5% as 2, 5% as 3 → diagonal wins ✓
 - Class 2: 8% correct (diagonal), 4% as 1, 3% as 3 → diagonal wins ✓  
 - Class 3: 12% correct (diagonal), 6% as 1, 2% as 2 → diagonal wins ✓
 
-Result: Perfect diagonal dominance (1.0), but 10% accuracy. This model is useless for your research but would rank as "best trial" in Optuna.
+Result: Perfect plurality correctness (1.0), but 10% accuracy. This model is useless for your research but would rank as "best trial" in Optuna.
 
-**Solution:** Use `composite_min_f1_diag_dom` instead, which requires BOTH decodability (min F1) AND distinctness (diagonal dominance).
+**Solution:** Use `composite_min_f1_plur_corr` instead, which requires BOTH decodability (min F1) AND distinctness (plurality correctness).
 
 #### `inner_mean_macro_f1` (Average Performance)
 - **What it measures:** The average F1 score across all classes (averaged across inner folds)
@@ -416,11 +405,11 @@ Result: Perfect diagonal dominance (1.0), but 10% accuracy. This model is useles
 - **When to use:** When classes are balanced and you care about overall correctness
 - **Caveat:** Can be misleading with class imbalance; model may ignore minority classes
 
-**Recommendation:** For numerosity/cognitive research where all stimulus classes are equally important, use `composite_min_f1_diag_dom` with `composite_min_f1_weight: 0.50` to 0.65 (recommended) to ensure the model both decodes all classes accurately AND learns distinct neural signatures for each class. This prevents metric gaming and aligns with your scientific claim about distinguishable cognitive representations.
+**Recommendation:** For numerosity/cognitive research where all stimulus classes are equally important, use `composite_min_f1_plur_corr` with `composite_min_f1_weight: 0.50` to 0.65 (recommended) to ensure the model both decodes all classes accurately AND learns distinct neural signatures for each class. This prevents metric gaming and aligns with your scientific claim about distinguishable cognitive representations.
 
 ## Commands cheat-sheet
 - Convert: `python scripts/prepare_from_happe.py`
-- Search (unified): `python scripts/optuna_search.py --stage step1|step2|step3|step4 ...`
+- Search (unified): `python scripts/optuna_search.py --stage step1|step2|step3 ...`
 - Final eval: `python scripts/final_eval.py ...`
 - Refresh Optuna summaries: `results\optuna\refresh_all_studies.bat`
  - Run XAI on a completed run directory:

@@ -12,8 +12,8 @@ epochs:
   high: 50
 early_stop:
   method: int
-  low: 8
-  high: 14
+  low: 10
+  high: 16
 batch_size:
   method: categorical
   choices: [8]
@@ -26,16 +26,16 @@ weight_decay:
   choices: [2.5e-5]
 drop_prob:
   method: categorical
-  choices: [0.30,0.55, 0.70]
+  choices: [0.55]
 scheduler_patience:
   method: categorical
   choices: [8]
 lr_warmup_frac:
   method: categorical
-  choices: [0.0, 0.1, 0.2]
+  choices: [0.0]
 lr_warmup_init:
   method: categorical
-  choices: [0.0, 0.1]
+  choices: [0.0]
 
 # --- architecture knobs (tuned only in Stage 1) ---
 filter_1:

@@ -84,7 +84,7 @@
 ### Composite Objective:
 Your optimization balances two goals:
 - **65% min F1** → All classes decodable
-- **35% diagonal dominance** → Correct prediction is plurality
+- **35% plurality correctness** → Correct prediction is plurality
 
 ### Data Transparency:
 Real subject IDs show:

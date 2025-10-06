@@ -45,7 +45,7 @@ def load_yaml(p: Path) -> Dict[str, Any]:
 
 def main():
     ap = argparse.ArgumentParser(description="Generic Optuna TPE search driver")
-    ap.add_argument("--stage", required=True, choices=["step1", "step2", "step3", "step4"], help="Naming and output routing only")
+    ap.add_argument("--stage", required=True, choices=["step1", "step2", "step3"], help="Naming and output routing only")
     ap.add_argument("--task", required=True)
     # Support both styles: --base (preferred) and --cfg (overlay). Either/both are allowed.
     ap.add_argument("--base", required=False, help="Base YAML config (defaults to configs/tasks/<task>/base.yaml if omitted)")
@@ -172,7 +172,7 @@ def main():
         if "optuna_objective" not in cfg:
             raise ValueError(
                 "'optuna_objective' must be explicitly specified in config. "
-                "Choose from: inner_mean_macro_f1, inner_mean_min_per_class_f1, inner_mean_diag_dom, inner_mean_acc, composite_min_f1_diag_dom. No fallback allowed."
+                "Choose from: inner_mean_macro_f1, inner_mean_min_per_class_f1, inner_mean_plur_corr, inner_mean_acc, composite_min_f1_plur_corr. No fallback allowed."
             )
         objective_metric = cfg["optuna_objective"]
         if objective_metric not in summary:

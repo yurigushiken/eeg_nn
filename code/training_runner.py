@@ -34,24 +34,24 @@ except Exception:  # pragma: no cover - fallback to no-op if not available
         pass  # no-op until utils.channel_viz is implemented
 
 
-def compute_diagonal_dominance(y_true: List[int], y_pred: List[int]) -> float:
+def compute_plurality_correctness(y_true: List[int], y_pred: List[int]) -> float:
     """
-    Compute diagonal dominance (row-wise plurality metric).
+    Compute plurality correctness (row-wise plurality metric).
     
     For each true class (row in confusion matrix), checks if the correct 
     prediction (diagonal element) is the most frequent prediction.
     
-    Returns proportion of classes where diagonal is the row maximum.
-    Score ranges from 0.0 (no diagonals are plurality) to 1.0 (all diagonals are plurality).
+    Returns proportion of classes where correct prediction is plurality.
+    Score ranges from 0.0 (no correct pluralities) to 1.0 (all correct pluralities).
     
     Example:
         Confusion matrix:
             Pred:  1   2   3
-        True 1: [100  30  20]  ← max is 100 (diagonal) ✓
-        True 2: [ 40  60  50]  ← max is 60 (diagonal) ✓
-        True 3: [ 10  80  30]  ← max is 80 (OFF-diagonal) ✗
+        True 1: [100  30  20]  ← max is 100 (correct) ✓
+        True 2: [ 40  60  50]  ← max is 60 (correct) ✓
+        True 3: [ 10  80  30]  ← max is 80 (incorrect) ✗
         
-        Result: 2/3 = 0.667 (two out of three classes have diagonal as plurality)
+        Result: 2/3 = 0.667 (two out of three classes have correct prediction as plurality)
     """
     if not y_true or not y_pred:
         return 0.0
@@ -95,7 +95,7 @@ Outer CV:
 
 Inner CV:
   - Strict GroupKFold with cfg['inner_n_folds'] (≥2), per outer split (subject-aware)
-  - Early stopping on inner validation loss; pruning reports the objective-aligned metric.
+  - Early stopping, checkpointing, and pruning all use the objective-aligned metric.
 
 Evaluation:
   - For each outer split, predictions on the held-out subjects are obtained via
@@ -170,37 +170,51 @@ class TrainingRunner:
         self.stage = str(cfg.get("stage", "") or "")
         self.stage_context = self._resolve_stage_context()
     
-    def _get_composite_weight(self):
+    def _get_composite_params(self):
         """
-        Get composite weight with constitutional fail-fast validation.
+        Get composite objective parameters with constitutional fail-fast validation.
+        
+        Supports two modes:
+        1. Threshold mode: min_f1_threshold specified (recommended for "distinct + decodable" claims)
+        2. Weighted mode: composite_min_f1_weight specified (backward compatible)
         
         Per constitution Section III: critical parameters must be explicitly specified.
         No silent defaults allowed for scientifically important parameters.
         
         Returns:
-            float: Weight for min-F1 in composite objective (range: 0.0-1.0)
+            dict: {"mode": "threshold", "threshold": float} or {"mode": "weighted", "weight": float}
         
         Raises:
-            ValueError: If weight not specified or out of valid range
+            ValueError: If neither, both, or invalid parameters specified
         """
-        if "composite_min_f1_weight" not in self.cfg:
+        has_threshold = "min_f1_threshold" in self.cfg
+        has_weight = "composite_min_f1_weight" in self.cfg
+        
+        if has_threshold and has_weight:
             raise ValueError(
-                "composite_min_f1_weight must be explicitly specified when using "
-                "composite_min_f1_diag_dom objective (constitutional requirement). "
-                "Add to config: composite_min_f1_weight: 0.50  # value in [0.0, 1.0]"
+                "Ambiguous config: both min_f1_threshold and composite_min_f1_weight specified. "
+                "Use only ONE: min_f1_threshold (threshold approach) OR composite_min_f1_weight (weighted approach)"
             )
         
-        weight = float(self.cfg["composite_min_f1_weight"])
-        
-        # Validate range
-        if not (0.0 <= weight <= 1.0):
+        if not has_threshold and not has_weight:
             raise ValueError(
-                f"composite_min_f1_weight must be in range [0.0, 1.0], got {weight}"
+                "composite_min_f1_plur_corr objective requires either:\n"
+                "  - min_f1_threshold: 35.0  (threshold approach - recommended)\n"
+                "  - composite_min_f1_weight: 0.50  (weighted approach - backward compatible)"
             )
         
-        return weight
+        if has_threshold:
+            threshold = float(self.cfg["min_f1_threshold"])
+            if not (0.0 <= threshold <= 100.0):
+                raise ValueError(f"min_f1_threshold must be in range [0.0, 100.0], got {threshold}")
+            return {"mode": "threshold", "threshold": threshold}
+        else:
+            weight = float(self.cfg["composite_min_f1_weight"])
+            if not (0.0 <= weight <= 1.0):
+                raise ValueError(f"composite_min_f1_weight must be in range [0.0, 1.0], got {weight}")
+            return {"mode": "weighted", "weight": weight}
     
-    def _compute_objective_metric(self, val_acc, val_macro_f1, val_min_per_class_f1, val_diag_dom):
+    def _compute_objective_metric(self, val_acc, val_macro_f1, val_min_per_class_f1, val_plur_corr):
         """
         Compute the per-epoch metric aligned with the configured Optuna objective.
         
@@ -211,7 +225,7 @@ class TrainingRunner:
             val_acc: Validation accuracy (0-100)
             val_macro_f1: Validation macro-F1 (0-100)
             val_min_per_class_f1: Validation min per-class F1 (0-100)
-            val_diag_dom: Validation diagonal dominance (0-100)
+            val_plur_corr: Validation plurality correctness (0-100)
         
         Returns:
             float: The metric value aligned with the optimization objective (to be maximized)
@@ -222,14 +236,36 @@ class TrainingRunner:
             return val_min_per_class_f1
         elif objective == "inner_mean_acc":
             return val_acc
-        elif objective == "inner_mean_diag_dom":
-            return val_diag_dom
-        elif objective == "composite_min_f1_diag_dom":
-            # Constitutional requirement: weight must be explicitly specified (no default)
-            weight = self._get_composite_weight()
-            return weight * val_min_per_class_f1 + (1.0 - weight) * val_diag_dom
-        else:  # "inner_mean_macro_f1" (default/fallback)
+        elif objective == "inner_mean_plur_corr":
+            return val_plur_corr
+        elif objective == "composite_min_f1_plur_corr":
+            # Dual-mode support: threshold (recommended) or weighted (backward compatible)
+            params = self._get_composite_params()
+            if params["mode"] == "threshold":
+                # Threshold approach with gradient below threshold
+                # Gradient is critical for:
+                # 1. Optuna pruning: distinguishes "bad" (20%) from "close" (37%)
+                # 2. TPE sampling: learns which hyperparameters approach threshold
+                threshold = params["threshold"]
+                if val_min_per_class_f1 < threshold:
+                    # Small gradient proportional to distance from 0
+                    # Range: 0.0 - 3.8 (for threshold=38%)
+                    return val_min_per_class_f1 * 0.1
+                else:
+                    # Above threshold: maximize distinctness
+                    # Range: 0.0 - 100.0 (plur_corr percentage)
+                    return val_plur_corr
+            else:  # weighted mode
+                weight = params["weight"]
+                return weight * val_min_per_class_f1 + (1.0 - weight) * val_plur_corr
+        elif objective == "inner_mean_macro_f1":
             return val_macro_f1
+        else:
+            raise ValueError(
+                f"Invalid objective in _compute_objective_metric: '{objective}'. "
+                f"Must be one of: inner_mean_macro_f1, inner_mean_min_per_class_f1, "
+                f"inner_mean_plur_corr, inner_mean_acc, composite_min_f1_plur_corr"
+            )
 
     def _ensure_run_dir(self, cfg: Dict):
         from pathlib import Path
@@ -461,11 +497,11 @@ class TrainingRunner:
         inner_accs: List[float] = []
         inner_macro_f1s: List[float] = []
         inner_min_per_class_f1s: List[float] = []
-        inner_diag_doms: List[float] = []  # Track diagonal dominance
-        # Per-outer-fold macro-F1, min-per-class-F1, diagonal dominance, and kappa for aggregates and CSV
+        inner_plur_corrs: List[float] = []  # Track plurality correctness
+        # Per-outer-fold macro-F1, min-per-class-F1, plurality correctness, and kappa for aggregates and CSV
         fold_macro_f1s: List[float] = []
         fold_min_per_class_f1s: List[float] = []
-        fold_diag_doms: List[float] = []  # Track diagonal dominance per fold
+        fold_plur_corrs: List[float] = []  # Track plurality correctness per fold
         fold_kappas: List[float] = []
 
         # Prepare augmentation transform once (stateless transform expected)
@@ -600,12 +636,12 @@ class TrainingRunner:
                 except Exception:
                     pass
 
-                best_val = float("inf")  # early stopping tracker
+                best_early_stopping_objective = float("-inf")  # early stopping tracker (maximize objective metric)
                 best_state = None
                 best_inner_acc = 0.0
                 best_inner_macro_f1 = 0.0
                 best_inner_min_per_class_f1 = 0.0
-                best_inner_diag_dom = 0.0
+                best_inner_plur_corr = 0.0
                 best_checkpoint_loss = float("inf")  # checkpoint tie-breaker (separate from early stopping)
                 patience = 0
                 tr_hist: List[float] = []
@@ -732,11 +768,11 @@ class TrainingRunner:
                         val_macro_f1 = f1_score(y_true_ep, y_pred_ep, average="macro") * 100
                         val_per_class_f1 = f1_score(y_true_ep, y_pred_ep, average=None)
                         val_min_per_class_f1 = float(np.min(val_per_class_f1)) * 100 if len(val_per_class_f1) > 0 else 0.0
-                        val_diag_dom = compute_diagonal_dominance(y_true_ep, y_pred_ep) * 100
+                        val_plur_corr = compute_plurality_correctness(y_true_ep, y_pred_ep) * 100
                     except Exception:
                         val_macro_f1 = 0.0
                         val_min_per_class_f1 = 0.0
-                        val_diag_dom = 0.0
+                        val_plur_corr = 0.0
 
                     # Collect learning curve data for CSV export
                     try:
@@ -749,10 +785,10 @@ class TrainingRunner:
                             "val_acc": float(val_acc),
                             "val_macro_f1": float(val_macro_f1),
                             "val_min_per_class_f1": float(val_min_per_class_f1),
-                            "val_diag_dom": float(val_diag_dom),
+                            "val_plur_corr": float(val_plur_corr),
                             "val_objective_metric": float(
                                 self._compute_objective_metric(
-                                    val_acc, val_macro_f1, val_min_per_class_f1, val_diag_dom
+                                    val_acc, val_macro_f1, val_min_per_class_f1, val_plur_corr
                                 )
                             ),
                             "n_train": int(len(inner_tr_abs)),
@@ -769,7 +805,7 @@ class TrainingRunner:
                         try:
                             # Report the metric that matches our optimization objective
                             objective_metric = self._compute_objective_metric(
-                                val_acc, val_macro_f1, val_min_per_class_f1, val_diag_dom
+                                val_acc, val_macro_f1, val_min_per_class_f1, val_plur_corr
                             )
                             optuna_trial.report(objective_metric, global_step)
                             if optuna_trial.should_prune():
@@ -792,19 +828,22 @@ class TrainingRunner:
                     # Collect inner validation predictions at best checkpoint epoch for CSV output
                     # We'll store these after training completes using best_state
 
-                    # Early stopping remains on val_loss
-                    if val_loss < best_val:
-                        best_val = val_loss
+                    # Early stopping: maximize objective-aligned metric (same as checkpointing)
+                    current_es_objective = self._compute_objective_metric(
+                        val_acc, val_macro_f1, val_min_per_class_f1, val_plur_corr
+                    )
+                    if current_es_objective > best_early_stopping_objective:
+                        best_early_stopping_objective = current_es_objective
                         patience = 0
                     else:
                         patience += 1
 
                     # Checkpoint selection: maximize objective-aligned metric
                     current_objective_metric = self._compute_objective_metric(
-                        val_acc, val_macro_f1, val_min_per_class_f1, val_diag_dom
+                        val_acc, val_macro_f1, val_min_per_class_f1, val_plur_corr
                     )
                     best_objective_metric = self._compute_objective_metric(
-                        best_inner_acc, best_inner_macro_f1, best_inner_min_per_class_f1, best_inner_diag_dom
+                        best_inner_acc, best_inner_macro_f1, best_inner_min_per_class_f1, best_inner_plur_corr
                     )
                     
                     update_ckpt = False
@@ -818,7 +857,7 @@ class TrainingRunner:
                         best_inner_macro_f1 = val_macro_f1
                         best_inner_acc = val_acc
                         best_inner_min_per_class_f1 = val_min_per_class_f1
-                        best_inner_diag_dom = val_diag_dom
+                        best_inner_plur_corr = val_plur_corr
                         best_checkpoint_loss = val_loss
                         best_state = copy.deepcopy(model.state_dict())
                         if self.run_dir and self.cfg.get("save_ckpt", True):
@@ -829,7 +868,7 @@ class TrainingRunner:
                         break
                     if epoch % 5 == 0:
                         print(
-                            f"  [epoch {epoch}] (outer {fold+1} inner {inner_fold+1}) tr_loss={train_loss:.4f} va_loss={val_loss:.4f} va_acc={val_acc:.2f} best_val={best_val:.4f}",
+                            f"  [epoch {epoch}] (outer {fold+1} inner {inner_fold+1}) tr_loss={train_loss:.4f} va_loss={val_loss:.4f} va_acc={val_acc:.2f} best_obj={best_early_stopping_objective:.4f}",
                             flush=True,
                         )
 
@@ -879,7 +918,7 @@ class TrainingRunner:
                         "best_inner_acc": best_inner_acc,
                         "best_inner_macro_f1": best_inner_macro_f1,
                         "best_inner_min_per_class_f1": best_inner_min_per_class_f1,
-                        "best_inner_diag_dom": best_inner_diag_dom,
+                        "best_inner_plur_corr": best_inner_plur_corr,
                         "tr_hist": tr_hist,
                         "va_hist": va_hist,
                         "va_acc_hist": va_acc_hist,
@@ -904,54 +943,59 @@ class TrainingRunner:
                 if inner_results_this_outer
                 else 0.0
             )
-            inner_mean_diag_dom_this_outer = (
-                float(np.mean([r["best_inner_diag_dom"] for r in inner_results_this_outer]))
+            inner_mean_plur_corr_this_outer = (
+                float(np.mean([r["best_inner_plur_corr"] for r in inner_results_this_outer]))
                 if inner_results_this_outer
                 else 0.0
             )
             inner_accs.append(inner_mean_acc_this_outer)
             inner_macro_f1s.append(inner_mean_macro_f1_this_outer)
             inner_min_per_class_f1s.append(inner_mean_min_per_class_f1_this_outer)
-            inner_diag_doms.append(inner_mean_diag_dom_this_outer)
+            inner_plur_corrs.append(inner_mean_plur_corr_this_outer)
 
             # Select best inner model based on optuna_objective
             if "optuna_objective" not in self.cfg:
                 raise ValueError(
                     "'optuna_objective' must be explicitly specified in config for scientific validity. "
-                    "No fallback allowed. Choose from: inner_mean_macro_f1, inner_mean_min_per_class_f1, inner_mean_diag_dom, inner_mean_acc, composite_min_f1_diag_dom"
+                    "No fallback allowed. Choose from: inner_mean_macro_f1, inner_mean_min_per_class_f1, inner_mean_plur_corr, inner_mean_acc, composite_min_f1_plur_corr"
                 )
             optuna_objective = self.cfg["optuna_objective"]
             
             # Map objective to the metric key in inner results
             # Special handling for composite objective
-            if optuna_objective == "composite_min_f1_diag_dom":
-                # For composite objective, compute weighted score per inner fold
-                # Select the inner fold with best composite score
-                min_f1_weight = self._get_composite_weight()
-                diag_dom_weight = 1.0 - min_f1_weight
+            if optuna_objective == "composite_min_f1_plur_corr":
+                # For composite objective, compute score per inner fold using same logic as _compute_objective_metric
+                # Supports both threshold and weighted modes
+                params = self._get_composite_params()
+                
+                def compute_composite_score(r):
+                    min_f1 = r["best_inner_min_per_class_f1"]
+                    plur_corr = r["best_inner_plur_corr"]
+                    if params["mode"] == "threshold":
+                        # Use gradient below threshold (same as _compute_objective_metric)
+                        if min_f1 < params["threshold"]:
+                            return min_f1 * 0.1
+                        else:
+                            return plur_corr
+                    else:  # weighted
+                        return params["weight"] * min_f1 + (1.0 - params["weight"]) * plur_corr
                 
                 if inner_results_this_outer:
-                    best_inner_result = max(
-                        inner_results_this_outer,
-                        key=lambda r: (
-                            min_f1_weight * r["best_inner_min_per_class_f1"] + 
-                            diag_dom_weight * r["best_inner_diag_dom"]
-                        ),
-                    )
+                    best_inner_result = max(inner_results_this_outer, key=compute_composite_score)
                 else:
                     best_inner_result = None
             else:
                 objective_to_metric = {
                     "inner_mean_macro_f1": "best_inner_macro_f1",
                     "inner_mean_min_per_class_f1": "best_inner_min_per_class_f1",
-                    "inner_mean_diag_dom": "best_inner_diag_dom",
+                    "inner_mean_plur_corr": "best_inner_plur_corr",
                     "inner_mean_acc": "best_inner_acc",
                 }
                 
                 if optuna_objective not in objective_to_metric:
                     raise ValueError(
                         f"Invalid optuna_objective: '{optuna_objective}'. "
-                        f"Must be one of: {list(objective_to_metric.keys())} or composite_min_f1_diag_dom"
+                        f"Must be one of: {list(objective_to_metric.keys())} or composite_min_f1_plur_corr"
                     )
                 metric_key = objective_to_metric[optuna_objective]
                 
@@ -1188,7 +1232,7 @@ class TrainingRunner:
                 raise ValueError(f"Unknown outer_eval_mode={mode}; use 'ensemble' or 'refit'")
 
             acc = 100.0 * correct / max(1, total)
-            # Per-fold macro F1, per-class F1, diagonal dominance, and Cohen's Kappa
+            # Per-fold macro F1, per-class F1, plurality correctness, and Cohen's Kappa
             try:
                 macro_f1_fold = (
                     f1_score(y_true_fold, y_pred_fold, average="macro") * 100 if y_true_fold else 0.0
@@ -1196,8 +1240,8 @@ class TrainingRunner:
                 per_class_f1 = (
                     f1_score(y_true_fold, y_pred_fold, average=None).tolist() if y_true_fold else None
                 )
-                diag_dom_fold = (
-                    compute_diagonal_dominance(y_true_fold, y_pred_fold) * 100 if y_true_fold else 0.0
+                plur_corr_fold = (
+                    compute_plurality_correctness(y_true_fold, y_pred_fold) * 100 if y_true_fold else 0.0
                 )
                 kappa_fold = (
                     cohen_kappa_score(y_true_fold, y_pred_fold) if y_true_fold else 0.0
@@ -1205,10 +1249,10 @@ class TrainingRunner:
             except Exception:
                 macro_f1_fold = 0.0
                 per_class_f1 = None
-                diag_dom_fold = 0.0
+                plur_corr_fold = 0.0
                 kappa_fold = 0.0
             fold_macro_f1s.append(macro_f1_fold)
-            fold_diag_doms.append(diag_dom_fold)
+            fold_plur_corrs.append(plur_corr_fold)
             fold_kappas.append(kappa_fold)
             # Compute min-per-class F1 for this fold
             min_f1_fold = float(np.min(per_class_f1)) * 100 if per_class_f1 is not None and len(per_class_f1) > 0 else 0.0
@@ -1222,12 +1266,12 @@ class TrainingRunner:
                 "acc": float(acc),
                 "macro_f1": float(macro_f1_fold),
                 "min_per_class_f1": float(min_f1_fold),
-                "diag_dom": float(diag_dom_fold),
+                "plur_corr": float(plur_corr_fold),
                 "cohen_kappa": float(kappa_fold),
                 "acc_std": "",
                 "macro_f1_std": "",
                 "min_per_class_f1_std": "",
-                "diag_dom_std": "",
+                "plur_corr_std": "",
                 "cohen_kappa_std": "",
                 "per_class_f1": json.dumps(per_class_f1) if per_class_f1 is not None else "",
             })
@@ -1251,15 +1295,25 @@ class TrainingRunner:
                 elif optuna_objective == "inner_mean_acc":
                     obj_metric_val = inner_mean_acc_this_outer
                     obj_metric_label = f"inner-mean acc={obj_metric_val:.2f}"
-                elif optuna_objective == "composite_min_f1_diag_dom":
-                    # Show both metrics and composite score
-                    min_f1_w = self._get_composite_weight()
-                    composite_val = min_f1_w * inner_mean_min_per_class_f1_this_outer + (1.0 - min_f1_w) * inner_mean_diag_dom_this_outer
-                    obj_metric_label = f"composite={composite_val:.2f} (minF1={inner_mean_min_per_class_f1_this_outer:.2f} diagDom={inner_mean_diag_dom_this_outer:.2f})"
+                elif optuna_objective == "composite_min_f1_plur_corr":
+                    # Show metrics and composite (threshold or weighted mode)
+                    params = self._get_composite_params()
+                    if params["mode"] == "threshold":
+                        threshold = params["threshold"]
+                        if inner_mean_min_per_class_f1_this_outer < threshold:
+                            composite_val = inner_mean_min_per_class_f1_this_outer * 0.1
+                            obj_metric_label = f"composite={composite_val:.2f} (minF1={inner_mean_min_per_class_f1_this_outer:.2f} < threshold={threshold:.1f}, plurCorr={inner_mean_plur_corr_this_outer:.2f}, gradient)"
+                        else:
+                            composite_val = inner_mean_plur_corr_this_outer
+                            obj_metric_label = f"composite={composite_val:.2f} (threshold met, plurCorr={inner_mean_plur_corr_this_outer:.2f})"
+                    else:  # weighted
+                        min_f1_w = params["weight"]
+                        composite_val = min_f1_w * inner_mean_min_per_class_f1_this_outer + (1.0 - min_f1_w) * inner_mean_plur_corr_this_outer
+                        obj_metric_label = f"composite={composite_val:.2f} (weight={min_f1_w:.2f}, minF1={inner_mean_min_per_class_f1_this_outer:.2f}, plurCorr={inner_mean_plur_corr_this_outer:.2f})"
                     obj_metric_val = composite_val
-                elif optuna_objective == "inner_mean_diag_dom":
-                    obj_metric_val = inner_mean_diag_dom_this_outer
-                    obj_metric_label = f"inner-mean diag-dom={obj_metric_val:.2f}"
+                elif optuna_objective == "inner_mean_plur_corr":
+                    obj_metric_val = inner_mean_plur_corr_this_outer
+                    obj_metric_label = f"inner-mean plur-corr={obj_metric_val:.2f}"
                 else:  # inner_mean_macro_f1
                     obj_metric_val = inner_mean_macro_f1_this_outer
                     obj_metric_label = f"inner-mean macro-F1={obj_metric_val:.2f}"
@@ -1299,16 +1353,26 @@ class TrainingRunner:
                 elif optuna_objective == "inner_mean_acc":
                     outer_metric_val = acc
                     outer_metric_label = f"outer acc={outer_metric_val:.2f}"
-                elif optuna_objective == "composite_min_f1_diag_dom":
-                    # Show both metrics and composite for outer
+                elif optuna_objective == "composite_min_f1_plur_corr":
+                    # Show metrics and composite for outer (threshold or weighted mode)
                     outer_min_f1 = float(np.min(per_class_f1)) * 100 if per_class_f1 is not None and len(per_class_f1) > 0 else 0.0
-                    min_f1_w = self._get_composite_weight()
-                    outer_composite = min_f1_w * outer_min_f1 + (1.0 - min_f1_w) * diag_dom_fold
-                    outer_metric_label = f"outer composite={outer_composite:.2f} (minF1={outer_min_f1:.2f} diagDom={diag_dom_fold:.2f})"
+                    params = self._get_composite_params()
+                    if params["mode"] == "threshold":
+                        threshold = params["threshold"]
+                        if outer_min_f1 < threshold:
+                            outer_composite = outer_min_f1 * 0.1
+                            outer_metric_label = f"outer composite={outer_composite:.2f} (minF1={outer_min_f1:.2f} < threshold, plurCorr={plur_corr_fold:.2f}, gradient)"
+                        else:
+                            outer_composite = plur_corr_fold
+                            outer_metric_label = f"outer composite={outer_composite:.2f} (minF1={outer_min_f1:.2f} met, plurCorr={plur_corr_fold:.2f})"
+                    else:  # weighted
+                        min_f1_w = params["weight"]
+                        outer_composite = min_f1_w * outer_min_f1 + (1.0 - min_f1_w) * plur_corr_fold
+                        outer_metric_label = f"outer composite={outer_composite:.2f} (weight={min_f1_w:.2f}, minF1={outer_min_f1:.2f}, plurCorr={plur_corr_fold:.2f})"
                     outer_metric_val = outer_composite
-                elif optuna_objective == "inner_mean_diag_dom":
-                    outer_metric_val = diag_dom_fold
-                    outer_metric_label = f"outer diag-dom={outer_metric_val:.2f}"
+                elif optuna_objective == "inner_mean_plur_corr":
+                    outer_metric_val = plur_corr_fold
+                    outer_metric_label = f"outer plur-corr={outer_metric_val:.2f}"
                 else:  # inner_mean_macro_f1
                     outer_metric_val = macro_f1_fold
                     outer_metric_label = f"outer macro-F1={outer_metric_val:.2f}"
@@ -1350,8 +1414,10 @@ class TrainingRunner:
         # Overall metrics
         mean_acc = float(np.mean(fold_accs)) if fold_accs else 0.0
         std_acc = float(np.std(fold_accs)) if fold_accs else 0.0
-        mean_diag_dom = float(np.mean(fold_diag_doms)) if fold_diag_doms else 0.0
-        std_diag_dom = float(np.std(fold_diag_doms)) if fold_diag_doms else 0.0
+        mean_min_per_class_f1 = float(np.mean(fold_min_per_class_f1s)) if fold_min_per_class_f1s else 0.0
+        std_min_per_class_f1 = float(np.std(fold_min_per_class_f1s)) if fold_min_per_class_f1s else 0.0
+        mean_plur_corr = float(np.mean(fold_plur_corrs)) if fold_plur_corrs else 0.0
+        std_plur_corr = float(np.std(fold_plur_corrs)) if fold_plur_corrs else 0.0
         mean_kappa = float(np.mean(fold_kappas)) if fold_kappas else 0.0
         std_kappa = float(np.std(fold_kappas)) if fold_kappas else 0.0
         try:
@@ -1388,16 +1454,26 @@ class TrainingRunner:
             elif optuna_objective == "inner_mean_acc":
                 obj_metric_val = float(np.mean(inner_accs)) if inner_accs else 0.0
                 obj_metric_label = f"inner-mean acc={obj_metric_val:.2f}"
-            elif optuna_objective == "composite_min_f1_diag_dom":
+            elif optuna_objective == "composite_min_f1_plur_corr":
                 inner_mean_min_f1_overall = float(np.mean(inner_min_per_class_f1s)) if inner_min_per_class_f1s else 0.0
-                inner_mean_diag_dom_overall = float(np.mean(inner_diag_doms)) if inner_diag_doms else 0.0
-                min_f1_w = self._get_composite_weight()
-                composite_overall = min_f1_w * inner_mean_min_f1_overall + (1.0 - min_f1_w) * inner_mean_diag_dom_overall
-                obj_metric_label = f"composite={composite_overall:.2f} (minF1={inner_mean_min_f1_overall:.2f} diagDom={inner_mean_diag_dom_overall:.2f})"
+                inner_mean_plur_corr_overall = float(np.mean(inner_plur_corrs)) if inner_plur_corrs else 0.0
+                params = self._get_composite_params()
+                if params["mode"] == "threshold":
+                    threshold = params["threshold"]
+                    if inner_mean_min_f1_overall < threshold:
+                        composite_overall = inner_mean_min_f1_overall * 0.1
+                        obj_metric_label = f"composite={composite_overall:.2f} (minF1={inner_mean_min_f1_overall:.2f} < threshold={threshold:.1f}, plurCorr={inner_mean_plur_corr_overall:.2f}, gradient)"
+                    else:
+                        composite_overall = inner_mean_plur_corr_overall
+                        obj_metric_label = f"composite={composite_overall:.2f} (minF1={inner_mean_min_f1_overall:.2f} met, plurCorr={inner_mean_plur_corr_overall:.2f})"
+                else:  # weighted
+                    min_f1_w = params["weight"]
+                    composite_overall = min_f1_w * inner_mean_min_f1_overall + (1.0 - min_f1_w) * inner_mean_plur_corr_overall
+                    obj_metric_label = f"composite={composite_overall:.2f} (weight={min_f1_w:.2f}, minF1={inner_mean_min_f1_overall:.2f}, plurCorr={inner_mean_plur_corr_overall:.2f})"
                 obj_metric_val = composite_overall
-            elif optuna_objective == "inner_mean_diag_dom":
-                obj_metric_val = float(np.mean(inner_diag_doms)) if inner_diag_doms else 0.0
-                obj_metric_label = f"inner-mean diag-dom={obj_metric_val:.2f}"
+            elif optuna_objective == "inner_mean_plur_corr":
+                obj_metric_val = float(np.mean(inner_plur_corrs)) if inner_plur_corrs else 0.0
+                obj_metric_label = f"inner-mean plur-corr={obj_metric_val:.2f}"
             else:  # inner_mean_macro_f1
                 obj_metric_val = float(np.mean(inner_macro_f1s)) if inner_macro_f1s else 0.0
                 obj_metric_label = f"inner-mean macro-F1={obj_metric_val:.2f}"
@@ -1431,13 +1507,23 @@ class TrainingRunner:
                     overall_outer_metric_label = f"outer min-per-class-F1={overall_outer_min_per_class_f1:.2f}"
             elif optuna_objective == "inner_mean_acc":
                 overall_outer_metric_label = f"outer acc={mean_acc:.2f}"
-            elif optuna_objective == "composite_min_f1_diag_dom":
+            elif optuna_objective == "composite_min_f1_plur_corr":
                 overall_outer_min_f1 = float(np.min(overall_per_class_f1)) * 100 if overall_per_class_f1 is not None and len(overall_per_class_f1) > 0 else 0.0
-                min_f1_w = self._get_composite_weight()
-                overall_outer_composite = min_f1_w * overall_outer_min_f1 + (1.0 - min_f1_w) * mean_diag_dom
-                overall_outer_metric_label = f"outer composite={overall_outer_composite:.2f} (minF1={overall_outer_min_f1:.2f} diagDom={mean_diag_dom:.2f})"
-            elif optuna_objective == "inner_mean_diag_dom":
-                overall_outer_metric_label = f"outer diag-dom={mean_diag_dom:.2f}"
+                params = self._get_composite_params()
+                if params["mode"] == "threshold":
+                    threshold = params["threshold"]
+                    if overall_outer_min_f1 < threshold:
+                        overall_outer_composite = overall_outer_min_f1 * 0.1
+                        overall_outer_metric_label = f"outer composite={overall_outer_composite:.2f} (minF1={overall_outer_min_f1:.2f} < threshold, plurCorr={mean_plur_corr:.2f}, gradient)"
+                    else:
+                        overall_outer_composite = mean_plur_corr
+                        overall_outer_metric_label = f"outer composite={overall_outer_composite:.2f} (minF1={overall_outer_min_f1:.2f} met, plurCorr={mean_plur_corr:.2f})"
+                else:  # weighted
+                    min_f1_w = params["weight"]
+                    overall_outer_composite = min_f1_w * overall_outer_min_f1 + (1.0 - min_f1_w) * mean_plur_corr
+                    overall_outer_metric_label = f"outer composite={overall_outer_composite:.2f} (weight={min_f1_w:.2f}, minF1={overall_outer_min_f1:.2f}, plurCorr={mean_plur_corr:.2f})"
+            elif optuna_objective == "inner_mean_plur_corr":
+                overall_outer_metric_label = f"outer plur-corr={mean_plur_corr:.2f}"
             else:  # inner_mean_macro_f1
                 overall_outer_metric_label = f"outer macro-F1={macro_f1:.2f}"
             
@@ -1526,7 +1612,7 @@ class TrainingRunner:
                         "val_acc",
                         "val_macro_f1",
                         "val_min_per_class_f1",
-                        "val_diag_dom",
+                        "val_plur_corr",
                         "val_objective_metric",
                         "n_train",
                         "n_val",
@@ -1562,6 +1648,8 @@ class TrainingRunner:
                         "macro_f1_std",
                         "min_per_class_f1",
                         "min_per_class_f1_std",
+                        "plur_corr",
+                        "plur_corr_std",
                         "cohen_kappa",
                         "cohen_kappa_std",
                         "per_class_f1",
@@ -1583,8 +1671,8 @@ class TrainingRunner:
                                 "macro_f1_std": float(np.std(fold_macro_f1s)) if fold_macro_f1s else 0.0,
                                 "min_per_class_f1": float(np.mean(fold_min_per_class_f1s)) if fold_min_per_class_f1s else 0.0,
                                 "min_per_class_f1_std": float(np.std(fold_min_per_class_f1s)) if fold_min_per_class_f1s else 0.0,
-                                "diag_dom": float(mean_diag_dom),
-                                "diag_dom_std": float(std_diag_dom),
+                                "plur_corr": float(mean_plur_corr),
+                                "plur_corr_std": float(std_plur_corr),
                                 "cohen_kappa": float(mean_kappa),
                                 "cohen_kappa_std": float(std_kappa),
                                 "per_class_f1": "",
@@ -1650,17 +1738,25 @@ class TrainingRunner:
         summary_inner_mean_acc = float(np.mean(inner_accs)) if inner_accs else 0.0
         summary_inner_mean_macro_f1 = float(np.mean(inner_macro_f1s)) if inner_macro_f1s else 0.0
         summary_inner_mean_min_per_class_f1 = float(np.mean(inner_min_per_class_f1s)) if inner_min_per_class_f1s else 0.0
-        summary_inner_mean_diag_dom = float(np.mean(inner_diag_doms)) if inner_diag_doms else 0.0
+        summary_inner_mean_plur_corr = float(np.mean(inner_plur_corrs)) if inner_plur_corrs else 0.0
         
-        # Compute composite objective if configured
-        summary_composite_min_f1_diag_dom = None
-        if self.cfg.get("optuna_objective") == "composite_min_f1_diag_dom":
-            min_f1_weight = self._get_composite_weight()
-            diag_dom_weight = 1.0 - min_f1_weight
-            summary_composite_min_f1_diag_dom = (
-                min_f1_weight * summary_inner_mean_min_per_class_f1 + 
-                diag_dom_weight * summary_inner_mean_diag_dom
-            )
+        # Compute composite objective if configured (threshold or weighted mode)
+        summary_composite_min_f1_plur_corr = None
+        if self.cfg.get("optuna_objective") == "composite_min_f1_plur_corr":
+            params = self._get_composite_params()
+            if params["mode"] == "threshold":
+                # Threshold mode with gradient below threshold
+                if summary_inner_mean_min_per_class_f1 < params["threshold"]:
+                    summary_composite_min_f1_plur_corr = summary_inner_mean_min_per_class_f1 * 0.1
+                else:
+                    summary_composite_min_f1_plur_corr = summary_inner_mean_plur_corr
+            else:  # weighted mode
+                min_f1_weight = params["weight"]
+                plur_corr_weight = 1.0 - min_f1_weight
+                summary_composite_min_f1_plur_corr = (
+                    min_f1_weight * summary_inner_mean_min_per_class_f1 + 
+                    plur_corr_weight * summary_inner_mean_plur_corr
+                )
 
         return {
             "mean_acc": mean_acc,
@@ -1679,11 +1775,13 @@ class TrainingRunner:
             "inner_mean_acc": summary_inner_mean_acc,
             "inner_mean_macro_f1": summary_inner_mean_macro_f1,
             "inner_mean_min_per_class_f1": summary_inner_mean_min_per_class_f1,
-            "inner_mean_diag_dom": summary_inner_mean_diag_dom,
-            "composite_min_f1_diag_dom": summary_composite_min_f1_diag_dom,
-            "mean_diag_dom": float(mean_diag_dom),
-            "std_diag_dom": float(std_diag_dom),
-            "fold_diag_doms": fold_diag_doms,
+            "inner_mean_plur_corr": summary_inner_mean_plur_corr,
+            "composite_min_f1_plur_corr": summary_composite_min_f1_plur_corr,
+            "mean_min_per_class_f1": float(mean_min_per_class_f1),
+            "std_min_per_class_f1": float(std_min_per_class_f1),
+            "mean_plur_corr": float(mean_plur_corr),
+            "std_plur_corr": float(std_plur_corr),
+            "fold_plur_corrs": fold_plur_corrs,
             "num_classes": int(num_cls),
         }
 

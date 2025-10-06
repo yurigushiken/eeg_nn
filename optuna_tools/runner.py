@@ -30,26 +30,26 @@ def _sort_trials(df):
     Sort trials by the optimization objective.
     
     Priority:
-    1. composite_min_f1_diag_dom (if present - composite objective)
+    1. composite_min_f1_plur_corr (if present - composite objective)
     2. inner_mean_min_per_class_f1 (legacy default)
-    3. inner_mean_macro_f1, inner_mean_diag_dom, inner_mean_acc (fallbacks)
+    3. inner_mean_macro_f1, inner_mean_plur_corr, inner_mean_acc (fallbacks)
     4. mean_acc (last resort)
     
     Scientific rationale: Ranking must align with the actual Optuna objective
     to maintain scientific integrity and proper trial selection.
     """
     # Check for composite objective first (new recommended approach)
-    if "composite_min_f1_diag_dom" in df.columns:
+    if "composite_min_f1_plur_corr" in df.columns:
         # Filter out None values for composite (only present when that objective is used)
-        composite_data = df["composite_min_f1_diag_dom"]
+        composite_data = df["composite_min_f1_plur_corr"]
         if composite_data.notna().any():
-            return df.sort_values("composite_min_f1_diag_dom", ascending=False).reset_index(drop=True)
+            return df.sort_values("composite_min_f1_plur_corr", ascending=False).reset_index(drop=True)
     
     # Fallback to legacy ranking order
     preferred_order_cols = [
         "inner_mean_min_per_class_f1",
         "inner_mean_macro_f1", 
-        "inner_mean_diag_dom",
+        "inner_mean_plur_corr",
         "inner_mean_acc", 
         "mean_acc"
     ]

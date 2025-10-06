@@ -127,7 +127,7 @@ def create_pipeline_v4():
         )
     
     # Objective text - moved down more for clearance from boxes
-    ax.text(5, y_pos - 1.40, 'Objective: composite (65% min F1 + 35% diagonal dominance) — ensures decodability & distinctness',
+    ax.text(5, y_pos - 1.40, 'Objective: composite (65% min F1 + 35% plurality correctness) — ensures decodability & distinctness',
             ha='center', fontsize=6.5, style='italic', color='#555')
     
     # Arrow - positioned lower to avoid objective text

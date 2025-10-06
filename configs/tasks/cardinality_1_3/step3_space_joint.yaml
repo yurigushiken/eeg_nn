@@ -1,5 +1,5 @@
-# Stage 4 — Joint Regularization (Aug + Recipe)
-# Use Step 3 resolved winner as --base; tune augmentation jointly with optimization & budget.
+# Stage 3 — Joint Regularization (Aug + Recipe)
+# Use Step 2 resolved winner as --base; tune augmentation jointly with optimization & budget.
 
 # --- training budget / loader (longer for aug) ---
 epochs:

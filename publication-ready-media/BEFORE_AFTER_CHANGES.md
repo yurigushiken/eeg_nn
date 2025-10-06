@@ -10,7 +10,7 @@
 | **Preprocessing** | Generic "Bandpass 1.5–40 Hz" | ✅ **"18 datasets: 3 HPF × 3 LPF × 2 baseline"** |
 | **Data Finalization** | "Behavioral alignment" | ✅ **"Behavioral & condition alignment"** |
 | **Channel Count** | "100 ch" | ✅ **"~100 ch"** (clarified as intersection) |
-| **Objective** | "inner_mean_min_per_class_f1" | ✅ **"composite (65% min F1 + 35% diagonal dominance)"** |
+| **Objective** | "inner_mean_min_per_class_f1" | ✅ **"composite (65% min F1 + 35% plurality correctness)"** |
 | **Final Eval** | "Ensemble predictions" | ✅ **"Refit predictions"** |
 | **Layout** | Stats & XAI side-by-side | ✅ **Separate rows (Stats above XAI)** |
 | **Colors** | Gradient blues | ✅ **Lighter uniform blues** |
@@ -28,7 +28,7 @@
 | **Fold Labels (Panel B)** | Occluding boxes | ✅ **More space, moved up** |
 | **Inner Fold Labels (Panel C)** | Too close to bottom | ✅ **Moved up, adequate clearance** |
 | **Figure Height** | 8.5 inches | ✅ **9.2 inches** |
-| **Objective Caption** | "inner_mean_min_per_class_f1" | ✅ **"composite (65% min F1 + 35% diagonal dominance)"** |
+| **Objective Caption** | "inner_mean_min_per_class_f1" | ✅ **"composite (65% min F1 + 35% plurality correctness)"** |
 
 **Key Learning:** Always use real subject IDs in publication figures for data provenance!
 
@@ -43,7 +43,7 @@
 | **Y-axis Label (Panel A)** | "inner_mean_min_per_class_f1 (%)" | ✅ **"composite (%)"** |
 | **Y-axis Label (Panel B)** | "inner_mean_min_per_class_f1 (%)" | ✅ **"composite (%)"** |
 | **Y-axis Label (Panel C)** | "inner_mean_min_per_class_f1 (%)" | ✅ **"composite (%)"** |
-| **Bottom Caption** | Generic optimization note | ✅ **Added: "Objective: composite (65% min F1 + 35% diagonal dominance)"** |
+| **Bottom Caption** | Generic optimization note | ✅ **Added: "Objective: composite (65% min F1 + 35% plurality correctness)"** |
 
 ---
 

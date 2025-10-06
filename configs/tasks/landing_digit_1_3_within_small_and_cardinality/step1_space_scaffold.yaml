@@ -12,8 +12,8 @@ epochs:
   high: 50
 early_stop:
   method: int
-  low: 8
-  high: 14
+  low: 10
+  high: 16
 batch_size:
   method: categorical
   choices: [8]

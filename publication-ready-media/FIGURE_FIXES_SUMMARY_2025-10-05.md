@@ -24,7 +24,7 @@ Successfully fixed and regenerated 6 publication-ready figures (Figures 1, 2, 3,
    - Confirmed **~100 channels** after intersection (128 raw → exclude 28 non-scalp → ~100)
 4. **Objective Caption**: Updated to reflect new composite metric
    - Before: "inner_mean_min_per_class_f1 (ensures all classes decodable)"
-   - After: **"composite (65% min F1 + 35% diagonal dominance) — ensures decodability & distinctness"**
+   - After: **"composite (65% min F1 + 35% plurality correctness) — ensures decodability & distinctness"**
 5. **Final Evaluation**: Changed prediction method
    - Before: "Ensemble predictions"
    - After: **"Refit predictions"**
@@ -58,7 +58,7 @@ Successfully fixed and regenerated 6 publication-ready figures (Figures 1, 2, 3,
 
 3. **Objective Caption**: Updated to composite metric
    - Before: "inner_mean_min_per_class_f1 (averaged across inner folds)"
-   - After: **"composite (65% min F1 + 35% diagonal dominance) — averaged across inner folds"**
+   - After: **"composite (65% min F1 + 35% plurality correctness) — averaged across inner folds"**
 
 4. **Overall Figure Height**: Increased from 8.5 → **9.2 inches** to accommodate all spacing improvements
 
@@ -73,7 +73,7 @@ Successfully fixed and regenerated 6 publication-ready figures (Figures 1, 2, 3,
 
 2. **Bottom Caption**: Added objective definition
    - Before: "TPE sampler provides Bayesian optimization. MedianPruner enables early stopping. Winner from each stage passed to next stage."
-   - After: Same + **"Objective: composite (65% min F1 + 35% diagonal dominance)."**
+   - After: Same + **"Objective: composite (65% min F1 + 35% plurality correctness)."**
 
 ---
 
@@ -112,9 +112,9 @@ Successfully fixed and regenerated 6 publication-ready figures (Figures 1, 2, 3,
 ### 1. **Understanding the Composite Objective**
 Your new optimization objective balances two critical goals:
 - **65% weight on min F1**: Ensures **all classes are decodable** (no class left behind)
-- **35% weight on diagonal dominance**: Ensures correct predictions are **plurality** for each class
+- **35% weight on plurality correctness**: Ensures correct predictions are **plurality** for each class
 
-**Why diagonal dominance matters:**
+**Why plurality correctness matters:**
 ```
 Example confusion matrix:
         Pred:  1   2   3
@@ -122,7 +122,7 @@ True 1: [100  30  20]  ← max is 100 (diagonal) ✓
 True 2: [ 40  60  50]  ← max is 60 (diagonal) ✓
 True 3: [ 10  80  30]  ← max is 80 (OFF-diagonal) ✗
 
-Diagonal Dominance = 2/3 = 67% (two classes have correct as plurality)
+Plurality Correctness = 2/3 = 67% (two classes have correct as plurality)
 ```
 This prevents systematic misclassification (e.g., always predicting "3" when answer is "2").
 
@@ -222,7 +222,7 @@ All regenerated figures saved to: `publication-ready-media/outputs/v4/`
 
 ### For Your Methods Section:
 You can now accurately state:
-> "We optimized a composite objective function (65% minimum per-class F1 + 35% diagonal dominance) to ensure both class decodability and prediction distinctness. Hyperparameter search was conducted in three stages (Architecture, Learning, Augmentation) using Tree-structured Parzen Estimator (TPE) sampling with median pruning. Final evaluation used Leave-One-Subject-Out cross-validation (N=24 subjects, IDs 02-33 with gaps due to quality control) with refit models on each outer fold's training set."
+> "We optimized a composite objective function (65% minimum per-class F1 + 35% plurality correctness) to ensure both class decodability and prediction distinctness. Hyperparameter search was conducted in three stages (Architecture, Learning, Augmentation) using Tree-structured Parzen Estimator (TPE) sampling with median pruning. Final evaluation used Leave-One-Subject-Out cross-validation (N=24 subjects, IDs 02-33 with gaps due to quality control) with refit models on each outer fold's training set."
 
 ### For Version Control:
 Consider creating a git tag for this stable figure set:

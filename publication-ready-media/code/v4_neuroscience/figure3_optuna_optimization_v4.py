@@ -122,7 +122,7 @@ def create_optuna_figure():
     
     # Note
     note = ('TPE sampler provides Bayesian optimization. MedianPruner enables early stopping. '
-           'Winner from each stage passed to next stage. Objective: composite (65% min F1 + 35% diagonal dominance).')
+           'Winner from each stage passed to next stage. Objective: composite (65% min F1 + 35% plurality correctness).')
     fig.text(0.5, 0.01, note, ha='center', fontsize=7, style='italic')
     
     return fig

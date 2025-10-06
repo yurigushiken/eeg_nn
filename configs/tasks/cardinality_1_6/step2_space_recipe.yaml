@@ -1,4 +1,4 @@
-# Stage 3 — Recipe (Clean)
+# Stage 2 — Recipe (Clean)
 # Use Step 1 resolved winner as --base; do not change architecture or data.
 
 # --- training budget / loader ---

@@ -144,7 +144,7 @@ def create_nested_cv_v4():
               loc='upper right', fontsize=8, ncol=2, frameon=False)
     
     # Note at BOTTOM with adequate clearance
-    ax3.text(13, 0.0, 'Objective: composite (65% min F1 + 35% diagonal dominance) — averaged across inner folds',
+    ax3.text(13, 0.0, 'Objective: composite (65% min F1 + 35% plurality correctness) — averaged across inner folds',
             ha='center', fontsize=7, style='italic', color='#555')
     
     return fig

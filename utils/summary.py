@@ -188,28 +188,118 @@ def write_summary(run_dir: Path, summary: dict, task: str, engine: str):
             report_lines.append(f"  {k}: {v}")
     report_lines.append("")
 
-    # Overall Metrics
+    # Overall Metrics (restructured for scientific clarity)
     report_lines.append("--- Overall Metrics ---")
-    report_lines.append(f"Mean Accuracy: {summary.get('mean_acc', 0.0):.2f}% (std: {summary.get('std_acc', 0.0):.2f})")
-    report_lines.append(f"Macro F1-Score: {summary.get('macro_f1', 0.0):.2f}")
-    report_lines.append(f"Weighted F1-Score: {summary.get('weighted_f1', 0.0):.2f}")
-    report_lines.append(f"Inner Val Mean Acc: {summary.get('inner_mean_acc', 0.0):.2f}%")
-    report_lines.append(f"Inner Val Mean Macro F1: {summary.get('inner_mean_macro_f1', 0.0):.2f}")
-    # Add inner_mean_min_per_class_f1 if available (key metric for optimization)
-    if summary.get('inner_mean_min_per_class_f1') is not None:
-        report_lines.append(f"Inner Val Mean Min-Per-Class F1: {summary.get('inner_mean_min_per_class_f1', 0.0):.2f}")
-    # Add inner_mean_diag_dom if available (diagonal dominance metric)
-    if summary.get('inner_mean_diag_dom') is not None:
-        report_lines.append(f"Inner Val Mean Diagonal Dominance: {summary.get('inner_mean_diag_dom', 0.0):.2f}%")
-    if summary.get('mean_diag_dom') is not None:
-        report_lines.append(f"Mean Diagonal Dominance: {summary.get('mean_diag_dom', 0.0):.2f}% (std: {summary.get('std_diag_dom', 0.0):.2f})")
-    # Chance level (if known)
+    report_lines.append("")
+    
+    # 1. REFERENCE BASELINE
+    report_lines.append("REFERENCE BASELINE:")
     try:
         ch = _compute_chance_level(summary.get("num_classes"))
         if ch > 0.0:
-            report_lines.append(f"Chance Level (based on class count): {ch:.2f}%")
+            n_classes = summary.get("num_classes", 0)
+            report_lines.append(f"  Chance Level: {ch:.2f}% ({n_classes}-class balanced)")
+        else:
+            report_lines.append(f"  Chance Level: Unknown")
     except Exception:
-        pass
+        report_lines.append(f"  Chance Level: Unknown")
+    report_lines.append("")
+    
+    # 2. INNER VALIDATION (Model Learning)
+    report_lines.append("INNER VALIDATION (Model Learning):")
+    report_lines.append(f"  Mean Accuracy: {summary.get('inner_mean_acc', 0.0):.2f}%")
+    report_lines.append(f"  Mean Macro F1: {summary.get('inner_mean_macro_f1', 0.0):.2f}")
+    if summary.get('inner_mean_min_per_class_f1') is not None:
+        report_lines.append(f"  Mean Min-Per-Class F1: {summary.get('inner_mean_min_per_class_f1', 0.0):.2f}")
+    if summary.get('inner_mean_plur_corr') is not None:
+        report_lines.append(f"  Mean Plurality Correctness: {summary.get('inner_mean_plur_corr', 0.0):.2f}%")
+    
+    # Show composite objective interpretation if applicable
+    if summary.get('composite_min_f1_plur_corr') is not None:
+        composite_val = summary.get('composite_min_f1_plur_corr', 0.0)
+        inner_min_f1 = summary.get('inner_mean_min_per_class_f1', 0.0)
+        inner_plur = summary.get('inner_mean_plur_corr', 0.0)
+        # Infer threshold from config (assuming 35-38 for 3-class, 20 for 6-class)
+        # If inner_min_f1 >= 35, composite = plurality; else composite = min_f1 * 0.1
+        if composite_val > 10.0:  # Likely above threshold
+            report_lines.append(f"  → Composite Objective: {composite_val:.2f} (threshold met, optimizing distinctness)")
+        else:  # Below threshold
+            report_lines.append(f"  → Composite Objective: {composite_val:.2f} (below threshold, gradient penalty)")
+    report_lines.append("")
+    
+    # 3. OUTER TEST (Cross-Subject Generalization)
+    report_lines.append("OUTER TEST (Cross-Subject Generalization):")
+    report_lines.append(f"  Mean Accuracy: {summary.get('mean_acc', 0.0):.2f}% ± {summary.get('std_acc', 0.0):.2f}")
+    report_lines.append(f"  Mean Macro F1: {summary.get('macro_f1', 0.0):.2f}")
+    if summary.get('mean_min_per_class_f1') is not None:
+        report_lines.append(f"  Mean Min-Per-Class F1: {summary.get('mean_min_per_class_f1', 0.0):.2f} ± {summary.get('std_min_per_class_f1', 0.0):.2f}")
+    if summary.get('mean_plur_corr') is not None:
+        report_lines.append(f"  Mean Plurality Correctness: {summary.get('mean_plur_corr', 0.0):.2f}% ± {summary.get('std_plur_corr', 0.0):.2f}")
+    
+    # Compute outer composite for interpretation
+    if summary.get('mean_min_per_class_f1') is not None and summary.get('mean_plur_corr') is not None:
+        outer_min_f1 = summary.get('mean_min_per_class_f1', 0.0)
+        outer_plur = summary.get('mean_plur_corr', 0.0)
+        # Infer threshold (heuristic: if inner composite > 10, threshold was met)
+        inner_composite = summary.get('composite_min_f1_plur_corr', 0.0)
+        if inner_composite > 10.0:  # Threshold likely 35-38
+            estimated_threshold = 35.0
+        else:
+            estimated_threshold = 20.0
+        
+        if outer_min_f1 >= estimated_threshold:
+            outer_composite = outer_plur
+            report_lines.append(f"  → Composite Objective: {outer_composite:.2f} (threshold met, distinctness={outer_plur:.2f}%)")
+        else:
+            outer_composite = outer_min_f1 * 0.1
+            report_lines.append(f"  → Composite Objective: {outer_composite:.2f} (below threshold, gradient penalty)")
+    report_lines.append("")
+    
+    # 4. GENERALIZATION GAP (Inner → Outer)
+    report_lines.append("GENERALIZATION GAP (Inner → Outer):")
+    inner_acc = summary.get('inner_mean_acc', 0.0)
+    outer_acc = summary.get('mean_acc', 0.0)
+    acc_gap = outer_acc - inner_acc
+    report_lines.append(f"  Accuracy: {acc_gap:+.2f} pp {'(minimal degradation)' if abs(acc_gap) < 3.0 else '(moderate degradation)' if abs(acc_gap) < 8.0 else '(substantial degradation)'}")
+    
+    if summary.get('inner_mean_min_per_class_f1') is not None and summary.get('mean_min_per_class_f1') is not None:
+        inner_min_f1 = summary.get('inner_mean_min_per_class_f1', 0.0)
+        outer_min_f1 = summary.get('mean_min_per_class_f1', 0.0)
+        min_f1_gap = outer_min_f1 - inner_min_f1
+        report_lines.append(f"  Min-Per-Class F1: {min_f1_gap:+.2f} pp {'(minimal degradation)' if abs(min_f1_gap) < 3.0 else '(moderate degradation)' if abs(min_f1_gap) < 8.0 else '(substantial degradation)'}")
+    
+    if summary.get('inner_mean_plur_corr') is not None and summary.get('mean_plur_corr') is not None:
+        inner_plur = summary.get('inner_mean_plur_corr', 0.0)
+        outer_plur = summary.get('mean_plur_corr', 0.0)
+        plur_gap = outer_plur - inner_plur
+        report_lines.append(f"  Plurality Correctness: {plur_gap:+.2f} pp {'(minimal degradation)' if abs(plur_gap) < 10.0 else '(moderate degradation)' if abs(plur_gap) < 25.0 else '(substantial degradation)'}")
+    report_lines.append("")
+    
+    # 5. KEY FINDING (Interpretation)
+    report_lines.append("KEY FINDING:")
+    if summary.get('inner_mean_plur_corr') is not None and summary.get('mean_plur_corr') is not None:
+        inner_plur = summary.get('inner_mean_plur_corr', 0.0)
+        outer_plur = summary.get('mean_plur_corr', 0.0)
+        if inner_plur > 70.0 and outer_plur < inner_plur - 15.0:
+            report_lines.append(f"  Models learn distinct patterns within subjects ({inner_plur:.2f}% plurality)")
+            report_lines.append(f"  but show reduced distinctness across subjects ({outer_plur:.2f}% plurality),")
+            report_lines.append(f"  suggesting partially subject-specific neural signatures.")
+        elif inner_plur > 70.0 and outer_plur > 70.0:
+            report_lines.append(f"  Models learn distinct patterns ({inner_plur:.2f}% plurality) that")
+            report_lines.append(f"  generalize well across subjects ({outer_plur:.2f}% plurality),")
+            report_lines.append(f"  suggesting robust subject-invariant neural signatures.")
+        else:
+            report_lines.append(f"  Models show moderate pattern distinctness (inner: {inner_plur:.2f}%,")
+            report_lines.append(f"  outer: {outer_plur:.2f}%), suggesting neural signatures are")
+            report_lines.append(f"  detectable but not strongly distinct across numerosities.")
+    else:
+        report_lines.append(f"  Mean accuracy: {outer_acc:.2f}% (vs. {ch:.2f}% chance)")
+    report_lines.append("")
+    
+    # Additional legacy metrics for completeness
+    report_lines.append("ADDITIONAL METRICS:")
+    report_lines.append(f"  Weighted F1-Score: {summary.get('weighted_f1', 0.0):.2f}")
+    report_lines.append(f"  Cohen's Kappa: {summary.get('mean_kappa', 0.0):.3f} ± {summary.get('std_kappa', 0.0):.3f}")
     report_lines.append("")
 
     # Fold Breakdown
