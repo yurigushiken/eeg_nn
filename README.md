@@ -21,6 +21,7 @@ This repository implements a streamlined EEG decoding pipeline aligned with the 
  - Provenance: reports include the exact model class (e.g., `braindecode.models.EEGNeX`), library versions (torch, numpy, sklearn, mne, braindecode, captum, optuna, python), and determinism flags.
  - Dataset caching:
    - `dataset_cache_memory: true` enables an in-process RAM cache of the fully built dataset (X, y, groups, channels, times). The first trial in a Python process builds it; subsequent trials reuse instantly (skips repeated MNE loads and cropping). Restarting the Python process clears it.
+ - Modular training orchestration (refactor complete): `training_runner.py` is now a thin coordinator that delegates to modular components under `code/training/` (setup, inner loop, outer loop, evaluation, checkpointing, metrics) and `code/artifacts/` (CSV writers, plot builders, overall plot orchestrator, artifact writer). This preserves legacy behavior while improving testability and clarity.
 
 ### Per‑run artifacts (besides checkpoints/plots)
 - `summary_<TASK>_<ENGINE>.json`: metrics + hyper + determinism + lib versions + model class + hardware (+ config_hash, exclusion summary, telemetry reference). Includes per-fold values for `min_per_class_f1` and `cohen_kappa`.
@@ -87,8 +88,20 @@ python -X utf8 -u train.py `
 - code/
   - preprocessing/mne_pipeline.py — spatial sampling (Cz ring), time cropping, channel alignment helpers
   - datasets.py — materialized `.fif` loader, channel unification
-  - training_runner.py — GroupKFold (outer) or LOSO; strict inner subject‑aware K‑fold; plots and summaries
   - model_builders.py — EEGNeX builder and train‑time augmentations
+  - training_runner.py — thin orchestrator that delegates to modular training/artifact components
+  - training/ — modular training components
+    - setup_orchestrator.py — logging (JSONL), outer CV splits (GroupKFold/LOSO), channel topomap
+    - inner_loop.py — per‑inner‑fold training loop (LR/aug warmup, mixup, pruning integration)
+    - outer_loop.py — orchestrates one complete outer fold (inner K‑fold, selection, test eval, per‑fold plots)
+    - evaluation.py — outer test evaluation (ensemble or refit modes)
+    - checkpointing.py — objective‑aligned early stopping and best‑checkpoint selection (tie‑break on val loss)
+    - metrics.py — objective computation for pruning/selection (supports composite_min_f1_plur_corr)
+  - artifacts/ — artifact and plotting utilities
+    - csv_writers.py — learning curves, outer eval metrics (with OVERALL row), predictions CSV writers
+    - plot_builders.py — objective‑aware plot titles and per‑class info strings
+    - overall_plot_orchestrator.py — overall (cross‑fold) confusion plots (simple/enhanced)
+    - artifact_writer.py — orchestrates writing splits JSON, CSVs, and prediction files
 - engines/eeg.py — engine wrapper for raw‑EEG models (EEGNeX)
 - tasks/ — label functions per task
 - configs/
