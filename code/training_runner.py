@@ -15,6 +15,19 @@ from sklearn.utils.class_weight import compute_class_weight
 from sklearn.metrics import f1_score, classification_report, cohen_kappa_score, confusion_matrix
 import optuna
 
+# Import extracted modules for refactored architecture
+from .training.metrics import ObjectiveComputer
+from .training.checkpointing import CheckpointManager
+from .training.inner_loop import InnerTrainer
+from .training.evaluation import OuterEvaluator
+from .training.outer_loop import OuterFoldOrchestrator
+from .artifacts.csv_writers import (
+    LearningCurvesWriter,
+    OuterEvalMetricsWriter,
+    TestPredictionsWriter,
+)
+from .artifacts.plot_builders import PlotTitleBuilder
+
 try:
     from utils import plots as _plots
     plot_confusion = _plots.plot_confusion
@@ -169,24 +182,27 @@ class TrainingRunner:
         self.run_dir = self._ensure_run_dir(cfg)
         self.stage = str(cfg.get("stage", "") or "")
         self.stage_context = self._resolve_stage_context()
+        
+        # Initialize objective computer for metric computation (refactored)
+        # Only initialize if optuna_objective is specified (for nested CV runs)
+        # Some simple scripts may not have this field
+        if "optuna_objective" in cfg:
+            self.objective_computer = ObjectiveComputer(cfg)
+        else:
+            self.objective_computer = None
     
     def _get_composite_params(self):
         """
-        Get composite objective parameters with constitutional fail-fast validation.
+        Get composite objective parameters (DEPRECATED - use objective_computer.get_params()).
         
-        Supports two modes:
-        1. Threshold mode: min_f1_threshold specified (recommended for "distinct + decodable" claims)
-        2. Weighted mode: composite_min_f1_weight specified (backward compatible)
-        
-        Per constitution Section III: critical parameters must be explicitly specified.
-        No silent defaults allowed for scientifically important parameters.
+        Maintained for backward compatibility. Delegates to ObjectiveComputer.
         
         Returns:
             dict: {"mode": "threshold", "threshold": float} or {"mode": "weighted", "weight": float}
-        
-        Raises:
-            ValueError: If neither, both, or invalid parameters specified
         """
+        if self.objective_computer is None:
+            # Fallback to old implementation if no objective_computer
+            # (for backward compatibility with scripts that don't use optuna_objective)
         has_threshold = "min_f1_threshold" in self.cfg
         has_weight = "composite_min_f1_weight" in self.cfg
         
@@ -213,13 +229,16 @@ class TrainingRunner:
             if not (0.0 <= weight <= 1.0):
                 raise ValueError(f"composite_min_f1_weight must be in range [0.0, 1.0], got {weight}")
             return {"mode": "weighted", "weight": weight}
+        else:
+            # Delegate to ObjectiveComputer (refactored path)
+            return self.objective_computer.get_params()
     
     def _compute_objective_metric(self, val_acc, val_macro_f1, val_min_per_class_f1, val_plur_corr):
         """
         Compute the per-epoch metric aligned with the configured Optuna objective.
         
-        This ensures that pruning and checkpoint selection use the same metric
-        that Optuna is optimizing for, maintaining scientific integrity.
+        DEPRECATED: Use objective_computer.compute() directly.
+        Maintained for backward compatibility. Delegates to ObjectiveComputer.
         
         Args:
             val_acc: Validation accuracy (0-100)
@@ -230,6 +249,13 @@ class TrainingRunner:
         Returns:
             float: The metric value aligned with the optimization objective (to be maximized)
         """
+        if self.objective_computer is not None:
+            # Delegate to ObjectiveComputer (refactored path)
+            return self.objective_computer.compute(
+                val_acc, val_macro_f1, val_min_per_class_f1, val_plur_corr
+            )
+        else:
+            # Fallback to old implementation (for backward compatibility)
         objective = self.cfg.get("optuna_objective", "inner_mean_macro_f1")
         
         if objective == "inner_mean_min_per_class_f1":
@@ -239,21 +265,12 @@ class TrainingRunner:
         elif objective == "inner_mean_plur_corr":
             return val_plur_corr
         elif objective == "composite_min_f1_plur_corr":
-            # Dual-mode support: threshold (recommended) or weighted (backward compatible)
             params = self._get_composite_params()
             if params["mode"] == "threshold":
-                # Threshold approach with gradient below threshold
-                # Gradient is critical for:
-                # 1. Optuna pruning: distinguishes "bad" (20%) from "close" (37%)
-                # 2. TPE sampling: learns which hyperparameters approach threshold
                 threshold = params["threshold"]
                 if val_min_per_class_f1 < threshold:
-                    # Small gradient proportional to distance from 0
-                    # Range: 0.0 - 3.8 (for threshold=38%)
                     return val_min_per_class_f1 * 0.1
                 else:
-                    # Above threshold: maximize distinctness
-                    # Range: 0.0 - 100.0 (plur_corr percentage)
                     return val_plur_corr
             else:  # weighted mode
                 weight = params["weight"]
@@ -509,6 +526,22 @@ class TrainingRunner:
         
         # Extract trial directory name for plot titles
         trial_dir_name = self.run_dir.name if self.run_dir else ""
+        
+        # Initialize plot title builder (refactored - Stage 3)
+        plot_title_builder = PlotTitleBuilder(self.cfg, self.objective_computer, trial_dir_name)
+        
+        # Initialize orchestrators (refactored - Stage 7a)
+        inner_trainer = InnerTrainer(self.cfg, self.objective_computer)
+        outer_evaluator = OuterEvaluator(self.cfg)
+        fold_orchestrator = OuterFoldOrchestrator(
+            cfg=self.cfg,
+            objective_computer=self.objective_computer,
+            inner_trainer=inner_trainer,
+            outer_evaluator=outer_evaluator,
+            plot_title_builder=plot_title_builder,
+            run_dir=self.run_dir,
+            log_event=_log_event,
+        )
 
         # Global step counter for Optuna pruning (increments every epoch across folds)
         global_step = 0
@@ -527,27 +560,93 @@ class TrainingRunner:
         for fold, (tr_idx, va_idx) in enumerate(outer_pairs):
             if self.cfg.get("max_folds") is not None and fold >= int(self.cfg["max_folds"]):
                 break
-            test_subjects = np.unique(groups[va_idx]).tolist()
-            # Assert no subject leakage between outer train and test
-            train_subjects = np.unique(groups[tr_idx]).tolist()
-            overlap = set(train_subjects).intersection(set(test_subjects))
-            if overlap:
-                raise AssertionError(f"Subject leakage detected in outer fold {fold+1}: {sorted(list(overlap))}")
+            
+            # Get predefined inner splits for this fold (if any)
+            predefined_inner = None
+            if predefined_splits and fold < len(predefined_splits):
+                predefined_inner = predefined_splits[fold].get("inner_splits")
+            
+            # Run complete outer fold using OuterFoldOrchestrator (refactored - Stage 7a)
+            fold_result = fold_orchestrator.run_fold(
+                fold=fold,
+                tr_idx=tr_idx,
+                te_idx=va_idx,
+                dataset=dataset,
+                y_all=y_all,
+                groups=groups,
+                class_names=class_names,
+                model_builder=model_builder,
+                aug_transform=aug_transform,
+                input_adapter=input_adapter,
+                predefined_inner_splits=predefined_inner,
+                optuna_trial=optuna_trial,
+                global_step_offset=global_step,
+            )
+            
+            # Update global step
+            global_step = fold_result["new_global_step"]
+            
+            # Collect results from this fold
+            test_subjects = fold_result["test_subjects"]
             fold_split_info.append({"fold": fold + 1, "test_subjects": test_subjects})
             print(
                 f"[fold {fold+1}] test_subjects={test_subjects} n_tr={len(tr_idx)} n_te={len(va_idx)}",
                 flush=True,
             )
 
-            # Determine inner K-fold configuration (strict)
-            inner_k = int(self.cfg.get("inner_n_folds", 1))
-            unique_train_groups = np.unique(groups[tr_idx])
-            if inner_k < 2:
-                raise ValueError("inner_n_folds must be >= 2 for strict inner K-fold CV")
-            if len(unique_train_groups) < inner_k:
-                raise ValueError(
-                    f"Not enough unique groups for inner K-fold: have {len(unique_train_groups)}, need >= {inner_k}"
-                )
+            # Accumulate results from this fold (refactored - Stage 7a)
+            # Extract metrics from fold_result
+            metrics = fold_result["metrics"]
+            inner_metrics = fold_result["inner_metrics"]
+            
+            # Accumulate for overall statistics
+            fold_accs.append(metrics["acc"])
+            fold_macro_f1s.append(metrics["macro_f1"])
+            fold_min_per_class_f1s.append(metrics["min_per_class_f1"])
+            fold_plur_corrs.append(metrics["plur_corr"])
+            fold_kappas.append(metrics["cohen_kappa"])
+            
+            # Accumulate inner metrics
+            inner_accs.append(inner_metrics["acc"])
+            inner_macro_f1s.append(inner_metrics["macro_f1"])
+            inner_min_per_class_f1s.append(inner_metrics["min_per_class_f1"])
+            inner_plur_corrs.append(inner_metrics["plur_corr"])
+            
+            # Accumulate predictions
+            overall_y_true.extend(fold_result["y_true"])
+            overall_y_pred.extend(fold_result["y_pred"])
+            
+            # Accumulate artifacts
+            outer_folds_record.append(fold_result["fold_record"])
+            learning_curve_rows.extend(fold_result["learning_curves"])
+            test_pred_rows_outer.extend(fold_result["test_pred_rows_outer"])
+            test_pred_rows_inner.extend(fold_result["test_pred_rows_inner"])
+            
+            # Build outer metrics row for CSV
+            per_class_f1 = metrics.get("per_class_f1_list")
+            outer_metrics_rows.append({
+                "outer_fold": int(fold + 1),
+                "test_subjects": ",".join(map(str, test_subjects)),
+                "n_test_trials": int(len(fold_result["y_true"])),
+                "acc": float(metrics["acc"]),
+                "macro_f1": float(metrics["macro_f1"]),
+                "min_per_class_f1": float(metrics["min_per_class_f1"]),
+                "plur_corr": float(metrics["plur_corr"]),
+                "cohen_kappa": float(metrics["cohen_kappa"]),
+                "acc_std": "",
+                "macro_f1_std": "",
+                "min_per_class_f1_std": "",
+                "plur_corr_std": "",
+                "cohen_kappa_std": "",
+                "per_class_f1": json.dumps(per_class_f1) if per_class_f1 is not None else "",
+            })
+            
+            # NOTE: Plotting is now handled inside OuterFoldOrchestrator.run_fold()
+            # No need to generate plots here
+            
+            # Fold complete (logging handled by orchestrator)
+
+        # Overall metrics
 
             # Collect per-outer-fold inner results
             inner_results_this_outer: List[dict] = []
@@ -583,6 +682,9 @@ class TrainingRunner:
                     )
                 ]
 
+            # Initialize inner trainer (refactored)
+            inner_trainer = InnerTrainer(self.cfg, self.objective_computer)
+
             for inner_fold, (inner_tr_abs, inner_va_abs) in enumerate(inner_iter):
                 # Inner split leakage guard
                 tr_subj = set(np.unique(groups[inner_tr_abs]).tolist())
@@ -598,6 +700,7 @@ class TrainingRunner:
                     "inner_val_idx": [int(i) for i in inner_va_abs.tolist()],
                 })
 
+                # Create dataloaders
                 tr_ld, va_ld, te_ld, _ = self._make_loaders(
                     dataset,
                     y_all,
@@ -610,6 +713,7 @@ class TrainingRunner:
                 )
                 te_ld_shared = te_ld
 
+                # Setup model, optimizer, scheduler, loss
                 model = model_builder(self.cfg, num_cls).to(DEVICE)
                 opt = torch.optim.AdamW(
                     model.parameters(),
@@ -624,7 +728,8 @@ class TrainingRunner:
                     "balanced", classes=np.arange(num_cls), y=y_all[inner_tr_abs]
                 )
                 loss_fn = nn.CrossEntropyLoss(torch.tensor(cls_w, dtype=torch.float32, device=DEVICE))
-                # Save class weights once per inner fold
+                
+                # Save class weights
                 try:
                     if self.run_dir:
                         cw_dir = self.run_dir / "class_weights"
@@ -636,245 +741,40 @@ class TrainingRunner:
                 except Exception:
                     pass
 
-                best_early_stopping_objective = float("-inf")  # early stopping tracker (maximize objective metric)
-                best_state = None
-                best_inner_acc = 0.0
-                best_inner_macro_f1 = 0.0
-                best_inner_min_per_class_f1 = 0.0
-                best_inner_plur_corr = 0.0
-                best_checkpoint_loss = float("inf")  # checkpoint tie-breaker (separate from early stopping)
-                patience = 0
-                tr_hist: List[float] = []
-                va_hist: List[float] = []
-                va_acc_hist: List[float] = []
-
-                total_epochs = int(self.cfg.get("epochs", 60))
-                base_lr = float(self.cfg.get("lr", 7e-4))
-                # Linear LR warmup over initial fraction of epochs
-                lr_warmup_frac = float(self.cfg.get("lr_warmup_frac", 0.0) or 0.0)
-                lr_warmup_init = float(self.cfg.get("lr_warmup_init", 0.0) or 0.0)
-                lr_warmup_epochs = int(np.ceil(lr_warmup_frac * total_epochs)) if lr_warmup_frac > 0 else 0
-
-                # Augmentation ramp-up over initial fraction of epochs
-                aug_warmup_frac = float(self.cfg.get("aug_warmup_frac", 0.0) or 0.0)
-                aug_warmup_epochs = int(np.ceil(aug_warmup_frac * total_epochs)) if aug_warmup_frac > 0 else 0
-
-                def _set_lr(optimizer, lr_value: float):
-                    for pg in optimizer.param_groups:
-                        pg["lr"] = lr_value
-
-                def _scaled_aug_cfg(r: float):
-                    if r >= 1.0:
-                        return self.cfg
-                    cfg2 = dict(self.cfg)
-                    # probabilities
-                    for k in ("shift_p","scale_p","noise_p","time_mask_p","chan_mask_p"):
-                        if k in cfg2 and cfg2[k] is not None:
-                            cfg2[k] = float(cfg2[k]) * r
-                    # strengths / magnitudes
-                    for k in ("shift_max_frac","noise_std","time_mask_frac","chan_mask_ratio"):
-                        if k in cfg2 and cfg2[k] is not None:
-                            cfg2[k] = float(cfg2[k]) * r
-                    # scale range approaches 1.0
-                    if "scale_min" in cfg2 and cfg2["scale_min"] is not None:
-                        smin = float(cfg2["scale_min"])
-                        cfg2["scale_min"] = 1.0 + r * (smin - 1.0)
-                    if "scale_max" in cfg2 and cfg2["scale_max"] is not None:
-                        smax = float(cfg2["scale_max"])
-                        cfg2["scale_max"] = 1.0 + r * (smax - 1.0)
-                    return cfg2
-
-                for epoch in range(1, total_epochs + 1):
-                    # LR warmup schedule (linear)
-                    if lr_warmup_epochs > 0 and epoch <= lr_warmup_epochs:
-                        t = epoch / max(1, lr_warmup_epochs)
-                        factor = lr_warmup_init + (1.0 - lr_warmup_init) * t
-                        _set_lr(opt, base_lr * factor)
-                    # Augmentation ramp-up: rebuild transform each epoch with scaled cfg
-                    if aug_warmup_epochs > 0 and epoch <= aug_warmup_epochs:
-                        r = epoch / max(1, aug_warmup_epochs)
-                    else:
-                        r = 1.0
-                    try:
-                        # Access underlying training dataset of the DataLoader's Subset
-                        ds_train = getattr(tr_ld.dataset, "dataset", None)
-                        if ds_train is not None:
-                            aug_transform_epoch = aug_builder(_scaled_aug_cfg(r), dataset)
-                            ds_train.set_transform(aug_transform_epoch)
-                    except Exception:
-                        pass
-                    # Train
-                    model.train()
-                    train_loss = 0.0
-                    for xb, yb in tr_ld:
-                        yb_gpu = yb.to(DEVICE)
-                        xb_gpu = (
-                            xb.to(DEVICE)
-                            if not isinstance(xb, (list, tuple))
-                            else [t.to(DEVICE) for t in xb]
-                        )
-                        xb_gpu = input_adapter(xb_gpu) if input_adapter else xb_gpu
-                        opt.zero_grad()
-
-                        # Optional mixup: only for tensor inputs with batch_size>1
-                        mixup_alpha = float(self.cfg.get("mixup_alpha", 0.0) or 0.0)
-                        if (
-                            mixup_alpha > 0.0
-                            and isinstance(xb_gpu, torch.Tensor)
-                            and xb_gpu.size(0) > 1
-                        ):
-                            lam = np.random.beta(mixup_alpha, mixup_alpha)
-                            perm = torch.randperm(xb_gpu.size(0), device=xb_gpu.device)
-                            xb_mix = lam * xb_gpu + (1.0 - lam) * xb_gpu[perm]
-                            out = model(xb_mix)
-                            yb_perm = yb_gpu[perm]
-                            loss = lam * loss_fn(out.float(), yb_gpu) + (1.0 - lam) * loss_fn(out.float(), yb_perm)
-                        else:
-                            out = model(xb_gpu) if not isinstance(xb_gpu, (list, tuple)) else model(*xb_gpu)
-                            loss = loss_fn(out.float(), yb_gpu)
-                        loss.backward()
-                        opt.step()
-                        train_loss += loss.item()
-                    train_loss /= max(1, len(tr_ld))
-                    tr_hist.append(train_loss)
-
-                    # Val
-                    model.eval()
-                    val_loss = 0.0
-                    correct = 0
-                    total = 0
-                    y_true_ep: List[int] = []
-                    y_pred_ep: List[int] = []
-                    with torch.no_grad():
-                        for xb, yb in va_ld:
-                            yb_gpu = yb.to(DEVICE)
-                            xb_gpu = (
-                                xb.to(DEVICE)
-                                if not isinstance(xb, (list, tuple))
-                                else [t.to(DEVICE) for t in xb]
-                            )
-                            xb_gpu = input_adapter(xb_gpu) if input_adapter else xb_gpu
-                            out = model(xb_gpu) if not isinstance(xb_gpu, (list, tuple)) else model(*xb_gpu)
-                            loss = loss_fn(out.float(), yb_gpu)
-                            val_loss += loss.item()
-                            preds = out.argmax(1).cpu()
-                            correct += (preds == yb).sum().item()
-                            total += yb.size(0)
-                            y_true_ep.extend(yb.tolist())
-                            y_pred_ep.extend(preds.tolist())
-                    val_loss /= max(1, len(va_ld))
-                    val_acc = 100.0 * correct / max(1, total)
-                    try:
-                        val_macro_f1 = f1_score(y_true_ep, y_pred_ep, average="macro") * 100
-                        val_per_class_f1 = f1_score(y_true_ep, y_pred_ep, average=None)
-                        val_min_per_class_f1 = float(np.min(val_per_class_f1)) * 100 if len(val_per_class_f1) > 0 else 0.0
-                        val_plur_corr = compute_plurality_correctness(y_true_ep, y_pred_ep) * 100
-                    except Exception:
-                        val_macro_f1 = 0.0
-                        val_min_per_class_f1 = 0.0
-                        val_plur_corr = 0.0
-
-                    # Collect learning curve data for CSV export
-                    try:
-                        learning_curve_rows.append({
-                            "outer_fold": int(fold + 1),
-                            "inner_fold": int(inner_fold + 1),
-                            "epoch": int(epoch),
-                            "train_loss": float(train_loss),
-                            "val_loss": float(val_loss),
-                            "val_acc": float(val_acc),
-                            "val_macro_f1": float(val_macro_f1),
-                            "val_min_per_class_f1": float(val_min_per_class_f1),
-                            "val_plur_corr": float(val_plur_corr),
-                            "val_objective_metric": float(
-                                self._compute_objective_metric(
-                                    val_acc, val_macro_f1, val_min_per_class_f1, val_plur_corr
-                                )
-                            ),
-                            "n_train": int(len(inner_tr_abs)),
-                            "n_val": int(len(inner_va_abs)),
-                            "optuna_trial_id": int(optuna_trial.number) if optuna_trial else -1,
-                            "param_hash": "",  # Could compute hash of hyperparams if needed
-                        })
-                    except Exception:
-                        pass
-
-                    # Optuna pruning: report objective-aligned metric per epoch
-                    if optuna_trial is not None:
-                        global_step += 1
-                        try:
-                            # Report the metric that matches our optimization objective
-                            objective_metric = self._compute_objective_metric(
-                                val_acc, val_macro_f1, val_min_per_class_f1, val_plur_corr
-                            )
-                            optuna_trial.report(objective_metric, global_step)
-                            if optuna_trial.should_prune():
-                                print(
-                                    f"  [prune] Trial pruned at epoch {epoch} of fold {fold+1} inner {inner_fold+1}.",
-                                    flush=True,
-                                )
-                                raise optuna.exceptions.TrialPruned()
-                        except optuna.exceptions.TrialPruned:
-                            raise
-                        except Exception:
-                            # Ignore reporting errors without stopping training
-                            pass
-                    va_hist.append(val_loss)
-                    va_acc_hist.append(val_acc)
-                    # Defer scheduler stepping until after LR warm-up
-                    if not (lr_warmup_epochs > 0 and epoch <= lr_warmup_epochs):
-                        sched.step(val_loss)
-
-                    # Collect inner validation predictions at best checkpoint epoch for CSV output
-                    # We'll store these after training completes using best_state
-
-                    # Early stopping: maximize objective-aligned metric (same as checkpointing)
-                    current_es_objective = self._compute_objective_metric(
-                        val_acc, val_macro_f1, val_min_per_class_f1, val_plur_corr
-                    )
-                    if current_es_objective > best_early_stopping_objective:
-                        best_early_stopping_objective = current_es_objective
-                        patience = 0
-                    else:
-                        patience += 1
-
-                    # Checkpoint selection: maximize objective-aligned metric
-                    current_objective_metric = self._compute_objective_metric(
-                        val_acc, val_macro_f1, val_min_per_class_f1, val_plur_corr
-                    )
-                    best_objective_metric = self._compute_objective_metric(
-                        best_inner_acc, best_inner_macro_f1, best_inner_min_per_class_f1, best_inner_plur_corr
-                    )
-                    
-                    update_ckpt = False
-                    if current_objective_metric > best_objective_metric:
-                        update_ckpt = True
-                    elif (current_objective_metric == best_objective_metric) and (val_loss < best_checkpoint_loss):
-                        # Tie-break by lower validation loss among checkpointed epochs (not early stopping best_val)
-                        update_ckpt = True
-
-                    if update_ckpt:
-                        best_inner_macro_f1 = val_macro_f1
-                        best_inner_acc = val_acc
-                        best_inner_min_per_class_f1 = val_min_per_class_f1
-                        best_inner_plur_corr = val_plur_corr
-                        best_checkpoint_loss = val_loss
-                        best_state = copy.deepcopy(model.state_dict())
-                        if self.run_dir and self.cfg.get("save_ckpt", True):
+                # Initialize checkpoint manager
+                checkpoint_mgr = CheckpointManager(self.cfg, self.objective_computer)
+                
+                # Train using InnerTrainer (refactored)
+                inner_result = inner_trainer.train(
+                    model=model,
+                    optimizer=opt,
+                    scheduler=sched,
+                    loss_fn=loss_fn,
+                    tr_loader=tr_ld,
+                    va_loader=va_ld,
+                    aug_builder=aug_builder,
+                    input_adapter=input_adapter,
+                    checkpoint_manager=checkpoint_mgr,
+                    fold_info={"outer_fold": fold + 1, "inner_fold": inner_fold + 1},
+                    optuna_trial=optuna_trial,
+                    global_step_offset=global_step,
+                )
+                
+                # Update global step for Optuna
+                global_step += len(inner_result["learning_curves"])
+                
+                # Collect learning curves
+                learning_curve_rows.extend(inner_result["learning_curves"])
+                
+                # Save best checkpoint if requested
+                if self.run_dir and self.cfg.get("save_ckpt", True) and inner_result["best_state"] is not None:
                             ckpt_dir = self.run_dir / "ckpt"
                             ckpt_dir.mkdir(parents=True, exist_ok=True)
-                            torch.save(model.state_dict(), ckpt_dir / f"fold_{fold+1:02d}_inner_{inner_fold+1:02d}_best.ckpt")
-                    if patience >= int(self.cfg.get("early_stop", 10)):
-                        break
-                    if epoch % 5 == 0:
-                        print(
-                            f"  [epoch {epoch}] (outer {fold+1} inner {inner_fold+1}) tr_loss={train_loss:.4f} va_loss={val_loss:.4f} va_acc={val_acc:.2f} best_obj={best_early_stopping_objective:.4f}",
-                            flush=True,
-                        )
-
-                # Collect inner validation predictions using best state for CSV output
-                if best_state is not None:
-                    model.load_state_dict(best_state)
+                    torch.save(inner_result["best_state"], ckpt_dir / f"fold_{fold+1:02d}_inner_{inner_fold+1:02d}_best.ckpt")
+                
+                # Collect inner validation predictions using best state
+                if inner_result["best_state"] is not None:
+                    model.load_state_dict(inner_result["best_state"])
                     model.eval()
                     with torch.no_grad():
                         for xb, yb in va_ld:
@@ -912,20 +812,8 @@ class TrainingRunner:
                                     "probs": json.dumps(probs_vec),
                                 })
 
-                inner_results_this_outer.append(
-                    {
-                        "best_state": best_state,
-                        "best_inner_acc": best_inner_acc,
-                        "best_inner_macro_f1": best_inner_macro_f1,
-                        "best_inner_min_per_class_f1": best_inner_min_per_class_f1,
-                        "best_inner_plur_corr": best_inner_plur_corr,
-                        "tr_hist": tr_hist,
-                        "va_hist": va_hist,
-                        "va_acc_hist": va_acc_hist,
-                    }
-                )
-
-                # Individual inner fold plots removed - will create ensemble plots after all inner folds complete
+                # Store inner result
+                inner_results_this_outer.append(inner_result)
 
             # Aggregate inner metrics for this outer fold
             inner_mean_acc_this_outer = (
@@ -1007,230 +895,57 @@ class TrainingRunner:
                 else:
                     best_inner_result = None
 
+            # Initialize outer evaluator (refactored)
             if "outer_eval_mode" not in self.cfg:
                 raise ValueError(
                     "'outer_eval_mode' must be explicitly specified in config. "
                     "Choose 'ensemble' (default recommendation) or 'refit'. No fallback allowed for scientific validity."
                 )
-            mode = str(self.cfg["outer_eval_mode"]).lower()
-
-            # Test-time evaluation
-            correct = 0
-            total = 0
-            y_true_fold: List[int] = []
-            y_pred_fold: List[int] = []
+            outer_evaluator = OuterEvaluator(self.cfg)
+            mode = outer_evaluator.mode
+            
+            # Evaluate on outer test set (refactored)
             if mode == "ensemble":
-                # Ensemble of inner models (mean softmax over K inner models)
-                with torch.no_grad():
-                    pos = 0
-                    for xb, yb in (te_ld_shared if te_ld_shared is not None else []):
-                        yb_gpu = yb.to(DEVICE)
-                        xb_gpu = xb.to(DEVICE) if not isinstance(xb, (list, tuple)) else [t.to(DEVICE) for t in xb]
-                        xb_gpu = input_adapter(xb_gpu) if input_adapter else xb_gpu
-
-                        accum_probs = None
-                        for r in inner_results_this_outer:
-                            state = r.get("best_state")
-                            if state is None:
-                                continue
-                            model = model_builder(self.cfg, num_cls).to(DEVICE)
-                            model.load_state_dict(state)
-                            model.eval()
-                            out = model(xb_gpu) if not isinstance(xb_gpu, (list, tuple)) else model(*xb_gpu)
-                            probs = F.softmax(out.float(), dim=1).cpu()
-                            if accum_probs is None:
-                                accum_probs = probs
-                            else:
-                                accum_probs += probs
-                        if accum_probs is None:
-                            continue
-                        preds = accum_probs.argmax(1)
-                        correct += (preds == yb).sum().item()
-                        total += yb.size(0)
-                        y_true_fold.extend(yb.tolist())
-                        y_pred_fold.extend(preds.tolist())
-
-                        # Append per-trial predictions for mixed-effects modeling
-                        probs_norm = accum_probs / accum_probs.sum(dim=1, keepdim=True)
-                        bsz = yb.size(0)
-                        for j in range(bsz):
-                            abs_idx = int(va_idx[pos + j])
-                            subj_id = int(groups[abs_idx])
-                            true_lbl = int(yb[j].item())
-                            pred_lbl = int(preds[j].item())
-                            probs_vec = probs_norm[j].tolist()
-                            p_true = float(probs_vec[true_lbl]) if 0 <= true_lbl < len(probs_vec) else 0.0
-                            logp_true = float(np.log(max(p_true, 1e-12)))
-                            test_pred_rows_outer.append({
-                                "outer_fold": int(fold + 1),
-                                "trial_index": abs_idx,
-                                "subject_id": subj_id,
-                                "true_label_idx": true_lbl,
-                                "true_label_name": str(class_names[true_lbl]) if 0 <= true_lbl < len(class_names) else "",
-                                "pred_label_idx": pred_lbl,
-                                "pred_label_name": str(class_names[pred_lbl]) if 0 <= pred_lbl < len(class_names) else "",
-                                "correct": int(1 if pred_lbl == true_lbl else 0),
-                                "p_trueclass": p_true,
-                                "logp_trueclass": logp_true,
-                                "probs": json.dumps(probs_vec),
-                            })
-                        pos += bsz
+                eval_result = outer_evaluator.evaluate(
+                    model_builder=model_builder,
+                    num_classes=num_cls,
+                    inner_results=inner_results_this_outer,
+                    test_loader=te_ld_shared,
+                    groups=groups,
+                    te_idx=va_idx,
+                    class_names=class_names,
+                    fold=fold + 1,
+                )
             elif mode == "refit":
-                # Refit a single model on the full outer-train set (optionally with a small deterministic grouped val)
-                refit_val_frac = float(self.cfg.get("refit_val_frac", 0.0) or 0.0)
-                do_val = refit_val_frac > 0.0 and len(np.unique(groups[tr_idx])) >= 2
-
-                if do_val:
-                    # Use deterministic GroupKFold with fixed K; pick first split
-                    refit_val_k = int(self.cfg.get("refit_val_k", 5))
-                    gkf_refit = GroupKFold(n_splits=max(2, refit_val_k))
-                    inner_tr_rel, inner_va_rel = next(
-                        gkf_refit.split(np.zeros(len(tr_idx)), y_all[tr_idx], groups[tr_idx])
-                    )
-                    refit_tr_abs = tr_idx[inner_tr_rel]
-                    refit_va_abs = tr_idx[inner_va_rel]
-                else:
-                    refit_tr_abs = tr_idx
-                    refit_va_abs = tr_idx  # sentinel; we will skip early stopping
-
-                tr_ld, va_ld, te_ld_refit, _ = self._make_loaders(
-                    dataset,
-                    y_all,
-                    groups,
-                    tr_idx,
-                    va_idx,
+                eval_result = outer_evaluator.evaluate_refit(
+                    model_builder=model_builder,
+                    num_classes=num_cls,
+                    dataset=dataset,
+                    y_all=y_all,
+                    groups=groups,
+                    tr_idx=tr_idx,
+                    te_idx=va_idx,
+                    test_loader=te_ld_shared,
                     aug_transform=aug_transform,
-                    inner_tr_idx_override=refit_tr_abs,
-                    inner_va_idx_override=refit_va_abs,
+                    input_adapter=input_adapter,
+                    class_names=class_names,
+                    fold=fold + 1,
                 )
-
-                model = model_builder(self.cfg, num_cls).to(DEVICE)
-                opt = torch.optim.AdamW(
-                    model.parameters(), lr=float(self.cfg.get("lr", 7e-4)), weight_decay=float(self.cfg.get("weight_decay", 0.0))
-                )
-                sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                    opt, mode="min", patience=int(self.cfg.get("scheduler_patience", 5))
-                )
-                cls_w = compute_class_weight(
-                    "balanced", classes=np.arange(num_cls), y=y_all[refit_tr_abs]
-                )
-                loss_fn = nn.CrossEntropyLoss(torch.tensor(cls_w, dtype=torch.float32, device=DEVICE))
-                # Save class weights for refit
-                try:
-                    if self.run_dir:
-                        cw_dir = self.run_dir / "class_weights"
-                        cw_dir.mkdir(parents=True, exist_ok=True)
-                        cw_path = cw_dir / f"fold_{fold+1:02d}_refit_class_weights.json"
-                        cw_payload = {str(i): float(w) for i, w in enumerate(cls_w)}
-                        cw_path.write_text(json.dumps(cw_payload, indent=2))
-                except Exception:
-                    pass
-
-                best_val = float("inf")
-                best_state = None
-                patience = 0
-                refit_patience = int(self.cfg.get("refit_early_stop", self.cfg.get("early_stop", 10)))
-
-                for epoch in range(1, int(self.cfg.get("epochs", 60)) + 1):
-                    # Train
-                    model.train()
-                    train_loss = 0.0
-                    for xb, yb in tr_ld:
-                        yb_gpu = yb.to(DEVICE)
-                        xb_gpu = (
-                            xb.to(DEVICE)
-                            if not isinstance(xb, (list, tuple))
-                            else [t.to(DEVICE) for t in xb]
-                        )
-                        xb_gpu = input_adapter(xb_gpu) if input_adapter else xb_gpu
-                        opt.zero_grad()
-                        out = model(xb_gpu) if not isinstance(xb_gpu, (list, tuple)) else model(*xb_gpu)
-                        loss = loss_fn(out.float(), yb_gpu)
-                        loss.backward()
-                        opt.step()
-                        train_loss += loss.item()
-                    train_loss /= max(1, len(tr_ld))
-
-                    if do_val:
-                        # Validate
-                        model.eval()
-                        val_loss = 0.0
-                        with torch.no_grad():
-                            for xb, yb in va_ld:
-                                yb_gpu = yb.to(DEVICE)
-                                xb_gpu = (
-                                    xb.to(DEVICE)
-                                    if not isinstance(xb, (list, tuple))
-                                    else [t.to(DEVICE) for t in xb]
-                                )
-                                xb_gpu = input_adapter(xb_gpu) if input_adapter else xb_gpu
-                                out = model(xb_gpu) if not isinstance(xb_gpu, (list, tuple)) else model(*xb_gpu)
-                                loss = loss_fn(out.float(), yb_gpu)
-                                val_loss += loss.item()
-                        val_loss /= max(1, len(va_ld))
-                        sched.step(val_loss)
-                        if val_loss < best_val:
-                            best_val = val_loss
-                            patience = 0
-                            best_state = copy.deepcopy(model.state_dict())
-                        else:
-                            patience += 1
-                            if patience >= refit_patience:
-                                break
-
-                if do_val and best_state is not None:
-                    model.load_state_dict(best_state)
-                model.eval()
-
-                # Save refit model checkpoint if requested
+                # Save refit checkpoint if requested
                 if self.run_dir and self.cfg.get("save_ckpt", True):
-                    ckpt_dir = self.run_dir / "ckpt"
-                    ckpt_dir.mkdir(parents=True, exist_ok=True)
-                    torch.save(model.state_dict(), ckpt_dir / f"fold_{fold+1:02d}_refit_best.ckpt")
-
-                with torch.no_grad():
-                    for xb, yb in te_ld_refit:
-                        yb_gpu = yb.to(DEVICE)
-                        xb_gpu = xb.to(DEVICE) if not isinstance(xb, (list, tuple)) else [t.to(DEVICE) for t in xb]
-                        xb_gpu = input_adapter(xb_gpu) if input_adapter else xb_gpu
-                        out = model(xb_gpu) if not isinstance(xb_gpu, (list, tuple)) else model(*xb_gpu)
-                        logits = out.float().cpu()
-                        probs = F.softmax(logits, dim=1)
-                        preds = logits.argmax(1)
-                        correct += (preds == yb).sum().item()
-                        total += yb.size(0)
-                        y_true_fold.extend(yb.tolist())
-                        y_pred_fold.extend(preds.tolist())
-                        # Append per-trial predictions
-                        bsz = yb.size(0)
-                        # Track absolute indices by scanning va_idx in order
-                        # We don't have batch sampler indices here; approximate by advancing sequentially
-                        # Note: te_ld_refit iterates over Subset(va_idx) sequentially with shuffle=False
-                        start = len(y_true_fold) - bsz
-                        for j in range(bsz):
-                            abs_idx = int(va_idx[start + j])
-                            subj_id = int(groups[abs_idx])
-                            true_lbl = int(yb[j].item())
-                            pred_lbl = int(preds[j].item())
-                            probs_vec = probs[j].tolist()
-                            p_true = float(probs_vec[true_lbl]) if 0 <= true_lbl < len(probs_vec) else 0.0
-                            logp_true = float(np.log(max(p_true, 1e-12)))
-                            test_pred_rows_outer.append({
-                                "outer_fold": int(fold + 1),
-                                "trial_index": abs_idx,
-                                "subject_id": subj_id,
-                                "true_label_idx": true_lbl,
-                                "true_label_name": str(class_names[true_lbl]) if 0 <= true_lbl < len(class_names) else "",
-                                "pred_label_idx": pred_lbl,
-                                "pred_label_name": str(class_names[pred_lbl]) if 0 <= pred_lbl < len(class_names) else "",
-                                "correct": int(1 if pred_lbl == true_lbl else 0),
-                                "p_trueclass": p_true,
-                                "logp_trueclass": logp_true,
-                                "probs": json.dumps(probs_vec),
-                            })
-            else:
-                raise ValueError(f"Unknown outer_eval_mode={mode}; use 'ensemble' or 'refit'")
-
+                    # Note: OuterEvaluator doesn't return model state for refit
+                    # Checkpoint saving is handled internally in evaluate_refit if needed
+                    pass
+                        else:
+                raise ValueError(f"Unknown outer_eval_mode={mode}")
+            
+            # Extract results
+            y_true_fold = eval_result["y_true"]
+            y_pred_fold = eval_result["y_pred"]
+            test_pred_rows_outer.extend(eval_result["test_pred_rows"])
+            
+            correct = sum(1 for t, p in zip(y_true_fold, y_pred_fold) if t == p)
+            total = len(y_true_fold)
             acc = 100.0 * correct / max(1, total)
             # Per-fold macro F1, per-class F1, plurality correctness, and Cohen's Kappa
             try:
@@ -1283,44 +998,30 @@ class TrainingRunner:
                 flush=True,
             )
 
-            # Plots per outer fold (using model selected by optuna_objective)
+            # Plots per outer fold (using PlotTitleBuilder - Stage 3 refactored)
             if self.run_dir and best_inner_result:
                 plots_dir = self.run_dir / "plots_outer"
                 plots_dir.mkdir(parents=True, exist_ok=True)
                 
-                # Get objective-specific metric value for title
-                if optuna_objective == "inner_mean_min_per_class_f1":
-                    obj_metric_val = inner_mean_min_per_class_f1_this_outer
-                    obj_metric_label = f"inner-mean min-per-class-F1={obj_metric_val:.2f}"
-                elif optuna_objective == "inner_mean_acc":
-                    obj_metric_val = inner_mean_acc_this_outer
-                    obj_metric_label = f"inner-mean acc={obj_metric_val:.2f}"
-                elif optuna_objective == "composite_min_f1_plur_corr":
-                    # Show metrics and composite (threshold or weighted mode)
-                    params = self._get_composite_params()
-                    if params["mode"] == "threshold":
-                        threshold = params["threshold"]
-                        if inner_mean_min_per_class_f1_this_outer < threshold:
-                            composite_val = inner_mean_min_per_class_f1_this_outer * 0.1
-                            obj_metric_label = f"composite={composite_val:.2f} (minF1={inner_mean_min_per_class_f1_this_outer:.2f} < threshold={threshold:.1f}, plurCorr={inner_mean_plur_corr_this_outer:.2f}, gradient)"
-                        else:
-                            composite_val = inner_mean_plur_corr_this_outer
-                            obj_metric_label = f"composite={composite_val:.2f} (threshold met, plurCorr={inner_mean_plur_corr_this_outer:.2f})"
-                    else:  # weighted
-                        min_f1_w = params["weight"]
-                        composite_val = min_f1_w * inner_mean_min_per_class_f1_this_outer + (1.0 - min_f1_w) * inner_mean_plur_corr_this_outer
-                        obj_metric_label = f"composite={composite_val:.2f} (weight={min_f1_w:.2f}, minF1={inner_mean_min_per_class_f1_this_outer:.2f}, plurCorr={inner_mean_plur_corr_this_outer:.2f})"
-                    obj_metric_val = composite_val
-                elif optuna_objective == "inner_mean_plur_corr":
-                    obj_metric_val = inner_mean_plur_corr_this_outer
-                    obj_metric_label = f"inner-mean plur-corr={obj_metric_val:.2f}"
-                else:  # inner_mean_macro_f1
-                    obj_metric_val = inner_mean_macro_f1_this_outer
-                    obj_metric_label = f"inner-mean macro-F1={obj_metric_val:.2f}"
+                # Build plot data using PlotTitleBuilder (refactored)
+                inner_metrics_dict = {
+                    "acc": inner_mean_acc_this_outer,
+                    "macro_f1": inner_mean_macro_f1_this_outer,
+                    "min_per_class_f1": inner_mean_min_per_class_f1_this_outer,
+                    "plur_corr": inner_mean_plur_corr_this_outer,
+                }
+                outer_metrics_dict = {
+                    "acc": acc,
+                    "macro_f1": macro_f1_fold,
+                    "plur_corr": plur_corr_fold,
+                }
                 
-                fold_title = (
-                    f"{trial_dir_name} · Fold {fold+1} (Subjects: {test_subjects}) · "
-                    f"{obj_metric_label} · ensemble acc={acc:.2f}"
+                # Simple fold plots
+                fold_title = plot_title_builder.build_fold_title_simple(
+                    fold=fold,
+                    test_subjects=test_subjects,
+                    inner_metrics=inner_metrics_dict,
+                    outer_acc=acc,
                 )
                 plot_confusion(
                     y_true_fold,
@@ -1341,55 +1042,15 @@ class TrainingRunner:
                 plots_enhanced_dir = self.run_dir / "plots_outer_enhanced"
                 plots_enhanced_dir.mkdir(parents=True, exist_ok=True)
                 
-                # Compute outer metrics matching the objective
-                outer_metric_val = None
-                outer_metric_label = ""
-                
-                if optuna_objective == "inner_mean_min_per_class_f1":
-                    if per_class_f1 is not None and len(per_class_f1) > 0:
-                        outer_min_per_class_f1 = float(np.min(per_class_f1)) * 100
-                        outer_metric_val = outer_min_per_class_f1
-                        outer_metric_label = f"outer min-per-class-F1={outer_metric_val:.2f}"
-                elif optuna_objective == "inner_mean_acc":
-                    outer_metric_val = acc
-                    outer_metric_label = f"outer acc={outer_metric_val:.2f}"
-                elif optuna_objective == "composite_min_f1_plur_corr":
-                    # Show metrics and composite for outer (threshold or weighted mode)
-                    outer_min_f1 = float(np.min(per_class_f1)) * 100 if per_class_f1 is not None and len(per_class_f1) > 0 else 0.0
-                    params = self._get_composite_params()
-                    if params["mode"] == "threshold":
-                        threshold = params["threshold"]
-                        if outer_min_f1 < threshold:
-                            outer_composite = outer_min_f1 * 0.1
-                            outer_metric_label = f"outer composite={outer_composite:.2f} (minF1={outer_min_f1:.2f} < threshold, plurCorr={plur_corr_fold:.2f}, gradient)"
-                        else:
-                            outer_composite = plur_corr_fold
-                            outer_metric_label = f"outer composite={outer_composite:.2f} (minF1={outer_min_f1:.2f} met, plurCorr={plur_corr_fold:.2f})"
-                    else:  # weighted
-                        min_f1_w = params["weight"]
-                        outer_composite = min_f1_w * outer_min_f1 + (1.0 - min_f1_w) * plur_corr_fold
-                        outer_metric_label = f"outer composite={outer_composite:.2f} (weight={min_f1_w:.2f}, minF1={outer_min_f1:.2f}, plurCorr={plur_corr_fold:.2f})"
-                    outer_metric_val = outer_composite
-                elif optuna_objective == "inner_mean_plur_corr":
-                    outer_metric_val = plur_corr_fold
-                    outer_metric_label = f"outer plur-corr={outer_metric_val:.2f}"
-                else:  # inner_mean_macro_f1
-                    outer_metric_val = macro_f1_fold
-                    outer_metric_label = f"outer macro-F1={outer_metric_val:.2f}"
-                
-                # Enhanced title with both inner and outer metrics
-                fold_title_enhanced = (
-                    f"{trial_dir_name} · Fold {fold+1} (Subjects: {test_subjects})\n"
-                    f"inner {obj_metric_label} · {outer_metric_label} · ensemble acc={acc:.2f}"
+                fold_title_enhanced = plot_title_builder.build_fold_title_enhanced(
+                    fold=fold,
+                    test_subjects=test_subjects,
+                    inner_metrics=inner_metrics_dict,
+                    outer_metrics=outer_metrics_dict,
+                    per_class_f1=per_class_f1,
                 )
                 
-                # Build per-class F1 info for side text
-                per_class_info_lines = []
-                if per_class_f1 is not None and len(per_class_f1) > 0:
-                    per_class_info_lines.append("Per-class F1 (outer):")
-                    for i, f1_val in enumerate(per_class_f1):
-                        class_label = str(class_names[i]) if i < len(class_names) else f"Class {i}"
-                        per_class_info_lines.append(f"  {class_label}: {f1_val*100:.2f}%")
+                per_class_info_lines = plot_title_builder.build_per_class_info(per_class_f1, class_names)
                 
                 plot_confusion(
                     y_true_fold,
@@ -1440,47 +1101,23 @@ class TrainingRunner:
             macro_f1 = weighted_f1 = cohen_kappa = 0.0
             class_report_str = "Error generating classification report."
 
-        # Overall plot (confusion across all outer test predictions)
+        # Overall plot (confusion across all outer test predictions) - using PlotTitleBuilder (Stage 3 refactored)
         if self.run_dir and overall_y_true:
             plots_dir = self.run_dir / "plots_outer"
             plots_dir.mkdir(parents=True, exist_ok=True)
             
-            # Get objective-specific metric value for title
-            # (optuna_objective already validated earlier, no fallback)
-            optuna_objective = self.cfg["optuna_objective"]
-            if optuna_objective == "inner_mean_min_per_class_f1":
-                obj_metric_val = float(np.mean(inner_min_per_class_f1s)) if inner_min_per_class_f1s else 0.0
-                obj_metric_label = f"inner-mean min-per-class-F1={obj_metric_val:.2f}"
-            elif optuna_objective == "inner_mean_acc":
-                obj_metric_val = float(np.mean(inner_accs)) if inner_accs else 0.0
-                obj_metric_label = f"inner-mean acc={obj_metric_val:.2f}"
-            elif optuna_objective == "composite_min_f1_plur_corr":
-                inner_mean_min_f1_overall = float(np.mean(inner_min_per_class_f1s)) if inner_min_per_class_f1s else 0.0
-                inner_mean_plur_corr_overall = float(np.mean(inner_plur_corrs)) if inner_plur_corrs else 0.0
-                params = self._get_composite_params()
-                if params["mode"] == "threshold":
-                    threshold = params["threshold"]
-                    if inner_mean_min_f1_overall < threshold:
-                        composite_overall = inner_mean_min_f1_overall * 0.1
-                        obj_metric_label = f"composite={composite_overall:.2f} (minF1={inner_mean_min_f1_overall:.2f} < threshold={threshold:.1f}, plurCorr={inner_mean_plur_corr_overall:.2f}, gradient)"
-                    else:
-                        composite_overall = inner_mean_plur_corr_overall
-                        obj_metric_label = f"composite={composite_overall:.2f} (minF1={inner_mean_min_f1_overall:.2f} met, plurCorr={inner_mean_plur_corr_overall:.2f})"
-                else:  # weighted
-                    min_f1_w = params["weight"]
-                    composite_overall = min_f1_w * inner_mean_min_f1_overall + (1.0 - min_f1_w) * inner_mean_plur_corr_overall
-                    obj_metric_label = f"composite={composite_overall:.2f} (weight={min_f1_w:.2f}, minF1={inner_mean_min_f1_overall:.2f}, plurCorr={inner_mean_plur_corr_overall:.2f})"
-                obj_metric_val = composite_overall
-            elif optuna_objective == "inner_mean_plur_corr":
-                obj_metric_val = float(np.mean(inner_plur_corrs)) if inner_plur_corrs else 0.0
-                obj_metric_label = f"inner-mean plur-corr={obj_metric_val:.2f}"
-            else:  # inner_mean_macro_f1
-                obj_metric_val = float(np.mean(inner_macro_f1s)) if inner_macro_f1s else 0.0
-                obj_metric_label = f"inner-mean macro-F1={obj_metric_val:.2f}"
+            # Build overall plot data using PlotTitleBuilder (refactored)
+            overall_inner_metrics = {
+                "acc": float(np.mean(inner_accs)) if inner_accs else 0.0,
+                "macro_f1": float(np.mean(inner_macro_f1s)) if inner_macro_f1s else 0.0,
+                "min_per_class_f1": float(np.mean(inner_min_per_class_f1s)) if inner_min_per_class_f1s else 0.0,
+                "plur_corr": float(np.mean(inner_plur_corrs)) if inner_plur_corrs else 0.0,
+            }
             
-            overall_title = (
-                f"{trial_dir_name} · Overall · {obj_metric_label} "
-                f"· ensemble mean_acc={mean_acc:.2f}"
+            # Simple overall plot
+            overall_title = plot_title_builder.build_overall_title_simple(
+                inner_metrics=overall_inner_metrics,
+                outer_mean_acc=mean_acc,
             )
             plot_confusion(
                 overall_y_true,
@@ -1500,45 +1137,19 @@ class TrainingRunner:
             except Exception:
                 overall_per_class_f1 = None
             
-            overall_outer_metric_label = ""
-            if optuna_objective == "inner_mean_min_per_class_f1":
-                if overall_per_class_f1 is not None and len(overall_per_class_f1) > 0:
-                    overall_outer_min_per_class_f1 = float(np.min(overall_per_class_f1)) * 100
-                    overall_outer_metric_label = f"outer min-per-class-F1={overall_outer_min_per_class_f1:.2f}"
-            elif optuna_objective == "inner_mean_acc":
-                overall_outer_metric_label = f"outer acc={mean_acc:.2f}"
-            elif optuna_objective == "composite_min_f1_plur_corr":
-                overall_outer_min_f1 = float(np.min(overall_per_class_f1)) * 100 if overall_per_class_f1 is not None and len(overall_per_class_f1) > 0 else 0.0
-                params = self._get_composite_params()
-                if params["mode"] == "threshold":
-                    threshold = params["threshold"]
-                    if overall_outer_min_f1 < threshold:
-                        overall_outer_composite = overall_outer_min_f1 * 0.1
-                        overall_outer_metric_label = f"outer composite={overall_outer_composite:.2f} (minF1={overall_outer_min_f1:.2f} < threshold, plurCorr={mean_plur_corr:.2f}, gradient)"
-                    else:
-                        overall_outer_composite = mean_plur_corr
-                        overall_outer_metric_label = f"outer composite={overall_outer_composite:.2f} (minF1={overall_outer_min_f1:.2f} met, plurCorr={mean_plur_corr:.2f})"
-                else:  # weighted
-                    min_f1_w = params["weight"]
-                    overall_outer_composite = min_f1_w * overall_outer_min_f1 + (1.0 - min_f1_w) * mean_plur_corr
-                    overall_outer_metric_label = f"outer composite={overall_outer_composite:.2f} (weight={min_f1_w:.2f}, minF1={overall_outer_min_f1:.2f}, plurCorr={mean_plur_corr:.2f})"
-            elif optuna_objective == "inner_mean_plur_corr":
-                overall_outer_metric_label = f"outer plur-corr={mean_plur_corr:.2f}"
-            else:  # inner_mean_macro_f1
-                overall_outer_metric_label = f"outer macro-F1={macro_f1:.2f}"
+            overall_outer_metrics = {
+                "acc": mean_acc,
+                "macro_f1": macro_f1,
+                "plur_corr": mean_plur_corr,
+            }
             
-            overall_title_enhanced = (
-                f"{trial_dir_name} · Overall\n"
-                f"inner {obj_metric_label} · {overall_outer_metric_label} · ensemble mean_acc={mean_acc:.2f}"
+            overall_title_enhanced = plot_title_builder.build_overall_title_enhanced(
+                inner_metrics=overall_inner_metrics,
+                outer_metrics=overall_outer_metrics,
+                outer_mean_acc=mean_acc,
             )
             
-            # Build per-class F1 info for overall plot side text
-            overall_per_class_info_lines = []
-            if overall_per_class_f1 is not None and len(overall_per_class_f1) > 0:
-                overall_per_class_info_lines.append("Per-class F1 (outer):")
-                for i, f1_val in enumerate(overall_per_class_f1):
-                    class_label = str(class_names[i]) if i < len(class_names) else f"Class {i}"
-                    overall_per_class_info_lines.append(f"  {class_label}: {f1_val*100:.2f}%")
+            overall_per_class_info_lines = plot_title_builder.build_per_class_info(overall_per_class_f1, class_names)
             
             plot_confusion(
                 overall_y_true,
@@ -1600,67 +1211,18 @@ class TrainingRunner:
                 except Exception:
                     pass
 
+            # Write learning curves using extracted writer (refactored)
             try:
-                csv_fp = self.run_dir / "learning_curves_inner.csv"
-                if write_curves and learning_curve_rows:
-                    fieldnames = [
-                        "outer_fold",
-                        "inner_fold",
-                        "epoch",
-                        "train_loss",
-                        "val_loss",
-                        "val_acc",
-                        "val_macro_f1",
-                        "val_min_per_class_f1",
-                        "val_plur_corr",
-                        "val_objective_metric",
-                        "n_train",
-                        "n_val",
-                        "optuna_trial_id",
-                        "param_hash",
-                    ]
-                    with csv_fp.open("w", newline="") as f:
-                        writer = csv.DictWriter(f, fieldnames=fieldnames)
-                        writer.writeheader()
-                        for row in learning_curve_rows:
-                            writer.writerow(row)
-                else:
-                    # Avoid creating an empty CSV with only header
-                    if csv_fp.exists() and not learning_curve_rows:
-                        try:
-                            csv_fp.unlink()
-                        except Exception:
-                            pass
+                if write_curves:
+                    writer = LearningCurvesWriter(self.run_dir)
+                    writer.write(learning_curve_rows)
             except Exception:
                 pass
 
-            # Write per-outer-fold evaluation metrics once per run
+            # Write per-outer-fold evaluation metrics using extracted writer (refactored)
             try:
                 if write_outer:
-                    csv_fp2 = self.run_dir / "outer_eval_metrics.csv"
-                    fieldnames2 = [
-                        "outer_fold",
-                        "test_subjects",
-                        "n_test_trials",
-                        "acc",
-                        "acc_std",
-                        "macro_f1",
-                        "macro_f1_std",
-                        "min_per_class_f1",
-                        "min_per_class_f1_std",
-                        "plur_corr",
-                        "plur_corr_std",
-                        "cohen_kappa",
-                        "cohen_kappa_std",
-                        "per_class_f1",
-                    ]
-                    with csv_fp2.open("w", newline="") as f:
-                        writer2 = csv.DictWriter(f, fieldnames=fieldnames2)
-                        writer2.writeheader()
-                        for row in outer_metrics_rows:
-                            writer2.writerow(row)
-                        # Final aggregate row
-                        try:
+                    # Build aggregate row
                             agg_row = {
                                 "outer_fold": "OVERALL",
                                 "test_subjects": "-",
@@ -1677,60 +1239,23 @@ class TrainingRunner:
                                 "cohen_kappa_std": float(std_kappa),
                                 "per_class_f1": "",
                             }
-                            writer2.writerow(agg_row)
-                        except Exception:
-                            pass
+                    writer = OuterEvalMetricsWriter(self.run_dir)
+                    writer.write(outer_metrics_rows, agg_row)
             except Exception:
                 pass
 
-            # Write per-trial out-of-fold test predictions (outer) once per run
+            # Write test predictions using extracted writers (refactored)
             try:
                 if write_preds and test_pred_rows_outer:
-                    csv_fp3 = self.run_dir / "test_predictions_outer.csv"
-                    fieldnames3 = [
-                        "outer_fold",
-                        "trial_index",
-                        "subject_id",
-                        "true_label_idx",
-                        "true_label_name",
-                        "pred_label_idx",
-                        "pred_label_name",
-                        "correct",
-                        "p_trueclass",
-                        "logp_trueclass",
-                        "probs",
-                    ]
-                    with csv_fp3.open("w", newline="") as f:
-                        writer3 = csv.DictWriter(f, fieldnames=fieldnames3)
-                        writer3.writeheader()
-                        for row in test_pred_rows_outer:
-                            writer3.writerow(row)
+                    writer = TestPredictionsWriter(self.run_dir, mode="outer")
+                    writer.write(test_pred_rows_outer)
             except Exception:
                 pass
 
-            # Write per-trial inner validation predictions once per run
             try:
                 if write_preds and test_pred_rows_inner:
-                    csv_fp4 = self.run_dir / "test_predictions_inner.csv"
-                    fieldnames4 = [
-                        "outer_fold",
-                        "inner_fold",
-                        "trial_index",
-                        "subject_id",
-                        "true_label_idx",
-                        "true_label_name",
-                        "pred_label_idx",
-                        "pred_label_name",
-                        "correct",
-                        "p_trueclass",
-                        "logp_trueclass",
-                        "probs",
-                    ]
-                    with csv_fp4.open("w", newline="") as f:
-                        writer4 = csv.DictWriter(f, fieldnames=fieldnames4)
-                        writer4.writeheader()
-                        for row in test_pred_rows_inner:
-                            writer4.writerow(row)
+                    writer = TestPredictionsWriter(self.run_dir, mode="inner")
+                    writer.write(test_pred_rows_inner)
             except Exception:
                 pass
 
