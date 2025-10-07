@@ -172,6 +172,7 @@ class OuterFoldOrchestrator:
         groups: np.ndarray,
         class_names: List[str],
         model_builder: Callable,
+        aug_builder,
         aug_transform,
         input_adapter: Callable | None,
         predefined_inner_splits: List[dict] | None,
@@ -265,6 +266,7 @@ class OuterFoldOrchestrator:
             groups=groups,
             class_names=class_names,
             model_builder=model_builder,
+            aug_builder=aug_builder,
             aug_transform=aug_transform,
             input_adapter=input_adapter,
             optuna_trial=optuna_trial,
@@ -279,11 +281,17 @@ class OuterFoldOrchestrator:
         # Select best inner model
         best_inner_result = self._select_best_inner_model(inner_results)
         
-        # Evaluate on outer test set
+        # Evaluate on outer test set (ensure inner_results are ordered by inner_fold)
+        # This protects ensemble averaging order against any iterator differences
+        ordered_inner_results = sorted(
+            inner_results,
+            key=lambda r: int(r.get("fold_info", {}).get("inner_fold", 0))
+            if isinstance(r.get("fold_info"), dict) else 0
+        )
         eval_result = self._evaluate_outer_test(
             model_builder=model_builder,
             num_cls=num_cls,
-            inner_results=inner_results,
+            inner_results=ordered_inner_results,
             dataset=dataset,
             y_all=y_all,
             groups=groups,
@@ -379,6 +387,7 @@ class OuterFoldOrchestrator:
         groups: np.ndarray,
         class_names: List[str],
         model_builder: Callable,
+        aug_builder,
         aug_transform,
         input_adapter: Callable | None,
         optuna_trial,
@@ -441,7 +450,7 @@ class OuterFoldOrchestrator:
                 loss_fn=loss_fn,
                 tr_loader=tr_ld,
                 va_loader=va_ld,
-                aug_builder=None,  # aug_transform already applied to dataset
+                aug_builder=aug_builder,  # preserve dynamic augmentation warmup behavior
                 input_adapter=input_adapter,
                 checkpoint_manager=checkpoint_mgr,
                 fold_info={"outer_fold": fold + 1, "inner_fold": inner_fold + 1},
@@ -515,19 +524,21 @@ class OuterFoldOrchestrator:
         """
         dataset_tr = copy.copy(dataset)
         dataset_eval = copy.copy(dataset)
-        dataset_tr.set_transform(aug_transform)
+        # Training transform will be set dynamically by InnerTrainer via aug_builder
+        dataset_tr.set_transform(None)
+        # Evaluation/validation/test must not apply augmentation
         dataset_eval.set_transform(None)
-        
+
         num_workers = 0  # safest on Windows
         g = torch.Generator()
         if self.cfg.get("seed") is not None:
             g.manual_seed(int(self.cfg["seed"]))
-        
+
         batch_size = int(self.cfg.get("batch_size", 16))
-        
+
         # Import _seed_worker if needed
         from ..training_runner import _seed_worker
-        
+
         tr_ld = DataLoader(
             Subset(dataset_tr, inner_tr_abs),
             batch_size=batch_size,
@@ -548,7 +559,7 @@ class OuterFoldOrchestrator:
             shuffle=False,
             num_workers=num_workers,
         )
-        
+
         return tr_ld, va_ld, te_ld
     
     def _setup_training_components(
@@ -634,10 +645,13 @@ class OuterFoldOrchestrator:
         """Collect inner validation predictions using best model state."""
         model.load_state_dict(best_state)
         model.eval()
-        
+
         test_pred_rows = []
+        # Iterate through the provided absolute validation indices in the same
+        # order the legacy runner emitted them when DataLoader provided the
+        # Subset sequentially.
+        va_indices_iter = iter(inner_va_abs.tolist())
         with torch.no_grad():
-            batch_start_idx = 0
             for xb, yb in va_ld:
                 yb_gpu = yb.to(DEVICE)
                 xb_gpu = (
@@ -650,17 +664,16 @@ class OuterFoldOrchestrator:
                 probs = F.softmax(out.float(), dim=1).cpu()
                 preds = probs.argmax(1)
                 bsz = yb.size(0)
-                
+
                 for j in range(bsz):
-                    idx_in_va = batch_start_idx + j
-                    abs_idx = int(inner_va_abs[idx_in_va]) if idx_in_va < len(inner_va_abs) else -1
+                    abs_idx = int(next(va_indices_iter, -1))
                     subj_id = int(groups[abs_idx]) if abs_idx >= 0 else -1
                     true_lbl = int(yb[j].item())
                     pred_lbl = int(preds[j].item())
                     probs_vec = probs[j].tolist()
                     p_true = float(probs_vec[true_lbl]) if 0 <= true_lbl < len(probs_vec) else 0.0
                     logp_true = float(np.log(max(p_true, 1e-12)))
-                    
+
                     test_pred_rows.append({
                         "outer_fold": int(fold + 1),
                         "inner_fold": int(inner_fold + 1),
@@ -675,9 +688,7 @@ class OuterFoldOrchestrator:
                         "logp_trueclass": logp_true,
                         "probs": json.dumps(probs_vec),
                     })
-                
-                batch_start_idx += bsz
-        
+
         return test_pred_rows
     
     def _aggregate_inner_metrics_all(self, inner_results: List[Dict]) -> Dict:
@@ -766,7 +777,7 @@ class OuterFoldOrchestrator:
         """Evaluate on outer test set (ensemble or refit)."""
         mode = self.outer_evaluator.mode
         
-        # Create test loader for ensemble mode
+        # Create test loader for ensemble mode (no augmentation, deterministic order)
         dataset_eval = copy.copy(dataset)
         dataset_eval.set_transform(None)
         te_ld = DataLoader(
@@ -786,6 +797,7 @@ class OuterFoldOrchestrator:
                 te_idx=te_idx,
                 class_names=class_names,
                 fold=fold,
+                input_adapter=input_adapter,
             )
         elif mode == "refit":
             return self.outer_evaluator.evaluate_refit(

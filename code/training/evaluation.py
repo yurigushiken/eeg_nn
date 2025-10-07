@@ -95,6 +95,7 @@ class OuterEvaluator:
         te_idx: np.ndarray,
         class_names: List[str],
         fold: int,
+        input_adapter: Callable | None = None,
     ) -> Dict:
         """
         Evaluate on outer test set using ensemble of inner models.
@@ -117,8 +118,15 @@ class OuterEvaluator:
         """
         if self.mode == "ensemble":
             return self._evaluate_ensemble(
-                model_builder, num_classes, inner_results, test_loader,
-                groups, te_idx, class_names, fold
+                model_builder,
+                num_classes,
+                inner_results,
+                test_loader,
+                groups,
+                te_idx,
+                class_names,
+                fold,
+                input_adapter,
             )
         else:
             raise ValueError("Use evaluate_ensemble() directly for ensemble mode, or evaluate_refit() for refit mode")
@@ -133,6 +141,7 @@ class OuterEvaluator:
         te_idx: np.ndarray,
         class_names: List[str],
         fold: int,
+        input_adapter: Callable | None,
     ) -> Dict:
         """Evaluate using ensemble of K inner models."""
         y_true_fold: List[int] = []
@@ -144,6 +153,7 @@ class OuterEvaluator:
             for xb, yb in test_loader:
                 yb_gpu = yb.to(self.device)
                 xb_gpu = xb.to(self.device) if not isinstance(xb, (list, tuple)) else [t.to(self.device) for t in xb]
+                xb_gpu = input_adapter(xb_gpu) if input_adapter else xb_gpu
                 
                 # Ensemble: average softmax predictions from all inner models
                 accum_probs = None
