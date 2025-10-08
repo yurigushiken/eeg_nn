@@ -18,12 +18,20 @@ Creates a new "<run_dir>/subject_performance" folder with:
 - (NEW when inner is available)
     - per_inner_fold_metrics.csv
     - acc_by_inner_fold_bar.png
+- thresholded/ (if thresholded predictions CSV is available from decision layer):
+    - per_subject_metrics_thresholded.csv
+    - per_fold_metrics_thresholded.csv
+    - per_subject_deltas.csv
+    - confusion_comparison.png (side-by-side baseline vs thresholded)
+    - per_class_f1_comparison.csv
+    - SUMMARY.txt
 
 The script auto-detects these filenames in the run dir:
   Outer (preferred -> fallback): test_predictions_outer.csv -> test_predictions.csv
   Inner (preferred -> fallbacks): test_predictions_inner.csv -> inner_predictions.csv -> val_predictions.csv -> cv_predictions.csv
+  Thresholded: test_predictions_outer_thresholded.csv
 
-You can also pass explicit paths with --outer-csv / --inner-csv.
+You can also pass explicit paths with --outer-csv / --inner-csv / --thresholded-csv.
 """
 
 import argparse
@@ -342,7 +350,8 @@ def _write_report(out_dir: Path, have_inner: bool):
 
 def analyze_run(run_dir: Path,
                 outer_csv: Optional[Path] = None,
-                inner_csv: Optional[Path] = None) -> Path:
+                inner_csv: Optional[Path] = None,
+                thresholded_csv: Optional[Path] = None) -> Path:
     out_dir = run_dir / "subject_performance"
     _ensure_dir(out_dir)
 
@@ -362,8 +371,14 @@ def analyze_run(run_dir: Path,
             "val_predictions.csv",
             "cv_predictions.csv",
         ])
+    
+    # Auto-discover thresholded predictions (decision layer output)
+    if thresholded_csv is None:
+        thresholded_csv = _auto_find_csv(run_dir, [
+            "test_predictions_outer_thresholded.csv",
+        ])
 
-    # Load outer
+    # Load outer (baseline)
     df_outer, subject_col, true_col, pred_col, outer_col, _ = _load_predictions(outer_csv)
 
     # Per-subject metrics (outer)
@@ -441,6 +456,120 @@ def analyze_run(run_dir: Path,
 
     # HTML report
     _write_report(out_dir, have_inner=have_inner)
+    
+    # Decision layer comparison (if thresholded predictions exist)
+    if thresholded_csv and thresholded_csv.exists():
+        try:
+            print(f"[decision_layer] Detected thresholded predictions: {thresholded_csv.name}")
+            print(f"[decision_layer] Generating side-by-side comparison (baseline vs thresholded)...")
+            
+            # Create thresholded subfolder
+            thresh_dir = out_dir / "thresholded"
+            _ensure_dir(thresh_dir)
+            
+            # Load thresholded predictions
+            df_thresh, _, _, pred_col_t, _, _ = _load_predictions(thresholded_csv)
+            
+            # Compute thresholded per-subject metrics
+            per_subj_thresh = _per_subject_metrics(df_thresh, subject_col, true_col, pred_col_t)
+            per_subj_thresh.to_csv(thresh_dir / "per_subject_metrics_thresholded.csv", index=False)
+            
+            # Compute thresholded per-fold metrics
+            per_fold_thresh = _per_fold_metrics(df_thresh, outer_col, true_col, pred_col_t)
+            per_fold_thresh.to_csv(thresh_dir / "per_fold_metrics_thresholded.csv", index=False)
+            
+            # Compute delta metrics (thresholded - baseline)
+            delta_subj = per_subj_thresh.copy()
+            delta_subj = delta_subj.merge(per_subj[["subject_id", "acc_pct"]], on="subject_id", suffixes=("_thresh", "_base"))
+            delta_subj["acc_delta"] = delta_subj["acc_pct_thresh"] - delta_subj["acc_pct_base"]
+            delta_subj[["subject_id", "acc_pct_base", "acc_pct_thresh", "acc_delta"]].to_csv(
+                thresh_dir / "per_subject_deltas.csv", index=False
+            )
+            
+            # Overall confusion matrices (side-by-side)
+            y_true_all = df_outer[true_col].values
+            y_pred_base = df_outer[pred_col].values
+            y_pred_thresh = df_thresh[pred_col_t].values
+            
+            labels_set = sorted(set(y_true_all) | set(y_pred_base) | set(y_pred_thresh))
+            cm_base = confusion_matrix(y_true_all, y_pred_base, labels=labels_set)
+            cm_thresh = confusion_matrix(y_true_all, y_pred_thresh, labels=labels_set)
+            
+            # Plot side-by-side confusion matrices
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+            
+            # Baseline CM
+            ax1 = axes[0]
+            im1 = ax1.imshow(cm_base, cmap="Blues", interpolation="nearest")
+            ax1.set_title("Baseline Confusion Matrix", fontsize=12)
+            ax1.set_xlabel("Predicted")
+            ax1.set_ylabel("True")
+            ax1.set_xticks(range(len(labels_set)))
+            ax1.set_yticks(range(len(labels_set)))
+            ax1.set_xticklabels(labels_set)
+            ax1.set_yticklabels(labels_set)
+            for i in range(len(labels_set)):
+                for j in range(len(labels_set)):
+                    ax1.text(j, i, str(cm_base[i, j]), ha="center", va="center", color="black", fontsize=9)
+            fig.colorbar(im1, ax=ax1)
+            
+            # Thresholded CM
+            ax2 = axes[1]
+            im2 = ax2.imshow(cm_thresh, cmap="Greens", interpolation="nearest")
+            ax2.set_title("Thresholded (Decision Layer) Confusion Matrix", fontsize=12)
+            ax2.set_xlabel("Predicted")
+            ax2.set_ylabel("True")
+            ax2.set_xticks(range(len(labels_set)))
+            ax2.set_yticks(range(len(labels_set)))
+            ax2.set_xticklabels(labels_set)
+            ax2.set_yticklabels(labels_set)
+            for i in range(len(labels_set)):
+                for j in range(len(labels_set)):
+                    ax2.text(j, i, str(cm_thresh[i, j]), ha="center", va="center", color="black", fontsize=9)
+            fig.colorbar(im2, ax=ax2)
+            
+            plt.tight_layout()
+            plt.savefig(thresh_dir / "confusion_comparison.png", dpi=150)
+            plt.close()
+            
+            # Compute per-class F1 deltas
+            from sklearn.metrics import f1_score
+            f1_base_per_class = f1_score(y_true_all, y_pred_base, labels=labels_set, average=None, zero_division=0)
+            f1_thresh_per_class = f1_score(y_true_all, y_pred_thresh, labels=labels_set, average=None, zero_division=0)
+            f1_delta = f1_thresh_per_class - f1_base_per_class
+            
+            f1_df = pd.DataFrame({
+                "class": labels_set,
+                "f1_baseline": f1_base_per_class,
+                "f1_thresholded": f1_thresh_per_class,
+                "f1_delta": f1_delta,
+            })
+            f1_df.to_csv(thresh_dir / "per_class_f1_comparison.csv", index=False)
+            
+            # Summary stats
+            acc_base = _acc(y_true_all, y_pred_base)
+            acc_thresh = _acc(y_true_all, y_pred_thresh)
+            acc_delta = acc_thresh - acc_base
+            
+            summary_lines = [
+                "# Decision Layer Comparison Summary\n",
+                f"Baseline Accuracy: {acc_base:.2f}%\n",
+                f"Thresholded Accuracy: {acc_thresh:.2f}%\n",
+                f"Accuracy Delta: {acc_delta:+.2f}%\n",
+                f"\nPer-Class F1 Deltas:\n",
+            ]
+            for _, row in f1_df.iterrows():
+                summary_lines.append(f"  Class {row['class']}: {row['f1_delta']:+.4f}\n")
+            
+            (thresh_dir / "SUMMARY.txt").write_text("".join(summary_lines), encoding="utf-8")
+            
+            print(f"[decision_layer] Comparison complete. Accuracy delta: {acc_delta:+.2f}%")
+            print(f"[decision_layer] Results saved to: {thresh_dir}")
+            
+        except Exception as e:
+            print(f"[warning] Failed to generate thresholded comparison: {e}")
+            import traceback
+            traceback.print_exc()
 
     print(f"[ok] Wrote subject/fold performance report to: {out_dir}")
     return out_dir
@@ -451,13 +580,15 @@ def main():
     ap.add_argument("run_dir", type=str, help="Path to a single run directory (the one that contains test_predictions_* CSVs).")
     ap.add_argument("--outer-csv", type=str, default=None, help="Optional explicit path to the OUTER predictions CSV.")
     ap.add_argument("--inner-csv", type=str, default=None, help="Optional explicit path to the INNER predictions CSV.")
+    ap.add_argument("--thresholded-csv", type=str, default=None, help="Optional explicit path to the THRESHOLDED predictions CSV (decision layer).")
     args = ap.parse_args()
 
     run_dir = Path(args.run_dir)
     outer_csv = Path(args.outer_csv) if args.outer_csv else None
     inner_csv = Path(args.inner_csv) if args.inner_csv else None
+    thresholded_csv = Path(args.thresholded_csv) if args.thresholded_csv else None
 
-    analyze_run(run_dir, outer_csv, inner_csv)
+    analyze_run(run_dir, outer_csv, inner_csv, thresholded_csv)
 
 
 if __name__ == "__main__":

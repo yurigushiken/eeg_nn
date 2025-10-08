@@ -243,6 +243,7 @@ class PlotTitleBuilder:
         inner_metrics: Dict[str, float],
         outer_metrics: Dict[str, float],
         outer_mean_acc: float,
+        per_class_f1: List[float] | None = None,
     ) -> str:
         """
         Build enhanced overall title with inner/outer comparison.
@@ -256,7 +257,7 @@ class PlotTitleBuilder:
             Multi-line title string
         """
         obj_label = self.build_objective_label(inner_metrics)
-        outer_label = self.build_outer_metric_label(outer_metrics)
+        outer_label = self.build_outer_metric_label(outer_metrics, per_class_f1)
         return (
             f"{self.trial_dir_name} · Overall\n"
             f"inner {obj_label} · {outer_label} · ensemble mean_acc={outer_mean_acc:.2f}"

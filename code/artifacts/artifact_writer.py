@@ -78,6 +78,7 @@ class ArtifactWriterOrchestrator:
         self.run_dir = run_dir
         self.cfg = cfg
         self.log_event = log_event if log_event else lambda *args, **kwargs: None
+        self.decision_layer_stats = None  # Will be populated if decision layer runs
         
         # Parse output toggles from config
         try:
@@ -161,7 +162,11 @@ class ArtifactWriterOrchestrator:
         )
         
         # Write test predictions CSVs
-        self.write_test_predictions(test_pred_rows_outer, test_pred_rows_inner)
+        self.write_test_predictions(
+            test_pred_rows_outer,
+            test_pred_rows_inner,
+            class_names=class_names,
+        )
     
     def write_splits_indices(
         self,
@@ -267,12 +272,23 @@ class ArtifactWriterOrchestrator:
         self,
         test_pred_rows_outer: List[Dict],
         test_pred_rows_inner: List[Dict],
+        class_names: List[str],
     ):
-        """Write test predictions CSVs (inner and outer)."""
+        """
+        Write test predictions CSVs (inner and outer).
+        
+        If decision layer is enabled in config, also tune θ on inner data,
+        apply to outer, and write thresholded predictions + thresholds.json.
+        
+        Args:
+            test_pred_rows_outer: Outer test prediction rows (baseline)
+            test_pred_rows_inner: Inner validation prediction rows
+            class_names: List of class names (defines ordinal order)
+        """
         if not self.write_preds:
             return
         
-        # Write outer predictions
+        # Write baseline outer predictions
         try:
             if test_pred_rows_outer:
                 writer = TestPredictionsWriter(self.run_dir, mode="outer")
@@ -281,7 +297,7 @@ class ArtifactWriterOrchestrator:
         except Exception as e:
             self.log_event("outer_predictions_write_failed", f"Failed to write outer predictions: {e}")
         
-        # Write inner predictions
+        # Write baseline inner predictions
         try:
             if test_pred_rows_inner:
                 writer = TestPredictionsWriter(self.run_dir, mode="inner")
@@ -289,4 +305,48 @@ class ArtifactWriterOrchestrator:
                 self.log_event("inner_predictions_written", f"Wrote {len(test_pred_rows_inner)} inner prediction rows")
         except Exception as e:
             self.log_event("inner_predictions_write_failed", f"Failed to write inner predictions: {e}")
+        
+        # Decision layer integration (optional post-hoc refinement)
+        # Tunes θ per outer fold on inner data, applies frozen to outer test
+        # Constitutional: Section IV (leak-free), Section V (auditable)
+        try:
+            dl_cfg = self.cfg.get("decision_layer", {})
+            if not dl_cfg.get("enable", False):
+                return  # Decision layer disabled
+            
+            if not test_pred_rows_inner or not test_pred_rows_outer:
+                self.log_event("decision_layer_skipped", "No inner/outer predictions available")
+                return
+            
+            self.log_event("decision_layer_start", "Starting decision layer tuning and application")
+            
+            # Import decision layer module
+            from code.posthoc.decision_layer import tune_and_apply_decision_layer
+            
+            # Load ObjectiveComputer to ensure metric alignment
+            from code.training.metrics import ObjectiveComputer
+            objective_computer = ObjectiveComputer(self.cfg)
+            
+            # Tune and apply decision layer (capture enriched stats for summary writer)
+            # Pass only the decision_layer sub-config (not the full config)
+            self.decision_layer_stats = tune_and_apply_decision_layer(
+                inner_rows=test_pred_rows_inner,
+                outer_rows=test_pred_rows_outer,
+                class_names=class_names,
+                cfg=dl_cfg,  # Pass decision_layer sub-config only
+                objective_computer=objective_computer,
+                run_dir=self.run_dir,
+                log_event=self.log_event,
+            )
+            
+            if self.decision_layer_stats:
+                self.log_event("decision_layer_complete", "Decision layer artifacts and enriched stats computed successfully")
+            else:
+                self.log_event("decision_layer_warning", "Decision layer completed but enriched stats unavailable")
+            
+        except Exception as e:
+            # Log error but don't block baseline artifacts
+            self.log_event("decision_layer_failed", f"Decision layer error (baseline artifacts preserved): {e}")
+            import traceback
+            self.log_event("decision_layer_traceback", traceback.format_exc())
 

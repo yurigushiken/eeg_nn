@@ -14,7 +14,7 @@ Classes:
 """
 
 from __future__ import annotations
-from typing import Dict
+from typing import Dict, List
 
 
 class ObjectiveComputer:
@@ -210,3 +210,54 @@ class ObjectiveComputer:
         """
         return self.params
 
+
+def compute_plurality_correctness(y_true: List[int], y_pred: List[int]) -> float:
+    """
+    Compute plurality correctness (row-wise plurality metric).
+    
+    For each true class (row in confusion matrix), checks if the correct 
+    prediction (diagonal element) is the most frequent prediction.
+    
+    Returns proportion of classes where correct prediction is plurality.
+    Score ranges from 0.0 (no correct pluralities) to 1.0 (all correct pluralities).
+    
+    Example:
+        Confusion matrix:
+            Pred:  1   2   3
+        True 1: [100  30  20]  ← max is 100 (correct) ✓
+        True 2: [ 40  60  50]  ← max is 60 (correct) ✓
+        True 3: [ 10  80  30]  ← max is 80 (incorrect) ✗
+        
+        Result: 2/3 = 0.667 (two out of three classes have correct prediction as plurality)
+    """
+    if not y_true or not y_pred:
+        return 0.0
+    
+    try:
+        # Get unique classes
+        classes = sorted(set(y_true) | set(y_pred))
+        n_classes = len(classes)
+        
+        if n_classes == 0:
+            return 0.0
+        
+        # Compute confusion matrix (rows=true, cols=pred)
+        from sklearn.metrics import confusion_matrix
+        import numpy as np
+        cm = confusion_matrix(y_true, y_pred, labels=classes)
+        
+        # For each row (true class), check if diagonal element is the maximum
+        diagonal_is_max_count = 0
+        for i in range(n_classes):
+            row = cm[i, :]
+            if len(row) > 0:
+                max_val = np.max(row)
+                diagonal_val = cm[i, i]
+                # Diagonal is plurality if it equals the max
+                if diagonal_val == max_val:
+                    diagonal_is_max_count += 1
+        
+        return float(diagonal_is_max_count) / float(n_classes)
+    
+    except Exception:
+        return 0.0

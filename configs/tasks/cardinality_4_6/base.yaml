@@ -1,7 +1,7 @@
 model_name: eegnex
-seed: 44
+seed: 45
 optuna_objective: composite_min_f1_plur_corr  # Threshold approach: maximize distinctness while ensuring decodability
-min_f1_threshold: 20.0  # All classes must be > 20% F1 (above 16.7% chance + margin)
+min_f1_threshold: 38.0  # All classes must be > 35% F1 (above 33.3% chance + margin)
 save_ckpt: true
 # Data sources (relative)
 materialized_dir: data_preprocessed/hpf_1.5_lpf_40_baseline-off

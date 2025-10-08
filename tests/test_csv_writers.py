@@ -315,3 +315,58 @@ def test_csv_writers_handle_config_toggles(tmp_path):
     if csv_path.exists():
         assert csv_path.stat().st_size == 0 or csv_path.read_text().strip() == ""
 
+
+def test_test_predictions_writer_outer_thresholded_mode(tmp_path):
+    """Test TestPredictionsWriter in outer_thresholded mode (decision layer output)."""
+    from code.artifacts.csv_writers import TestPredictionsWriter
+    
+    # Create writer in thresholded mode
+    writer = TestPredictionsWriter(tmp_path, mode="outer_thresholded")
+    
+    rows = [
+        {
+            "outer_fold": 1,
+            "trial_index": 0,
+            "subject_id": 2,
+            "true_label_idx": 1,
+            "true_label_name": "2",
+            "pred_label_idx": 1,  # Adjusted by decision layer
+            "pred_label_name": "2",
+            "correct": 1,  # Now correct after adjustment
+            "p_trueclass": 0.48,
+            "logp_trueclass": -0.734,
+            "probs": "[0.42, 0.48, 0.10]",
+        },
+    ]
+    
+    writer.write(rows)
+    
+    # Verify file exists with correct name
+    csv_path = tmp_path / "test_predictions_outer_thresholded.csv"
+    assert csv_path.exists()
+    
+    # Verify fieldnames match outer mode (same schema)
+    with csv_path.open() as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames
+        expected_fields = [
+            "outer_fold",
+            "trial_index",
+            "subject_id",
+            "true_label_idx",
+            "true_label_name",
+            "pred_label_idx",
+            "pred_label_name",
+            "correct",
+            "p_trueclass",
+            "logp_trueclass",
+            "probs",
+        ]
+        assert fieldnames == expected_fields
+        
+        # Verify content
+        read_rows = list(reader)
+        assert len(read_rows) == 1
+        assert read_rows[0]["outer_fold"] == "1"
+        assert read_rows[0]["pred_label_idx"] == "1"
+        assert read_rows[0]["correct"] == "1"

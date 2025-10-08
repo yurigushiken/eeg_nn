@@ -301,6 +301,23 @@ def write_summary(run_dir: Path, summary: dict, task: str, engine: str):
     report_lines.append(f"  Weighted F1-Score: {summary.get('weighted_f1', 0.0):.2f}")
     report_lines.append(f"  Cohen's Kappa: {summary.get('mean_kappa', 0.0):.3f} ± {summary.get('std_kappa', 0.0):.3f}")
     report_lines.append("")
+    
+    # Decision Layer Analysis (if enabled)
+    if summary.get("decision_layer_stats"):
+        try:
+            from code.posthoc.decision_layer import format_decision_layer_txt_section, build_decision_layer_json_fields
+            dl_stats = summary["decision_layer_stats"]
+            
+            # Add TXT section
+            dl_txt_lines = format_decision_layer_txt_section(dl_stats)
+            report_lines.extend(dl_txt_lines)
+            
+            # Merge JSON fields into summary
+            dl_json_fields = build_decision_layer_json_fields(dl_stats)
+            summary.update(dl_json_fields)
+        except Exception as e:
+            report_lines.append(f"  [Decision Layer section unavailable: {e}]")
+            report_lines.append("")
 
     # Fold Breakdown
     report_lines.append("--- Fold Breakdown ---")

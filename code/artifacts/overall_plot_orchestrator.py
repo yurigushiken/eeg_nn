@@ -181,11 +181,12 @@ class OverallPlotOrchestrator:
             "plur_corr": mean_plur_corr,
         }
         
-        # Build enhanced title
+        # Build enhanced title (pass per-class F1 so minF1/composite are computed correctly)
         overall_title_enhanced = self.plot_title_builder.build_overall_title_enhanced(
             inner_metrics=inner_metrics,
             outer_metrics=overall_outer_metrics,
             outer_mean_acc=outer_mean_acc,
+            per_class_f1=overall_per_class_f1.tolist() if overall_per_class_f1 is not None else None,
         )
         
         # Build per-class info lines

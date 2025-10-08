@@ -44,6 +44,16 @@ permutation:
   seed: 123
   block_key: null         # optional: shuffle within (subject, block_key)
 
+# Decision layer (ordinal adjacent-pair refinement, optional post-hoc)
+# Purpose: Reduce systematic adjacent-class confusions (e.g., 2↔3) in ordinal tasks
+# Method: Tunes threshold θ per outer fold on inner validation data, applies frozen to outer test
+decision_layer:
+  enable: false                     # Set true to enable (default: disabled for compatibility)
+  metric: optuna_objective          # Metric to optimize during θ tuning (or specify: macro_f1, min_per_class_f1, etc.)
+  theta_grid: [0.30, 0.70, 0.01]    # [start, stop, step] for θ sweep (default: 0.30→0.70 in 0.01 increments)
+  min_activation_trials: 50         # Minimum adjacent-pair trials required; else fallback θ=0.50
+  save_activation_stats: true       # Persist per-fold activation rates and metric deltas
+
 # Output artifact toggles
 outputs:
   write_outer_eval_csv: true

@@ -4,7 +4,9 @@ optuna_objective: composite_min_f1_plur_corr  # Threshold approach: maximize dis
 min_f1_threshold: 38.0  # All classes must be > 35% F1 (above 33.3% chance + margin)
 save_ckpt: true
 # Data sources (relative)
-materialized_dir: data_preprocessed/hpf_1.5_lpf_40_baseline-off
+# materialized_dir: data_preprocessed/hpf_1.5_lpf_40_baseline-off
+materialized_dir: data_preprocessed/mne-hpf_1.5_lpf_40_baseline-off
+
 crop_ms: [0, 400]               # e.g., [0, 496]
 exclude_channel_list: non_scalp  # Exclude non-scalp channels
 

@@ -133,3 +133,10 @@ aug_warmup_frac:
   method: uniform
   low: 0.10
   high: 0.30
+
+  decision_layer:
+  enable: true                     # Set true to enable (default: disabled for compatibility)
+  metric: min_per_class_f1          # Metric to optimize during θ tuning (or specify: macro_f1, min_per_class_f1, etc.)
+  theta_grid: [0.30, 0.70, 0.01]    # [start, stop, step] for θ sweep (default: 0.30→0.70 in 0.01 increments)
+  min_activation_trials: 50         # Minimum adjacent-pair trials required; else fallback θ=0.50
+  save_activation_stats: true       # Persist per-fold activation rates and metric deltas

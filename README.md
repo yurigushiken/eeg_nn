@@ -31,6 +31,8 @@ This repository implements a streamlined EEG decoding pipeline aligned with the 
 - `outer_eval_metrics.csv`: one row per outer fold with held‑out subjects, n_test, acc, macro‑F1, weighted‑F1, per‑class F1, min‑per‑class‑F1, and Cohen's kappa (+ OVERALL row with means and standard deviations)
 - `test_predictions_outer.csv`: one row per out‑of‑fold test trial (outer) — subject_id, trial_index, true/pred labels, p_trueclass, logp_trueclass, full probs — ready for mixed‑effects models
 - `test_predictions_inner.csv`: one row per inner validation trial — outer_fold, inner_fold, subject_id, trial_index, true/pred labels, p_trueclass, logp_trueclass, full probs — useful for inner vs outer performance comparison
+- `test_predictions_outer_thresholded.csv`: *(if decision layer enabled)* refined outer predictions after applying per-fold θ thresholds
+- `decision_layer/thresholds.json`: *(if decision layer enabled)* per-fold θ values, activation stats, and full provenance
 - `logs/runtime.jsonl`: JSONL event log (fold boundaries, class-weights saved, chance-level computed, split export, posthoc start/end)
 - `pip_freeze.txt` and (if available) `conda_env.yml`: environment freeze for reproducibility
 
@@ -41,11 +43,43 @@ This repository implements a streamlined EEG decoding pipeline aligned with the 
   - `plots_outer_enhanced/` — enhanced plots with inner vs outer metric comparison and per-class F1 scores as side text (used in Optuna Top-3 reports)
   - `ckpt/` — all checkpoints (e.g., `fold_XX_inner_YY_best.ckpt`, `fold_XX_refit_best.ckpt`)
   - `xai_analysis/` — XAI outputs (per‑fold heatmaps, grand average, topoplots, summaries)
+  - `decision_layer/` — *(if enabled)* thresholds.json with per-fold θ values and provenance
+  - `subject_performance/thresholded/` — *(if enabled)* side-by-side comparison plots and metrics (baseline vs thresholded)
 
 ### Transparency and safeguards
 - Hardware/runtime banner: GPU names, CUDA version, CPU, OS are printed and included in reports.
 - Split leakage guards: assertions ensure no subject appears in both train and test for any outer fold; inner folds are subject‑exclusive.
 - Class imbalance disclosure: class weights used for `CrossEntropyLoss` are saved per fold (e.g., `fold_XX_inner_YY_class_weights.json`, and `fold_XX_refit_class_weights.json`).
+
+### Decision layer (ordinal adjacent-pair refinement, optional)
+- **Purpose**: Post-hoc refinement to reduce systematic adjacent-class confusions (e.g., 2↔3) in ordinal classification tasks.
+- **Method**: For each outer fold, tunes a probability ratio threshold θ on inner validation data, then applies it frozen to outer test data.
+- **Constitutional compliance**: Section III (deterministic), Section IV (leak-free), Section V (auditable).
+- **How it works**:
+  1. After training completes, the decision layer examines prediction rows where the top-2 classes are adjacent (e.g., 2 and 3).
+  2. For each outer fold, it sweeps θ values on inner validation data to find the threshold that maximizes the same metric used in Optuna optimization (`optuna_objective`).
+  3. The rule: If P(higher) / P(lower) > θ, predict the higher class; else, predict the lower class.
+  4. The frozen θ is then applied to outer test data for that fold, producing a refined prediction CSV.
+- **Config keys** (in `configs/common.yaml`):
+  ```yaml
+  decision_layer:
+    enable: false                     # Set true to enable (default: disabled)
+    metric: optuna_objective          # Metric to optimize during θ tuning
+    theta_grid: [0.30, 0.70, 0.01]    # [start, stop, step] for θ sweep
+    min_activation_trials: 50         # Minimum adjacent-pair trials required; else fallback θ=0.50
+    save_activation_stats: true       # Persist per-fold activation rates and metric deltas
+  ```
+- **Artifacts** (written to run directory):
+  - `test_predictions_outer_thresholded.csv`: Per-trial predictions after decision layer refinement (same format as `test_predictions_outer.csv`).
+  - `decision_layer/thresholds.json`: Per-fold θ values, activation rates, baseline/thresholded metrics, fallback reasons, and full provenance (config, grid, metric, seed).
+- **Reporting**: `scripts/analyze_nloso_subject_performance.py` auto-detects thresholded predictions and generates side-by-side comparisons in a `thresholded/` subfolder:
+  - `confusion_comparison.png`: Side-by-side confusion matrices (baseline vs thresholded).
+  - `per_subject_deltas.csv`: Per-subject accuracy deltas.
+  - `per_class_f1_comparison.csv`: Per-class F1 scores with deltas.
+  - `SUMMARY.txt`: Overall accuracy and F1 deltas.
+- **Permutation integration**: When both `decision_layer.enable: true` and `permutation.enable: true`, the decision layer is applied to permutation runs as well, ensuring methodological parity between observed and null distributions.
+- **Leak-free guarantee**: θ is tuned only on inner validation data; outer test data is never used for tuning. Each fold's θ is independent.
+- **Class name requirement**: Decision layer requires numeric class names (e.g., "1", "2", "3") to determine ordinal adjacency. If your task has non-numeric class names (e.g., "low", "medium", "high"), you must either (a) disable the decision layer for that task (`enable: false`), or (b) provide a dataset-specific ordinal mapping via task config. The implementation hard-fails on non-numeric names (constitutional Section III: no silent fallbacks).
 
 ### Permutation testing (empirical null, optional)
 - Purpose: build a null distribution by shuffling labels (no-signal hypothesis) with fixed outer/inner splits.

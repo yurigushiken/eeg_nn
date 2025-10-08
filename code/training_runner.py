@@ -50,54 +50,8 @@ except Exception:  # pragma: no cover - fallback to no-op if not available
         pass  # no-op until utils.channel_viz is implemented
 
 
-def compute_plurality_correctness(y_true: List[int], y_pred: List[int]) -> float:
-    """
-    Compute plurality correctness (row-wise plurality metric).
-    
-    For each true class (row in confusion matrix), checks if the correct 
-    prediction (diagonal element) is the most frequent prediction.
-    
-    Returns proportion of classes where correct prediction is plurality.
-    Score ranges from 0.0 (no correct pluralities) to 1.0 (all correct pluralities).
-    
-    Example:
-        Confusion matrix:
-            Pred:  1   2   3
-        True 1: [100  30  20]  ← max is 100 (correct) ✓
-        True 2: [ 40  60  50]  ← max is 60 (correct) ✓
-        True 3: [ 10  80  30]  ← max is 80 (incorrect) ✗
-        
-        Result: 2/3 = 0.667 (two out of three classes have correct prediction as plurality)
-    """
-    if not y_true or not y_pred:
-        return 0.0
-    
-    try:
-        # Get unique classes
-        classes = sorted(set(y_true) | set(y_pred))
-        n_classes = len(classes)
-        
-        if n_classes == 0:
-            return 0.0
-        
-        # Compute confusion matrix (rows=true, cols=pred)
-        cm = confusion_matrix(y_true, y_pred, labels=classes)
-        
-        # For each row (true class), check if diagonal element is the maximum
-        diagonal_is_max_count = 0
-        for i in range(n_classes):
-            row = cm[i, :]
-            if len(row) > 0:
-                max_val = np.max(row)
-                diagonal_val = cm[i, i]
-                # Diagonal is plurality if it equals the max
-                if diagonal_val == max_val:
-                    diagonal_is_max_count += 1
-        
-        return float(diagonal_is_max_count) / float(n_classes)
-    
-    except Exception:
-        return 0.0
+# Import compute_plurality_correctness from metrics module to avoid circular imports
+from code.training.metrics import compute_plurality_correctness
 
 import random
 import re
@@ -629,6 +583,7 @@ class TrainingRunner:
             )
 
         # Write all artifacts using ArtifactWriterOrchestrator (refactored - Stage 7b)
+        decision_layer_stats = None
         if self.run_dir:
             artifact_writer = ArtifactWriterOrchestrator(self.run_dir, self.cfg, _log_event)
             artifact_writer.write_all(
@@ -650,6 +605,8 @@ class TrainingRunner:
                 mean_kappa=mean_kappa,
                 std_kappa=std_kappa,
             )
+            # Capture decision layer stats if available (for summary writer)
+            decision_layer_stats = artifact_writer.decision_layer_stats
 
         # Compute all summary metrics
         summary_inner_mean_acc = float(np.mean(inner_accs)) if inner_accs else 0.0
@@ -675,7 +632,7 @@ class TrainingRunner:
                     plur_corr_weight * summary_inner_mean_plur_corr
                 )
 
-        return {
+        summary_dict = {
             "mean_acc": mean_acc,
             "std_acc": std_acc,
             "cohen_kappa": float(cohen_kappa),
@@ -701,6 +658,12 @@ class TrainingRunner:
             "fold_plur_corrs": fold_plur_corrs,
             "num_classes": int(num_cls),
         }
+        
+        # Add decision layer stats if available (for summary writer)
+        if decision_layer_stats:
+            summary_dict["decision_layer_stats"] = decision_layer_stats
+        
+        return summary_dict
 
 
 def validate_stage_handoff(stage: str, previous_stage_dir: str | None) -> Dict[str, Any]:

@@ -201,16 +201,20 @@ class TestPredictionsWriter:
         
         Args:
             run_dir: Path to run directory where CSV will be saved
-            mode: Either 'inner' or 'outer'
+            mode: Either 'inner', 'outer', or 'outer_thresholded'
         
         Raises:
-            ValueError: If mode is not 'inner' or 'outer'
+            ValueError: If mode is not valid
         """
-        if mode not in ("inner", "outer"):
-            raise ValueError(f"mode must be 'inner' or 'outer', got '{mode}'")
+        if mode not in ("inner", "outer", "outer_thresholded"):
+            raise ValueError(f"mode must be 'inner', 'outer', or 'outer_thresholded', got '{mode}'")
         
         self.mode = mode
-        self.csv_path = run_dir / f"test_predictions_{mode}.csv"
+        # Map mode to filename
+        if mode == "outer_thresholded":
+            self.csv_path = run_dir / "test_predictions_outer_thresholded.csv"
+        else:
+            self.csv_path = run_dir / f"test_predictions_{mode}.csv"
     
     def write(self, rows: List[Dict]):
         """
@@ -250,7 +254,7 @@ class TestPredictionsWriter:
                 "logp_trueclass",
                 "probs",
             ]
-        else:  # outer
+        else:  # outer or outer_thresholded (same fieldnames, no inner_fold)
             fieldnames = [
                 "outer_fold",
                 "trial_index",
