@@ -1,14 +1,15 @@
 model_name: eegnex
 seed: 45
 optuna_objective: composite_min_f1_plur_corr  # Threshold approach: maximize distinctness while ensuring decodability
-min_f1_threshold: 38.0  # All classes must be > 35% F1 (above 33.3% chance + margin)
+min_f1_threshold: 37.0  # All classes must be > 35% F1 (above 33.3% chance + margin)
 save_ckpt: true
 # Data sources (relative)
 # materialized_dir: data_preprocessed/hpf_1.5_lpf_40_baseline-off
-materialized_dir: data_preprocessed/mne-hpf_1.5_lpf_40_baseline-off
 
-crop_ms: [0, 400]               # e.g., [0, 496]
-exclude_channel_list: non_scalp  # Exclude non-scalp channels
+
+crop_ms: [80, 200]               # e.g., [0, 496]
+# exclude_channel_list: non_scalp  # Exclude non-scalp channels
+use_channel_list: parietal_occipital
 
 # Training
 batch_size: 8
@@ -22,3 +23,10 @@ outer_eval_mode: ensemble
 # --- Refit Mode Controls (only used if outer_eval_mode: refit) ---
 refit_val_k: 0            # 0 → train on all outer-train (no early stop); set >=2 for deterministic GroupKFold val
 refit_early_stop: 10      # Patience for refit early stopping (if val is enabled)
+
+decision_layer:
+  enable: true                     # Set true to enable (default: disabled for compatibility)
+  metric: optuna_objective          # Metric to optimize during θ tuning (or specify: macro_f1, min_per_class_f1, etc.)
+  theta_grid: [0.30, 0.70, 0.01]    # [start, stop, step] for θ sweep (default: 0.30→0.70 in 0.01 increments)
+  min_activation_trials: 50         # Minimum adjacent-pair trials required; else fallback θ=0.50
+  save_activation_stats: true       # Persist per-fold activation rates and metric deltas

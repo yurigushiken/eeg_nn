@@ -221,6 +221,30 @@ class MaterializedEpochsDataset(BaseEEGDataset):
             X_np = X_np[mask]
             md_all = md_all.loc[mask].reset_index(drop=True)
 
+        # Optional trial filtering (e.g., keep only accurate trials)
+        # Configure via cfg['trial_filter']: 'all' (default) or 'acc1'
+        trial_filter = str(cfg.get("trial_filter", "all") or "all").lower()
+        if trial_filter not in {"all", "acc1"}:
+            raise ValueError(
+                f"Unsupported trial_filter='{trial_filter}'. Use 'all' or 'acc1'."
+            )
+        if trial_filter == "acc1":
+            # Default accuracy column produced by prepare_from_happe.py is 'Target.ACC'
+            acc_col = str(cfg.get("trial_filter_acc_column", "Target.ACC"))
+            if acc_col not in md_all.columns:
+                raise ValueError(
+                    f"Requested acc1 filtering but column '{acc_col}' not found in metadata. "
+                    f"Available columns: {list(md_all.columns)}"
+                )
+            acc_mask = (md_all[acc_col] == 1).to_numpy()
+            if acc_mask.sum() == 0:
+                raise ValueError(
+                    f"After applying acc1 filter on column '{acc_col}', no trials remain."
+                )
+            if acc_mask.sum() != len(md_all):
+                X_np = X_np[acc_mask]
+                md_all = md_all.loc[acc_mask].reset_index(drop=True)
+
         # Build tensors (using the manually concatenated arrays / metadata)
         X = X_np * 1e6  # V->µV for interpretability and numerical stability
         X_t = torch.from_numpy(X).float().unsqueeze(1)

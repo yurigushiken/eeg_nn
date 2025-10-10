@@ -108,3 +108,28 @@ time_mask_frac:  { method: categorical, choices: [0.0] }
 chan_mask_p:     { method: categorical, choices: [0.0] }
 chan_mask_ratio: { method: categorical, choices: [0.0] }
 aug_warmup_frac: { method: categorical, choices: [0.0] }
+
+
+
+materialized_dir:
+  method: categorical
+  choices:
+    - D:/eeg_nn/data_preprocessed/hpf_1.0_lpf_35_baseline-on
+    - D:/eeg_nn/data_preprocessed/hpf_1.0_lpf_35_baseline-off
+    - D:/eeg_nn/data_preprocessed/hpf_2.0_lpf_40_baseline-off
+    - D:/eeg_nn/data_preprocessed/hpf_2.0_lpf_40_baseline-on
+    - D:/eeg_nn/data_preprocessed/hpf_2.0_lpf_35_baseline-on
+    - D:/eeg_nn/data_preprocessed/hpf_2.0_lpf_35_baseline-off
+    - D:/eeg_nn/data_preprocessed/hpf_1.0_lpf_40_baseline-on
+    - D:/eeg_nn/data_preprocessed/hpf_1.0_lpf_40_baseline-off
+    - D:/eeg_nn/data_preprocessed/hpf_1.0_lpf_45_baseline-on
+    - D:/eeg_nn/data_preprocessed/hpf_1.0_lpf_45_baseline-off
+    - D:/eeg_nn/data_preprocessed/hpf_1.5_lpf_35_baseline-on
+    - D:/eeg_nn/data_preprocessed/hpf_1.5_lpf_35_baseline-off
+    - D:/eeg_nn/data_preprocessed/hpf_1.5_lpf_40_baseline-on
+    - D:/eeg_nn/data_preprocessed/hpf_1.5_lpf_40_baseline-off
+    - D:/eeg_nn/data_preprocessed/hpf_1.5_lpf_45_baseline-on
+    - D:/eeg_nn/data_preprocessed/hpf_1.5_lpf_45_baseline-off
+    - D:/eeg_nn/data_preprocessed/hpf_2.0_lpf_45_baseline-on
+    - D:/eeg_nn/data_preprocessed/hpf_2.0_lpf_45_baseline-off
+    - D:/eeg_nn/data_preprocessed/mne-hpf_1.5_lpf_40_baseline-off

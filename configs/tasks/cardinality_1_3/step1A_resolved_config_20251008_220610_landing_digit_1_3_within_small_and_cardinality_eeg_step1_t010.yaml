@@ -1,0 +1,173 @@
+seeds: [45, 46, 47, 48]
+epochs: 58
+early_stop: 11
+inner_val_frac: 0.2
+save_ckpt: true
+batch_size: 8
+lr: 0.0004992498077493793
+crop_ms:
+- 0
+- 400
+exclude_channel_list: non_scalp
+include_channels: null
+channel_lists:
+  non_scalp:
+  - E1
+  - E8
+  - E14
+  - E17
+  - E21
+  - E25
+  - E32
+  - E38
+  - E43
+  - E44
+  - E48
+  - E49
+  - E56
+  - E63
+  - E68
+  - E73
+  - E81
+  - E88
+  - E94
+  - E99
+  - E107
+  - E113
+  - E114
+  - E119
+  - E120
+  - E121
+  - E125
+  - E126
+  - E127
+  - E128
+  parietal_occipital:
+  - E54
+  - E55
+  - E59
+  - E60
+  - E61
+  - E62
+  - E66
+  - E67
+  - E71
+  - E72
+  - E76
+  - E77
+  - E78
+  - E79
+  - E84
+  - E85
+  - E91
+  posterior_hemisphere:
+  - E47
+  - E50
+  - E51
+  - E52
+  - E53
+  - E54
+  - E55
+  - E58
+  - E59
+  - E60
+  - E61
+  - E62
+  - E65
+  - E66
+  - E67
+  - E70
+  - E71
+  - E72
+  - E75
+  - E76
+  - E77
+  - E78
+  - E79
+  - E83
+  - E84
+  - E85
+  - E86
+  - E90
+  - E91
+  - E92
+  - E96
+  - E97
+  - E98
+  - E101
+cz_step: 0
+dataset_cache_memory: true
+stats:
+  alpha: 0.05
+  chance_rate: null
+  multitest: fdr
+  per_subject_metric: acc
+  ci_method: t
+  bootstrap_iters: 2000
+  glmm: false
+  glmm_random_effects:
+  - subject
+  run_posthoc_after_train: true
+permutation:
+  enable: false
+  n_permutations: 200
+  scope: within_subject
+  stratified: true
+  seed: 123
+  block_key: null
+decision_layer:
+  enable: truee
+  metric: optuna_objective
+  theta_grid:
+  - 0.3
+  - 0.7
+  - 0.01
+  min_activation_trials: 50
+  save_activation_stats: true
+outputs:
+  write_outer_eval_csv: true
+  write_test_predictions_csv: true
+  write_learning_curves_csv: true
+  write_splits_indices_json: true
+model_name: eegnex
+optuna_objective: composite_min_f1_plur_corr
+min_f1_threshold: 37.0
+materialized_dir: D:/eeg_nn/data_preprocessed/hpf_1.0_lpf_40_baseline-off
+inner_n_folds: 5
+n_folds: null
+outer_eval_mode: refit
+refit_val_frac: 0.1
+refit_val_k: 5
+refit_early_stop: 11
+weight_decay: 5.0e-05
+scheduler_patience: 8
+drop_prob: 0.3
+lr_warmup_frac: 0.2
+lr_warmup_init: 0.0
+filter_1: 18
+filter_2: 54
+kernel_block_1_2: 43
+kernel_block_4: 33
+kernel_block_5: 24
+avg_pool_block4: 4
+avg_pool_block5: 7
+dilation_block_4: 4
+dilation_block_5: 3
+depth_multiplier: 2
+activation: elu
+max_norm_conv: 1.7422475885104767
+max_norm_linear: 0.543225190624687
+mixup_alpha: 0.0
+shift_p: 0.0
+shift_max_frac: 0.0
+scale_p: 0.0
+scale_min: 1.0
+scale_max: 1.0
+noise_p: 0.0
+noise_std: 0.0
+time_mask_p: 0.0
+time_mask_frac: 0.0
+chan_mask_p: 0.0
+chan_mask_ratio: 0.0
+aug_warmup_frac: 0.0
+task: landing_digit_1_3_within_small_and_cardinality

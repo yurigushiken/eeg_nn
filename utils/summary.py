@@ -142,14 +142,14 @@ def write_summary(run_dir: Path, summary: dict, task: str, engine: str):
 
     # Write raw JSON summary
     out_fp_json = run_dir / f"summary_{task}_{engine}.json"
-    out_fp_json.write_text(json.dumps(summary, indent=2))
+    out_fp_json.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     # Also write resolved config (hyper) as YAML for easy reuse (omit env/path keys)
     try:
         hyper = summary.get("hyper") or {}
         if isinstance(hyper, dict):
             out_fp_yaml = run_dir / "resolved_config.yaml"
-            out_fp_yaml.write_text(yaml.safe_dump(hyper, sort_keys=False))
+            out_fp_yaml.write_text(yaml.safe_dump(hyper, sort_keys=False), encoding="utf-8")
     except Exception:
         # keep summary generation resilient
         pass
@@ -357,7 +357,7 @@ def write_summary(run_dir: Path, summary: dict, task: str, engine: str):
 
     # Write report
     out_fp_txt = run_dir / f"report_{task}_{engine}.txt"
-    out_fp_txt.write_text("\n".join(report_lines))
+    out_fp_txt.write_text("\n".join(report_lines), encoding="utf-8")
     print(f"  [summary] done · mean_acc={summary.get('mean_acc', 0.0):.2f}%")
 
     # Generate consolidated HTML and PDF reports (PDF optional via Playwright)

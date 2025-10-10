@@ -1,0 +1,32 @@
+model_name: eegnex
+seed: 45
+optuna_objective: composite_min_f1_plur_corr
+min_f1_threshold: 37.0
+save_ckpt: true
+
+
+# Data sources (relative)
+materialized_dir: data_preprocessed/hpf_1.5_lpf_35_baseline-on
+crop_ms: [50, 200]
+exclude_channel_list: non_scalp
+trial_filter: acc1           # or acc1 to keep only accurate trials
+
+# Training
+batch_size: 8
+lr: 0.0007
+epochs: 40
+early_stop: 10
+inner_n_folds: 5
+n_folds: 6
+
+outer_eval_mode: ensemble
+
+decision_layer:
+  enable: true
+  metric: optuna_objective
+  theta_grid: [0.3, 0.7, 0.01]
+  min_activation_trials: 50
+  calibrate:
+    enable: true
+    temperature_grid: [0.5, 2.5, 0.05]
+    epsilon: 1.0e-12

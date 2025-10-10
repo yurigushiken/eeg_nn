@@ -1,0 +1,30 @@
+# Stage 2 — Recipe for landing_digit_1_3_within_small
+
+epochs:            { method: int, low: 50, high: 90 }
+early_stop:        { method: int, low: 10, high: 14 }
+batch_size:        { method: categorical, choices: [8, 16] }
+
+lr:                { method: log_uniform, low: 7.0e-6, high: 7.0e-4 }
+weight_decay:      { method: log_uniform, low: 1.0e-6, high: 6.0e-4 }
+drop_prob:         { method: uniform, low: 0.20, high: 0.60 }
+scheduler_patience:{ method: int, low: 6, high: 12 }
+
+lr_warmup_frac:    { method: uniform, low: 0.00, high: 0.30 }
+lr_warmup_init:    { method: uniform, low: 0.00, high: 0.40 }
+
+# Augmentation OFF in Stage 2
+mixup_alpha:       { method: categorical, choices: [0.0] }
+shift_p:           { method: categorical, choices: [0.0] }
+shift_max_frac:    { method: categorical, choices: [0.0] }
+scale_p:           { method: categorical, choices: [0.0] }
+scale_min:         { method: categorical, choices: [1.0] }
+scale_max:         { method: categorical, choices: [1.0] }
+noise_p:           { method: categorical, choices: [0.0] }
+noise_std:         { method: categorical, choices: [0.0] }
+time_mask_p:       { method: categorical, choices: [0.0] }
+time_mask_frac:    { method: categorical, choices: [0.0] }
+chan_mask_p:       { method: categorical, choices: [0.0] }
+chan_mask_ratio:   { method: categorical, choices: [0.0] }
+aug_warmup_frac:   { method: categorical, choices: [0.0] }
+
+

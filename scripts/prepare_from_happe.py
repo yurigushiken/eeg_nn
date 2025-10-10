@@ -83,6 +83,12 @@ def parse_args():
         action="store_true",
         help="If set, keep only accurate trials (Target.ACC == 1)",
     )
+    parser.add_argument(
+        "--output-dataset-tag",
+        dest="output_dataset_tag",
+        default=None,
+        help="Override the output dataset folder name under output_root (e.g., hpf_1.5_lpf_35_baseline-off-avgref)",
+    )
     return parser.parse_args()
 
 
@@ -159,12 +165,12 @@ def size_category(cond):
 # --- END NEW HELPERS ---
 
 
-def process_dataset(dataset_root: str, output_root: str):
+def process_dataset(dataset_root: str, output_root: str, output_dataset_tag: str | None = None):
     print(f"\n=== DATASET: {dataset_root} ===")
     happe_set_dir, happe_usable_trials_file = _discover_happe_dirs(dataset_root)
 
     # Output goes to data_preprocessed/<dataset_tag>
-    dataset_tag = os.path.basename(dataset_root)
+    dataset_tag = output_dataset_tag or os.path.basename(dataset_root)
     output_dir = os.path.join(output_root, dataset_tag)
     os.makedirs(output_dir, exist_ok=True)
     print(f"--- Outputting to: {output_dir} ---")
@@ -301,6 +307,13 @@ def process_dataset(dataset_root: str, output_root: str):
                 
                 print(f"  [montage] OK: {len(attached_montage.ch_names)} channels, Cz present")
                 
+                # Apply average rereferencing using all EEG channels (no projections)
+                try:
+                    final_epochs = final_epochs.copy().set_eeg_reference('average', projection=False, verbose=False)
+                    print("  [reref] Applied average reference across EEG channels")
+                except Exception as e_rr:
+                    print(f"  [reref] WARNING: Failed to apply average reference ({e_rr}). Proceeding without reref.")
+                
             except Exception as e:
                 print(f"  [montage] CRITICAL ERROR: {e}")
                 raise RuntimeError(f"Cannot proceed without valid montage for subject {subject_id}") from e
@@ -340,6 +353,6 @@ if __name__ == "__main__":
     ]
 
     for root in dataset_roots:
-        process_dataset(root, args.output_root)
+        process_dataset(root, args.output_root, args.output_dataset_tag)
 
 

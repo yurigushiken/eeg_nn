@@ -98,3 +98,4 @@ conda_env.yml
 .codex/
 .specify/.cache/
 
+/diagnosis/

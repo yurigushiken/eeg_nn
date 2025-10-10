@@ -458,6 +458,74 @@ def tune_theta(
     }
 
 
+# -----------------------------------------------------------------------------
+# Temperature scaling (probability calibration)
+# -----------------------------------------------------------------------------
+def _power_temperature_transform(probs: np.ndarray, temperature: float, eps: float = 1e-12) -> np.ndarray:
+    """
+    Apply temperature scaling to a probability vector using power transform.
+
+    Since softmax(logits / T) = normalize(p ** (1/T)) when p = softmax(logits),
+    we can operate directly on probabilities without logits.
+    """
+    p = np.clip(probs.astype(np.float64), eps, 1.0)
+    alpha = 1.0 / max(temperature, eps)
+    p_pow = np.power(p, alpha)
+    denom = p_pow.sum()
+    if denom < eps:
+        # Fallback to uniform if degenerate
+        return np.ones_like(p_pow) / len(p_pow)
+    return (p_pow / denom).astype(np.float64)
+
+
+def _nll_for_temperature(rows: List[Dict], temperature: float, eps: float = 1e-12) -> float:
+    """
+    Compute negative log-likelihood on inner rows for a given temperature.
+    Rows must contain JSON 'probs' and 'true_label_idx'.
+    """
+    nll = 0.0
+    count = 0
+    for row in rows:
+        probs = np.array(json.loads(row["probs"]), dtype=np.float64)
+        true_idx = int(row["true_label_idx"])
+        pT = _power_temperature_transform(probs, temperature, eps)
+        p_true = float(pT[true_idx]) if 0 <= true_idx < len(pT) else eps
+        nll += -np.log(max(p_true, eps))
+        count += 1
+    if count == 0:
+        return float("inf")
+    return nll / float(count)
+
+
+def _fit_temperature(inner_rows: List[Dict], temperature_grid: np.ndarray, eps: float = 1e-12) -> tuple[float, Dict]:
+    """
+    Fit temperature by minimizing NLL on inner validation rows using a grid search.
+    Returns best temperature and stats dict.
+    """
+    best_T = 1.0
+    best_nll = float("inf")
+    for T in temperature_grid:
+        nll = _nll_for_temperature(inner_rows, float(T), eps)
+        if nll < best_nll:
+            best_nll = nll
+            best_T = float(T)
+    return best_T, {"best_nll": float(best_nll)}
+
+
+def _apply_temperature_to_rows(rows: List[Dict], temperature: float, eps: float = 1e-12) -> List[Dict]:
+    """
+    Return new rows with 'probs' replaced by temperature-calibrated probabilities.
+    """
+    out_rows: List[Dict] = []
+    for row in rows:
+        new_row = copy.copy(row)
+        probs = np.array(json.loads(row["probs"]), dtype=np.float64)
+        pT = _power_temperature_transform(probs, temperature, eps)
+        new_row["probs"] = json.dumps(pT.tolist())
+        out_rows.append(new_row)
+    return out_rows
+
+
 # Helper function (not part of public API, used internally)
 def _top2_are_adjacent(probs: List[float], ordinal_map: Dict[int, int]) -> bool:
     """Check if the top-2 classes in a probability vector are adjacent (by numeric value)."""
@@ -510,6 +578,12 @@ def tune_and_apply_decision_layer(
         theta_grid_spec = cfg.get("theta_grid", [0.30, 0.70, 0.01])
         theta_grid = np.arange(theta_grid_spec[0], theta_grid_spec[1], theta_grid_spec[2])
         min_activation = int(cfg.get("min_activation_trials", 50))
+        # Calibration config (optional)
+        calibrate_cfg = cfg.get("calibrate", {}) if isinstance(cfg, dict) else {}
+        calibrate_enable = bool(calibrate_cfg.get("enable", False))
+        temp_grid_spec = calibrate_cfg.get("temperature_grid", [0.50, 2.50, 0.05])
+        temp_grid = np.arange(temp_grid_spec[0], temp_grid_spec[1], temp_grid_spec[2])
+        calibrate_eps = float(calibrate_cfg.get("epsilon", 1e-12))
         
         # Build ordinal mapping (will raise ValueError if class_names aren't numeric)
         ordinal_map = build_ordinal_mapping(class_names)
@@ -533,6 +607,11 @@ def tune_and_apply_decision_layer(
                 "theta_grid": theta_grid_spec,
                 "min_activation_trials": min_activation,
                 "class_names": class_names,
+                "calibration": {
+                    "enabled": calibrate_enable,
+                    "temperature_grid": temp_grid_spec,
+                    "epsilon": calibrate_eps,
+                },
             },
             "folds": {},
         }
@@ -547,9 +626,22 @@ def tune_and_apply_decision_layer(
                 log_event("decision_layer_warning", f"No inner predictions for fold {fold}, skipping")
                 continue
             
+            # Optional temperature calibration (fit on inner, apply to both inner/outer)
+            temperature = 1.0
+            temp_stats = None
+            if calibrate_enable:
+                temperature, temp_stats = _fit_temperature(fold_inner, temp_grid, eps=calibrate_eps)
+                log_event("decision_layer_temperature_fitted", f"Fold {fold}: T={temperature:.3f} NLL={temp_stats.get('best_nll', float('nan'))}")
+                # Calibrate inner and outer rows for downstream threshold tuning/apply
+                fold_inner_cal = _apply_temperature_to_rows(fold_inner, temperature, eps=calibrate_eps)
+                fold_outer_cal = _apply_temperature_to_rows(fold_outer, temperature, eps=calibrate_eps)
+            else:
+                fold_inner_cal = fold_inner
+                fold_outer_cal = fold_outer
+
             # Tune θ on inner
             best_theta, stats = tune_theta(
-                inner_rows=fold_inner,
+                inner_rows=fold_inner_cal,
                 objective_computer=objective_computer,
                 theta_grid=theta_grid,
                 class_names=class_names,
@@ -560,7 +652,7 @@ def tune_and_apply_decision_layer(
             
             # Apply θ to outer
             fold_thresholded = apply_decision_rule_to_rows(
-                rows=fold_outer,
+                rows=fold_outer_cal,
                 theta=best_theta,
                 class_names=class_names,
                 ordinal_map=ordinal_map,
@@ -588,6 +680,10 @@ def tune_and_apply_decision_layer(
                 "activation_rate": float(activation_rate),
                 "fallback": stats["fallback"],
             }
+            if calibrate_enable:
+                thresholds_data["folds"][str(fold)]["temperature"] = float(temperature)
+                if temp_stats is not None:
+                    thresholds_data["folds"][str(fold)]["temperature_nll"] = float(temp_stats.get("best_nll", float("nan")))
             
             if not stats["fallback"]:
                 thresholds_data["folds"][str(fold)]["best_score"] = float(stats["best_score"])
