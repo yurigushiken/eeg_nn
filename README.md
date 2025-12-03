@@ -74,12 +74,12 @@ Overall test accuracy: 55.6% (chance: 50%). Both classes show balanced F1 scores
 Convergence:
 ![Optimization History](docs/media/landing_on_2_3_history.png)
 
-Optuna's TPE sampler rapidly identifies high-performing architectures, reaching composite objective >98 on inner validation within ~10 trials.
+Example of Optuna's TPE sampler rapidly identifies high-performing architectures. Composite objective >98 on inner validation within ~10 trials in this example.
 
 Importance Analysis:
 ![Hyperparameter Importance](docs/media/landing_on_2_3_importances.png)
 
-Temporal augmentation parameters (`time_mask_p`, `time_mask_frac`) dominate model performance, suggesting that time-domain invariance is critical for generalization. This aligns with ERP findings showing time-varying neural dynamics during numerical processing.
+Example: Temporal augmentation parameters (`time_mask_p`, `time_mask_frac`) dominate model performance, suggesting that time-domain invariance is important for generalization.
 
 ## Supported Tasks
 
@@ -96,18 +96,17 @@ Landing Digit Tasks (identify the specific target numerosity):
 - `landing_digit_1_3_within_small_and_cardinality`: Combined task (includes no-change trials)
 - `landing_digit_4_6_within_large_and_cardinality`: Combined task for ANS range (4/5/6 + no-change)
 
-Task naming convention: Tasks reflect the cognitive hypothesis being tested (e.g., can we decode which digit within the small range, not just that a change occurred).
 
-## Key Features
+## Features
 
 - Leak-Free Validation: Subject-aware splits ensure no participant data appears in both train and test
-- Constitutional Rigor: No silent fallbacks (all parameters must be explicitly specified)
+- Constitutional Rigor: All parameters must be explicitly specified
 - Three-Stage Optuna Search: Progressive refinement (architecture, recipe, augmentation)
 - Composite Objectives: Balance decodability (min-per-class F1) and distinctness (plurality correctness)
 - Explainable AI: Integrated Gradients reveal which channels/timepoints drive predictions
 - Permutation Testing: Generate empirical null distributions with fixed splits
 - Full Provenance: Every run logs model class, library versions, hardware, seeds, hyperparameters
-- Publication-Ready: Automated figure generation meeting neuroscience journal standards
+- Publication-Ready: Automated figure generation 
 
 ## Quick Start
 
@@ -157,7 +156,6 @@ python -X utf8 -u scripts/run_xai_analysis.py \
 Input data structure:
 - EEG: HAPPE-preprocessed EEGLAB `.set` files (128-channel EGI system)
   - Preprocessed with 0.3-30 Hz bandpass filter
-  - Artifact rejection and spherical spline interpolation
   - 500ms epochs (-100ms to +400ms relative to stimulus onset)
 - Behavioral: Trial-level CSV files with columns:
   - `SubjectID`, `Block`, `Trial`, `Procedure`, `Condition`
@@ -183,7 +181,7 @@ See [Data Preparation Guide](docs/DATA_PREPARATION.md) for detailed preprocessin
 
 ## Reproducibility
 
-This project implements multiple safeguards to ensure scientific validity:
+This project implements safeguards to ensure scientific validity:
 
 - Determinism: Strict seeding (Python/NumPy/PyTorch/CUDA), `torch.use_deterministic_algorithms(True)`
 - Subject-Aware Splits: GroupKFold/LOSO with assertions preventing subject leakage
