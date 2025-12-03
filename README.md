@@ -53,7 +53,7 @@ Summary: The models reliably classify several two-class contrasts (e.g., specifi
 ### Three-Way Classification: Numerosities 1, 2, 3 (PI Range)
 
 Confusion Matrix (Leave-One-Subject-Out, N=24)
-![3-Class Confusion Matrix](media/20251009_1020_cardinality_1_3_step1A_resolvoverall_confusion.png)
+![3-Class Confusion Matrix](docs/media/cardinality_1_3_overall_confusion.png)
 
 Overall test accuracy: 39.7% (chance: 33.3%). Class "1" shows strongest performance (F1: 43.5%), while classes "2" and "3" are more frequently confused with each other. The model achieves above-chance discrimination within the subitizing range, but performance is fragile. "One" appears to have the most distinctive neural signature, consistent with the special status of oneness in numerical cognition literature.
 
@@ -65,19 +65,19 @@ Key observations:
 ### Binary Classification: Distinguishing Landing Digits 2 vs 3
 
 Confusion Matrix (Leave-One-Subject-Out, N=24)
-![Binary Confusion Matrix](media/step1_landing_on_2_3_space_light_aug_step1B_0_496-20251010_094949_landing_on_2_3_eeg_step1_t026-overall%20confusion.png)
+![Binary Confusion Matrix](docs/media/landing_on_2_3_overall_confusion.png)
 
 Overall test accuracy: 55.6% (chance: 50%). Both classes show balanced F1 scores (~55%), demonstrating above-chance single-trial decoding of fine-grained numerical distinctions within the subitizing range. This binary contrast is more robust than the three-way task, suggesting that "2" and "3" produce distinguishable neural signatures when isolated from "1".
 
 ### Hyperparameter Optimization
 
 Convergence:
-![Optimization History](media/step1_landing_on_2_3_space_light_aug_step1B_0_496-history-step1_landing_on_2_3_space_light_aug_step1B_0_496.png)
+![Optimization History](docs/media/landing_on_2_3_history.png)
 
 Optuna's TPE sampler rapidly identifies high-performing architectures, reaching composite objective >98 on inner validation within ~10 trials.
 
 Importance Analysis:
-![Hyperparameter Importance](media/step1_landing_on_2_3_space_light_aug_step1B_0_496-importances-step1_landing_on_2_3_space_light_aug_step1B_0_496.png)
+![Hyperparameter Importance](docs/media/landing_on_2_3_importances.png)
 
 Temporal augmentation parameters (`time_mask_p`, `time_mask_frac`) dominate model performance, suggesting that time-domain invariance is critical for generalization. This aligns with ERP findings showing time-varying neural dynamics during numerical processing.
 
