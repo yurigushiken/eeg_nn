@@ -8,61 +8,38 @@ A deep learning pipeline for decoding numerical representations from 128-channel
 
 Cognitive neuroscience proposes two distinct systems for processing quantities:
 
-1. **Parallel Individuation (PI)** / Object File System:
-   - Processes small numbers (1-3) via "subitizing" - rapid, precise enumeration
+1. Parallel Individuation (PI) / Object File System:
+   - Processes small numbers (1-3) via "subitizing": rapid, precise enumeration
    - Limited capacity of ~3-4 objects
    - Linked to visual short-term memory and object tracking
 
-2. **Approximate Number System (ANS)**:
+2. Approximate Number System (ANS):
    - Processes larger numbers (4 or 5+) via magnitude estimation
    - Weber's law: discrimination depends on numerical ratio
    - Imprecise representations as overlapping Gaussian distributions
 
 ### Research Questions
 
-**This project asks:** Can we decode individual numerosities from trial-level EEG data using deep learning? Specifically:
+This project asks: Can we decode individual numerosities from trial-level EEG data using deep learning? Specifically:
 - Do neural signatures distinguish numerosities within and across the PI/ANS boundary?
 - Can we identify the "border" between the two systems from decoding performance?
-- How do neural patterns differ for **increasing vs. decreasing** numerical changes?
-- Can we decode not just change detection, but specific **landing digits** (which number participants saw)?
-
-### Why This Matters
-
-Traditional ERP analysis averages across trials, revealing **when** and **where** the brain responds. Deep learning on single-trial data can reveal **what specific information** is encoded in neural activity patterns. If individual numerosities produce distinct decodable signatures, this provides strong evidence that:
-1. Numbers are represented as discrete neural patterns (not just scalar magnitudes)
-2. The PI/ANS boundary reflects qualitatively different neural coding schemes
-3. Direction matters: encoding "3" after seeing "2" may differ from encoding "2" after seeing "3"
+- How do neural patterns differ for increasing vs. decreasing numerical changes?
+- Can we decode not just change detection, but specific landing digits (which number participants saw)?
 
 ## Study Background
 
-This project uses data from a 2023 doctoral dissertation (Tang-Lonardo, Columbia University) that examined numerical change detection using traditional ERP analysis. The original study (N=15) found:
-- N1 amplitudes scaled with small numbers (1<2<3) but plateaued for large numbers (4-6)
-- Direction effects: decreasing to small numbers showed an "off-loading" phenomenon
-- P3b latencies mirrored reaction times across conditions
+This project uses data from a 2023 doctoral dissertation (Tang-Lonardo, Columbia University) that examined numerical change detection using traditional ERP analysis. We apply deep learning to the expanded dataset (N=24, 6,480 trials) to decode individual numerosities from single-trial EEG patterns. The original ERP study (N=15) found N1 amplitudes scaled with small numbers but plateaued for large numbers, and P3b latencies mirrored reaction times.
 
-**Current project:** We apply deep learning methods to the expanded dataset (N=24 participants) to investigate whether individual numerosities can be decoded from single-trial EEG patterns.
-
-**Experimental paradigm:**
-- 128-channel EEG recorded during an oddball numerical change detection task
-- Participants saw 3-5 "priming" displays (same numerosity, 1-6 dots)
-- Then a "target" display (±3 from prime, within 1-6 range)
-- Task: Press spacebar when numerosity changes
-- Example trial: `4 → 4 → 4 → 6` (participant presses spacebar on "6")
-
-**Sample size:**
-- Participants: 24
-- Trials per participant: 270
-- Total trials: 6,480 (mean 270 per subject)
-- Usable trials vary by task due to difficulty-dependent accuracy (easier discriminations like 2→3 yield more correct trials than harder ones like 6→5)
+Data collection: 128-channel EEG recorded during an oddball task where participants detected numerical changes (1-6 dots). Example trial: 4 → 4 → 4 → 6 (participant presses spacebar on "6").
 
 ## What This Pipeline Does
 
 This repository implements a deep learning pipeline for EEG decoding with:
-- **Subject-aware nested cross-validation** (prevents data leakage)
-- **Three-stage automated hyperparameter search** (Optuna TPE)
-- **Multiple decoding objectives**: cardinality classification, landing digit identification
-- **Explainable AI**: Integrated Gradients with brain topographic maps
-- **Statistical rigor**: permutation testing, deterministic seeding, full audit trails
+- Subject-aware nested cross-validation (prevents data leakage)
+- Three-stage automated hyperparameter search (Optuna TPE)
+- Multiple decoding objectives: cardinality classification, landing digit identification
+- Explainable AI: Integrated Gradients with brain topographic maps
+- Statistical rigor: permutation testing, deterministic seeding, full audit trails
 
 We train convolutional neural networks (EEGNeX architecture) directly on raw EEG epochs to classify:
 1. Which numerosity range (1-3, 4-6)
@@ -71,66 +48,66 @@ We train convolutional neural networks (EEGNeX architecture) directly on raw EEG
 
 ## Preliminary Results
 
-**Summary:** The models reliably classify several two-class contrasts (e.g., specific small numerosity pairs, change vs. no-change) above chance, while three-way and six-way tasks are more fragile and reveal substantial individual variability. **Contrasts that include "one" are the most robust**, suggesting that oneness has a more distinct neural pattern than other numerosities in this dataset.
+Summary: The models reliably classify several two-class contrasts (e.g., specific small numerosity pairs, change vs. no-change) above chance, while three-way and six-way tasks are more fragile and reveal substantial individual variability. Contrasts that include "one" are the most robust, suggesting that oneness has a more distinct neural pattern than other numerosities in this dataset.
 
 ### Three-Way Classification: Numerosities 1, 2, 3 (PI Range)
 
-**Confusion Matrix (Leave-One-Subject-Out, N=24)**
+Confusion Matrix (Leave-One-Subject-Out, N=24)
 ![3-Class Confusion Matrix](media/20251009_1020_cardinality_1_3_step1A_resolvoverall_confusion.png)
 
-**Overall test accuracy: 39.7%** (chance: 33.3%). Class "1" shows strongest performance (F1: 43.5%), while classes "2" and "3" are more frequently confused with each other. The model achieves above-chance discrimination within the subitizing range, but performance is fragile—**"one" appears to have the most distinctive neural signature**, consistent with the special status of oneness in numerical cognition literature.
+Overall test accuracy: 39.7% (chance: 33.3%). Class "1" shows strongest performance (F1: 43.5%), while classes "2" and "3" are more frequently confused with each other. The model achieves above-chance discrimination within the subitizing range, but performance is fragile. "One" appears to have the most distinctive neural signature, consistent with the special status of oneness in numerical cognition literature.
 
-**Key observations:**
+Key observations:
 - Class "1" correctly classified 43.5% of the time (best performance)
 - Classes "2" and "3" show substantial confusion (31.9% and 39.4% overlap)
 - Composite objective: 56.94 (min-F1: 37.7%, plurality correctness: 56.9%)
 
 ### Binary Classification: Distinguishing Landing Digits 2 vs 3
 
-**Confusion Matrix (Leave-One-Subject-Out, N=24)**
+Confusion Matrix (Leave-One-Subject-Out, N=24)
 ![Binary Confusion Matrix](media/step1_landing_on_2_3_space_light_aug_step1B_0_496-20251010_094949_landing_on_2_3_eeg_step1_t026-overall%20confusion.png)
 
-**Overall test accuracy: 55.6%** (chance: 50%). Both classes show balanced F1 scores (~55%), demonstrating **above-chance single-trial decoding** of fine-grained numerical distinctions within the subitizing range. This binary contrast is more robust than the three-way task, suggesting that "2" and "3" produce distinguishable neural signatures when isolated from "1".
+Overall test accuracy: 55.6% (chance: 50%). Both classes show balanced F1 scores (~55%), demonstrating above-chance single-trial decoding of fine-grained numerical distinctions within the subitizing range. This binary contrast is more robust than the three-way task, suggesting that "2" and "3" produce distinguishable neural signatures when isolated from "1".
 
 ### Hyperparameter Optimization
 
-**Convergence:**
+Convergence:
 ![Optimization History](media/step1_landing_on_2_3_space_light_aug_step1B_0_496-history-step1_landing_on_2_3_space_light_aug_step1B_0_496.png)
 
 Optuna's TPE sampler rapidly identifies high-performing architectures, reaching composite objective >98 on inner validation within ~10 trials.
 
-**Importance Analysis:**
+Importance Analysis:
 ![Hyperparameter Importance](media/step1_landing_on_2_3_space_light_aug_step1B_0_496-importances-step1_landing_on_2_3_space_light_aug_step1B_0_496.png)
 
-Temporal augmentation parameters (`time_mask_p`, `time_mask_frac`) dominate model performance, suggesting that **time-domain invariance** is critical for generalization. This aligns with ERP findings showing time-varying neural dynamics during numerical processing.
+Temporal augmentation parameters (`time_mask_p`, `time_mask_frac`) dominate model performance, suggesting that time-domain invariance is critical for generalization. This aligns with ERP findings showing time-varying neural dynamics during numerical processing.
 
 ## Supported Tasks
 
-The pipeline currently supports **7 decoding tasks**:
+The pipeline currently supports 7 decoding tasks:
 
-**Cardinality Tasks** (binary/ternary classification by range):
+Cardinality Tasks (binary/ternary classification by range):
 - `cardinality_1_3`: Classify numerosities in the PI range (1 vs 2 vs 3)
 - `cardinality_4_6`: Classify numerosities in the ANS range (4 vs 5 vs 6)
 - `cardinality_1_6`: Six-way classification across both systems (1-6)
 
-**Landing Digit Tasks** (identify the specific target numerosity):
+Landing Digit Tasks (identify the specific target numerosity):
 - `landing_on_2_3`: Binary classification (2 vs 3) within PI range
 - `landing_digit_1_3_within_small`: Ternary classification of landing digit (1/2/3)
 - `landing_digit_1_3_within_small_and_cardinality`: Combined task (includes no-change trials)
 - `landing_digit_4_6_within_large_and_cardinality`: Combined task for ANS range (4/5/6 + no-change)
 
-**Task naming convention:** Tasks reflect the cognitive hypothesis being tested (e.g., can we decode *which* digit within the small range, not just *that* a change occurred).
+Task naming convention: Tasks reflect the cognitive hypothesis being tested (e.g., can we decode which digit within the small range, not just that a change occurred).
 
 ## Key Features
 
-- **Leak-Free Validation**: Subject-aware splits ensure no participant data appears in both train and test
-- **Constitutional Rigor**: No silent fallbacks—all parameters must be explicitly specified
-- **Three-Stage Optuna Search**: Progressive refinement (architecture → recipe → augmentation)
-- **Composite Objectives**: Balance decodability (min-per-class F1) and distinctness (plurality correctness)
-- **Explainable AI**: Integrated Gradients reveal which channels/timepoints drive predictions
-- **Permutation Testing**: Generate empirical null distributions with fixed splits
-- **Full Provenance**: Every run logs model class, library versions, hardware, seeds, hyperparameters
-- **Publication-Ready**: Automated figure generation meeting neuroscience journal standards
+- Leak-Free Validation: Subject-aware splits ensure no participant data appears in both train and test
+- Constitutional Rigor: No silent fallbacks (all parameters must be explicitly specified)
+- Three-Stage Optuna Search: Progressive refinement (architecture, recipe, augmentation)
+- Composite Objectives: Balance decodability (min-per-class F1) and distinctness (plurality correctness)
+- Explainable AI: Integrated Gradients reveal which channels/timepoints drive predictions
+- Permutation Testing: Generate empirical null distributions with fixed splits
+- Full Provenance: Every run logs model class, library versions, hardware, seeds, hyperparameters
+- Publication-Ready: Automated figure generation meeting neuroscience journal standards
 
 ## Quick Start
 
@@ -177,16 +154,16 @@ python -X utf8 -u scripts/run_xai_analysis.py \
 
 ## Data Requirements
 
-**Input data structure:**
-- **EEG**: HAPPE-preprocessed EEGLAB `.set` files (128-channel EGI system)
+Input data structure:
+- EEG: HAPPE-preprocessed EEGLAB `.set` files (128-channel EGI system)
   - Preprocessed with 0.3-30 Hz bandpass filter
   - Artifact rejection and spherical spline interpolation
   - 500ms epochs (-100ms to +400ms relative to stimulus onset)
-- **Behavioral**: Trial-level CSV files with columns:
+- Behavioral: Trial-level CSV files with columns:
   - `SubjectID`, `Block`, `Trial`, `Procedure`, `Condition`
   - `Target.ACC` (accuracy), `Target.RT` (reaction time)
   - Derived columns: `direction` (increasing/decreasing), `size` (small/large), `change_group`
-- **Montage**: 128-channel sensor positions (`net/AdultAverageNet128_v1.sfp`) for topoplot generation
+- Montage: 128-channel sensor positions (`net/AdultAverageNet128_v1.sfp`) for topoplot generation
 
 See [Data Preparation Guide](docs/DATA_PREPARATION.md) for detailed preprocessing steps.
 
@@ -204,18 +181,18 @@ See [Data Preparation Guide](docs/DATA_PREPARATION.md) for detailed preprocessin
 - [Architecture](docs/ARCHITECTURE.md) - Repository organization
 - [Troubleshooting](docs/TROUBLESHOOTING.md) - Common issues and solutions
 
-## Scientific Rigor & Reproducibility
+## Reproducibility
 
 This project implements multiple safeguards to ensure scientific validity:
 
-- **Determinism**: Strict seeding (Python/NumPy/PyTorch/CUDA), `torch.use_deterministic_algorithms(True)`
-- **Subject-Aware Splits**: GroupKFold/LOSO with assertions preventing subject leakage
-- **Nested Cross-Validation**: Inner K-fold for hyperparameter selection, outer fold for unbiased test evaluation
-- **Provenance Tracking**: Every run logs model architecture, library versions, hardware specs, determinism flags
-- **Audit Trails**: Exports split indices, per-trial predictions, learning curves, checkpoint metadata
-- **Permutation Testing**: Empirical null distributions with fixed split structure (label shuffling only)
-- **Constitutional Requirements**: All critical parameters must be explicitly specified (no silent fallbacks)
-- **Objective-Aligned Pruning**: Early stopping and checkpoint selection use the same metric as hyperparameter optimization
+- Determinism: Strict seeding (Python/NumPy/PyTorch/CUDA), `torch.use_deterministic_algorithms(True)`
+- Subject-Aware Splits: GroupKFold/LOSO with assertions preventing subject leakage
+- Nested Cross-Validation: Inner K-fold for hyperparameter selection, outer fold for unbiased test evaluation
+- Provenance Tracking: Every run logs model architecture, library versions, hardware specs, determinism flags
+- Audit Trails: Exports split indices, per-trial predictions, learning curves, checkpoint metadata
+- Permutation Testing: Empirical null distributions with fixed split structure (label shuffling only)
+- Constitutional Requirements: All critical parameters must be explicitly specified (no silent fallbacks)
+- Objective-Aligned Pruning: Early stopping and checkpoint selection use the same metric as hyperparameter optimization
 
 ## Repository Structure
 
@@ -272,9 +249,9 @@ MIT License - see LICENSE file for details.
 
 ## Acknowledgments
 
-- **Theoretical Foundation**: Tang-Lonardo, J. E. (2023) - PI/ANS neurobehavioral study
-- **EEG Preprocessing**: [HAPPE](https://github.com/PINE-Lab/HAPPE) pipeline
-- **Deep Learning Framework**: [Braindecode](https://braindecode.org/) (EEGNeX model)
-- **Hyperparameter Optimization**: [Optuna](https://optuna.org/) (TPE sampler)
-- **Explainability**: [Captum](https://captum.ai/) (Integrated Gradients)
-- **Neuroimaging Tools**: [MNE-Python](https://mne.tools/) (EEG analysis, topoplots)
+- Theoretical Foundation: Tang-Lonardo, J. E. (2023), PI/ANS neurobehavioral study
+- EEG Preprocessing: [HAPPE](https://github.com/PINE-Lab/HAPPE) pipeline
+- Deep Learning Framework: [Braindecode](https://braindecode.org/) (EEGNeX model)
+- Hyperparameter Optimization: [Optuna](https://optuna.org/) (TPE sampler)
+- Explainability: [Captum](https://captum.ai/) (Integrated Gradients)
+- Neuroimaging Tools: [MNE-Python](https://mne.tools/) (EEG analysis, topoplots)
