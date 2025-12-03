@@ -864,6 +864,8 @@ class OuterFoldOrchestrator:
         """Generate per-fold plots."""
         plots_dir = self.run_dir / "plots_outer"
         plots_dir.mkdir(parents=True, exist_ok=True)
+        run_prefix = self.run_dir.name if self.run_dir else "run"
+        fold_tag = f"fold{fold+1:02d}"
         
         # Simple fold plots
         fold_title = self.plot_title_builder.build_fold_title_simple(
@@ -877,7 +879,7 @@ class OuterFoldOrchestrator:
             y_true,
             y_pred,
             class_names,
-            plots_dir / f"fold{fold+1}_confusion.png",
+            plots_dir / f"{run_prefix}_{fold_tag}_confusion.png",
             title=fold_title,
         )
         
@@ -885,7 +887,7 @@ class OuterFoldOrchestrator:
             best_inner_result["tr_hist"],
             best_inner_result["va_hist"],
             best_inner_result["va_acc_hist"],
-            plots_dir / f"fold{fold+1}_curves.png",
+            plots_dir / f"{run_prefix}_{fold_tag}_curves.png",
             title=fold_title,
         )
         
@@ -907,7 +909,7 @@ class OuterFoldOrchestrator:
             y_true,
             y_pred,
             class_names,
-            plots_enhanced_dir / f"fold{fold+1}_confusion.png",
+            plots_enhanced_dir / f"{run_prefix}_{fold_tag}_confusion.png",
             title=fold_title_enhanced,
             hyper_lines=per_class_info_lines if per_class_info_lines else None,
         )
@@ -916,7 +918,7 @@ class OuterFoldOrchestrator:
             best_inner_result["tr_hist"],
             best_inner_result["va_hist"],
             best_inner_result["va_acc_hist"],
-            plots_enhanced_dir / f"fold{fold+1}_curves.png",
+            plots_enhanced_dir / f"{run_prefix}_{fold_tag}_curves.png",
             title=fold_title_enhanced,
         )
 

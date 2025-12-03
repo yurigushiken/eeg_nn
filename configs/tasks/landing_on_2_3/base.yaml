@@ -1,6 +1,6 @@
 model_name: eegnex
 seed: 45
-optuna_objective: composite_min_f1_plur_corr
+optuna_objective: inner_mean_min_per_class_f1
 min_f1_threshold: 37.0
 save_ckpt: true
 

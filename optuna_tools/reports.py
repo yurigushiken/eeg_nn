@@ -24,45 +24,50 @@ def _resolve_confusion_png(trial_dir: Path) -> Path:
     plots_dir_enhanced = trial_dir / "plots_outer_enhanced"
     plots_dir_new = trial_dir / "plots_outer"
     plots_dir_legacy = trial_dir / "plots"
+    prefix = trial_dir.name
 
-    # Prefer enhanced plots (with per-class F1 info) if available
-    primary_enhanced = plots_dir_enhanced / "overall_confusion.png"
-    if primary_enhanced.exists():
-        return primary_enhanced
+    def _glob_first(directory: Path, pattern: str) -> Path | None:
+        if not directory.exists():
+            return None
+        for cand in sorted(directory.glob(pattern)):
+            if cand.exists():
+                return cand
+        return None
 
-    primary_new = plots_dir_new / "overall_confusion.png"
-    if primary_new.exists():
-        return primary_new
+    search_order = [
+        plots_dir_enhanced / f"{prefix}_overall_confusion.png",
+        _glob_first(plots_dir_enhanced, f"{prefix}_overall*_confusion*.png"),
+        plots_dir_enhanced / "overall_confusion.png",
+        _glob_first(plots_dir_enhanced, "overall*_confusion*.png"),
+        plots_dir_new / f"{prefix}_overall_confusion.png",
+        _glob_first(plots_dir_new, f"{prefix}_overall*_confusion*.png"),
+        plots_dir_new / "overall_confusion.png",
+        _glob_first(plots_dir_new, "overall*_confusion*.png"),
+        plots_dir_legacy / "overall_confusion.png",
+        _glob_first(plots_dir_legacy, "overall*_confusion*.png"),
+        trial_dir / f"{prefix}_overall_confusion.png",
+        _glob_first(trial_dir, f"{prefix}_overall*_confusion*.png"),
+        trial_dir / "overall_confusion.png",
+        _glob_first(trial_dir, "overall*_confusion*.png"),
+    ]
 
-    primary_legacy_dir = plots_dir_legacy / "overall_confusion.png"
-    if primary_legacy_dir.exists():
-        return primary_legacy_dir
+    for candidate in search_order:
+        if candidate and candidate.exists():
+            return candidate
 
-    primary_legacy = trial_dir / "overall_confusion.png"
-    if primary_legacy.exists():
-        return primary_legacy
+    # Fall back to any per-fold confusion matrix
+    fold_candidates = [
+        _glob_first(plots_dir_new, f"{prefix}_fold*_confusion.png"),
+        _glob_first(plots_dir_new, "fold*_confusion.png"),
+        _glob_first(plots_dir_legacy, "fold*_confusion.png"),
+        _glob_first(trial_dir, f"{prefix}_fold*_confusion.png"),
+        _glob_first(trial_dir, "fold*_confusion.png"),
+    ]
+    for fold_cand in fold_candidates:
+        if fold_cand and fold_cand.exists():
+            return fold_cand
 
-    alts_new = sorted(plots_dir_new.glob("overall*_confusion*.png")) if plots_dir_new.exists() else []
-    if alts_new:
-        return alts_new[0]
-    alts_legacy_dir = sorted(plots_dir_legacy.glob("overall*_confusion*.png")) if plots_dir_legacy.exists() else []
-    if alts_legacy_dir:
-        return alts_legacy_dir[0]
-    alts_legacy = sorted(trial_dir.glob("overall*_confusion*.png"))
-    if alts_legacy:
-        return alts_legacy[0]
-
-    fold_new = sorted(plots_dir_new.glob("fold*_confusion.png")) if plots_dir_new.exists() else []
-    if fold_new:
-        return fold_new[0]
-    fold_legacy_dir = sorted(plots_dir_legacy.glob("fold*_confusion.png")) if plots_dir_legacy.exists() else []
-    if fold_legacy_dir:
-        return fold_legacy_dir[0]
-    fold_legacy = sorted(trial_dir.glob("fold*_confusion.png"))
-    if fold_legacy:
-        return fold_legacy[0]
-
-    return primary_new  # may not exist; handled by caller
+    return plots_dir_new / "overall_confusion.png"  # may not exist; handled by caller
 
 
 def write_top3_report(study_dir: Path, df: pd.DataFrame, study_name: str) -> None:

@@ -96,6 +96,9 @@ conda_env.yml
 
 # Spec Kit / Codex
 .codex/
-.specify/.cache/
+.codex.bak_20250930_190152/
+.cursor/
+.claude/
+.specify/
 
 /diagnosis/

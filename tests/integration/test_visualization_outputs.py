@@ -33,8 +33,8 @@ def test_visualization_contract_reports_missing_artifacts(tmp_path):
     missing = validator(run_dir)
 
     required = {
-        "plots/overall_confusion.png",
-        "plots_outer/fold01_confusion.png",
+        f"plots_outer/{run_dir.name}_overall_confusion.png",
+        f"plots_outer/{run_dir.name}_fold01_confusion.png",
         "stats/per_subject_forest.png",
         "stats/caterpillar_plot.png",
         "stats/xai/summary.html",

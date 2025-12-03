@@ -617,17 +617,33 @@ def validate_visualization_outputs(run_dir: Path):
 
     This function enforces a minimal visualization contract for FR-026.
     """
-    required = [
-        "plots/overall_confusion.png",
-        "plots_outer/fold01_confusion.png",
-        "stats/per_subject_forest.png",
-        "stats/caterpillar_plot.png",
-        "stats/xai/summary.html",
-    ]
+    run_prefix = run_dir.name
+    required = {
+        f"plots_outer/{run_prefix}_overall_confusion.png": [
+            run_dir / "plots_outer" / f"{run_prefix}_overall_confusion.png",
+            run_dir / "plots_outer" / "overall_confusion.png",
+            run_dir / "plots" / f"{run_prefix}_overall_confusion.png",
+            run_dir / "plots" / "overall_confusion.png",
+        ],
+        f"plots_outer/{run_prefix}_fold01_confusion.png": [
+            run_dir / "plots_outer" / f"{run_prefix}_fold01_confusion.png",
+            run_dir / "plots_outer" / "fold01_confusion.png",
+            run_dir / "plots_outer" / "fold1_confusion.png",
+            run_dir / "plots" / f"{run_prefix}_fold01_confusion.png",
+            run_dir / "plots" / "fold01_confusion.png",
+            run_dir / "plots" / "fold1_confusion.png",
+        ],
+        "stats/per_subject_forest.png": [run_dir / "stats" / "per_subject_forest.png"],
+        "stats/caterpillar_plot.png": [
+            run_dir / "stats" / "caterpillar_plot.png",
+            run_dir / "stats" / "glmm_caterpillar.png",
+        ],
+        "stats/xai/summary.html": [run_dir / "stats" / "xai" / "summary.html"],
+    }
     missing = set()
-    for rel in required:
-        if not (run_dir / rel).exists():
-            missing.add(rel)
+    for label, paths in required.items():
+        if not any(p.exists() for p in paths):
+            missing.add(label)
     return missing
 
 

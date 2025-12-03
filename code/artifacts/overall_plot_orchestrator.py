@@ -138,6 +138,7 @@ class OverallPlotOrchestrator:
         """Generate simple overall confusion matrix."""
         plots_dir = self.run_dir / "plots_outer"
         plots_dir.mkdir(parents=True, exist_ok=True)
+        run_prefix = self.run_dir.name if self.run_dir else "run"
         
         # Build title using PlotTitleBuilder
         overall_title = self.plot_title_builder.build_overall_title_simple(
@@ -150,7 +151,7 @@ class OverallPlotOrchestrator:
             overall_y_true,
             overall_y_pred,
             class_names,
-            plots_dir / "overall_confusion.png",
+            plots_dir / f"{run_prefix}_overall_confusion.png",
             title=overall_title,
         )
     
@@ -167,6 +168,7 @@ class OverallPlotOrchestrator:
         """Generate enhanced overall confusion matrix with inner vs outer metrics."""
         plots_enhanced_dir = self.run_dir / "plots_outer_enhanced"
         plots_enhanced_dir.mkdir(parents=True, exist_ok=True)
+        run_prefix = self.run_dir.name if self.run_dir else "run"
         
         # Compute per-class F1 for enhanced info
         try:
@@ -199,7 +201,7 @@ class OverallPlotOrchestrator:
             overall_y_true,
             overall_y_pred,
             class_names,
-            plots_enhanced_dir / "overall_confusion.png",
+            plots_enhanced_dir / f"{run_prefix}_overall_confusion.png",
             title=overall_title_enhanced,
             hyper_lines=overall_per_class_info_lines if overall_per_class_info_lines else None,
         )

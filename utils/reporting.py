@@ -111,10 +111,21 @@ def create_consolidated_reports(run_dir: Path, summary: Dict, task: str, engine:
     plots_outer = run_dir / "plots_outer"
     plots_legacy = run_dir / "plots"
     src_dir = plots_outer if plots_outer.exists() else plots_legacy
-    if src_dir.exists():
-        fold_candidates = list(src_dir.glob("fold*_*.png"))
-    else:
-        fold_candidates = list(run_dir.glob("fold*_*.png"))
+    fold_candidates: List[Path] = []
+    run_prefix = run_dir.name
+    search_dirs = [src_dir] if src_dir.exists() else [run_dir]
+    patterns = [f"{run_prefix}_fold*_*.png", "fold*_*.png", "*fold*_*.png"]
+    for directory in search_dirs:
+        for pattern in patterns:
+            matches = sorted(directory.glob(pattern))
+            if matches:
+                fold_candidates = matches
+                break
+        if fold_candidates:
+            break
+    if not fold_candidates and not src_dir.exists():
+        # Last resort: search run_dir for any fold plots
+        fold_candidates = sorted(run_dir.glob("*fold*_*.png"))
 
     def _fold_sort_key(p: Path):
         m = re.search(r"fold(\d+)_([a-zA-Z]+)\.png$", p.name)
@@ -124,7 +135,13 @@ def create_consolidated_reports(run_dir: Path, summary: Dict, task: str, engine:
         return (fold_num, kind_order, p.name)
 
     fold_plots = sorted(fold_candidates, key=_fold_sort_key)
-    overall_plot = (src_dir / "overall_confusion.png") if (src_dir / "overall_confusion.png").exists() else (run_dir / "overall_confusion.png")
+    overall_candidates = [
+        src_dir / f"{run_prefix}_overall_confusion.png",
+        run_dir / f"{run_prefix}_overall_confusion.png",
+        src_dir / "overall_confusion.png",
+        run_dir / "overall_confusion.png",
+    ]
+    overall_plot = next((p for p in overall_candidates if p.exists()), overall_candidates[-1])
 
     txt_report_path = run_dir / f"report_{task}_{engine}.txt"
     try:

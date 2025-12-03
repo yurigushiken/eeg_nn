@@ -215,8 +215,8 @@ def write_summary(run_dir: Path, summary: dict, task: str, engine: str):
         report_lines.append(f"  Mean Plurality Correctness: {summary.get('inner_mean_plur_corr', 0.0):.2f}%")
     
     # Show composite objective interpretation if applicable
-    if summary.get('composite_min_f1_plur_corr') is not None:
-        composite_val = summary.get('composite_min_f1_plur_corr', 0.0)
+    if summary.get('composite_min_f1_plur_corr') not in (None, "", []):
+        composite_val = float(summary.get('composite_min_f1_plur_corr') or 0.0)
         inner_min_f1 = summary.get('inner_mean_min_per_class_f1', 0.0)
         inner_plur = summary.get('inner_mean_plur_corr', 0.0)
         # Infer threshold from config (assuming 35-38 for 3-class, 20 for 6-class)
@@ -241,7 +241,8 @@ def write_summary(run_dir: Path, summary: dict, task: str, engine: str):
         outer_min_f1 = summary.get('mean_min_per_class_f1', 0.0)
         outer_plur = summary.get('mean_plur_corr', 0.0)
         # Infer threshold (heuristic: if inner composite > 10, threshold was met)
-        inner_composite = summary.get('composite_min_f1_plur_corr', 0.0)
+        inner_composite_raw = summary.get('composite_min_f1_plur_corr')
+        inner_composite = float(inner_composite_raw) if isinstance(inner_composite_raw, (int, float)) else 0.0
         if inner_composite > 10.0:  # Threshold likely 35-38
             estimated_threshold = 35.0
         else:
@@ -366,5 +367,4 @@ def write_summary(run_dir: Path, summary: dict, task: str, engine: str):
         create_consolidated_reports(run_dir, summary, task, engine)
     except Exception as e:
         print(f" !! ERROR generating consolidated reports: {e}")
-
 
