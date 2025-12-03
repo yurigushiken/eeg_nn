@@ -100,5 +100,7 @@ conda_env.yml
 .cursor/
 .claude/
 .specify/
+DECISION_LAYER_REPORTING_IMPLEMENTATION_STATUS.md
+pytest.ini
 
 /diagnosis/
