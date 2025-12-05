@@ -207,9 +207,68 @@ python -X utf8 -u scripts/run_posthoc_stats.py \
 
 **Interpretation:** Check `per_subject_significance.csv` for proportion of subjects above chance.
 
+
+### 7. RSA Binary Matrix (Cardinality 11-66)
+
+**Goal:** Train subject-aware models for every cross-digit cardinality pair and assemble a resumable master dataset.
+
+```powershell
+python -X utf8 -u scripts/run_rsa_matrix.py `
+  --config configs/tasks/rsa_binary.yaml `
+  --output-dir results\runs\rsa_matrix_v1
+```
+
+- Uses the locked hyperparameters in `configs/tasks/rsa_binary.yaml`.
+- For seeds `[42, 43, 44]`, trains one run per pair (skips same-digit contrasts).
+- Stores runs as `results\runs\rsa_matrix_v1\<launch_id>_rsa_<pair>_seed_<N>/`.
+- Writes `results\runs\rsa_matrix_v1\rsa_matrix_results.csv` (quick summary).
+
+**Pause / Resume support:**
+- The first launch creates `results\runs\rsa_matrix_v1\.rsa_resume_state.json` with the active launch id and progress.
+- If the process is interrupted, resume in-place:
+
+```powershell
+python -X utf8 -u scripts/run_rsa_matrix.py `
+  --config configs/tasks/rsa_binary.yaml `
+  --output-dir results\runs\rsa_matrix_v1 `
+  --resume
+```
+
+- The script reuses the existing launch id, skips combinations that already produced an `outer_eval_metrics.csv` with an `OVERALL` row, and reruns any incomplete directories.
+- If multiple launch ids live in the same folder, pass `--resume-launch-id <id>` to choose one explicitly.
+- After every completed combination the state file is updated atomically; once all pairs finish the file is marked complete. Remove it manually if you want to start a fresh run in the same folder.
+
+**Compile master dataset:**
+```powershell
+python -X utf8 -u scripts/compile_rsa_results.py `
+  --runs-dir results\runs\rsa_matrix_v1 `
+  --output results\runs\rsa_matrix_v1\rsa_results_master.csv
+```
+
+This produces `rsa_results_master.csv` with columns `ClassA`, `ClassB`, `Seed`, `Subject`, `Fold`, `RecordType`, `Accuracy`, `MacroF1`, `MinClassF1`.
+
+**Visualization (OVERALL rows by default):**
+```powershell
+python -X utf8 -u scripts/visualize_rsa.py `
+  --csv results\runs\rsa_matrix_v1\rsa_results_master.csv `
+  --subject OVERALL `
+  --output-dir results\runs\rsa_matrix_v1\figures `
+  --prefix rsa_matrix_v1
+```
+
+**Subject-level statistics:**
+```powershell
+python -X utf8 -u scripts/analyze_rsa_stats.py `
+  --csv results\runs\rsa_matrix_v1\rsa_results_master.csv `
+  --baseline 50 `
+  --output results\runs\rsa_matrix_v1\stats_summary.csv
+```
+
+**Optional overrides:** Use `--conditions` during training to restrict the cardinality codes (e.g., `--conditions 11 22 33`) or adjust the config to tweak seeds/baselines.
+
 ---
 
-### 7. Subject Performance Deep Dive
+### 8. Subject Performance Deep Dive
 
 **Goal:** Per-subject and per-fold performance breakdown, inner vs outer comparison.
 

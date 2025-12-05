@@ -9,6 +9,7 @@ def _register(name: str):
 # Register only the four tasks in scope
 for _name in (
     "cardinality_1_3",
+    "cardinality_3_vs_4",
     "cardinality_4_6",
     "cardinality_1_6",
     "landing_digit_1_3_within_small_and_cardinality",
@@ -16,6 +17,7 @@ for _name in (
     # Newly added tasks
     "landing_on_2_3",
     "landing_digit_1_3_within_small",
+    "rsa_binary",
 ):
     _register(_name)
 

@@ -1,0 +1,260 @@
+"""
+Visualize RSA matrix outputs as a heatmap and 2D MDS scatter plot.
+
+The script reads rsa_matrix_results.csv (as produced by run_rsa_matrix.py),
+builds a symmetric accuracy matrix, and generates:
+  1) A representational dissimilarity matrix (RDM) heatmap.
+  2) A 2D embedding via Multi-Dimensional Scaling (MDS).
+"""
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+from typing import Iterable, List, Tuple, Optional
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from sklearn.manifold import MDS
+
+
+def build_accuracy_matrix(
+    csv_path: Path,
+    metric: str = "Accuracy",
+    subject_filter: Optional[str] = "OVERALL",
+) -> Tuple[np.ndarray, List[int]]:
+    """
+    Build a symmetric matrix for the given metric averaged across seeds.
+
+    Args:
+        csv_path: Path to rsa_matrix_results.csv.
+        metric: Column name to pivot (e.g., 'Accuracy', 'MacroF1').
+        subject_filter: Which subject identifier to keep (e.g., 'OVERALL').
+            If None, all rows are used. When the CSV lacks a 'Subject' column,
+            all rows are treated as OVERALL-compatible.
+
+    Returns:
+        matrix: N×N numpy array with symmetric values.
+        labels: Ordered list of condition codes used for rows/columns.
+    """
+    df = pd.read_csv(csv_path)
+    if metric not in df.columns:
+        raise KeyError(f"Metric '{metric}' not found in {csv_path}. Available: {list(df.columns)}")
+
+    if subject_filter is not None and "Subject" in df.columns:
+        df = df[df["Subject"] == subject_filter].copy()
+    elif subject_filter is not None and "Subject" not in df.columns and subject_filter != "OVERALL":
+        raise ValueError(
+            f"Subject filtering requested ('{subject_filter}') but CSV lacks a 'Subject' column."
+        )
+
+    grouped = (
+        df.groupby(["ClassA", "ClassB"], as_index=False)[metric]
+        .mean()
+        .sort_values(["ClassA", "ClassB"])
+    )
+
+    labels = sorted(set(grouped["ClassA"]).union(grouped["ClassB"]))
+    size = len(labels)
+    label_to_idx = {lbl: idx for idx, lbl in enumerate(labels)}
+
+    matrix = np.full((size, size), np.nan, dtype=float)
+    for _, row in grouped.iterrows():
+        a = int(row["ClassA"])
+        b = int(row["ClassB"])
+        value = float(row[metric])
+        i, j = label_to_idx[a], label_to_idx[b]
+        matrix[i, j] = value
+        matrix[j, i] = value
+
+    if size > 0:
+        if metric.lower().startswith("acc"):
+            diag_value = 100.0
+        else:
+            diag_value = float(np.nanmax(matrix))
+            if np.isnan(diag_value):
+                diag_value = 0.0
+        np.fill_diagonal(matrix, diag_value)
+
+    return matrix, labels
+
+
+def compute_mds_positions(matrix: np.ndarray, labels: Iterable[int]) -> pd.DataFrame:
+    """
+    Compute a 2D MDS embedding from the accuracy matrix.
+
+    Args:
+        matrix: Symmetric accuracy matrix.
+        labels: Iterable of condition codes corresponding to matrix rows.
+
+    Returns:
+        DataFrame with columns ['label', 'x', 'y'].
+    """
+    if matrix.shape[0] != matrix.shape[1]:
+        raise ValueError("Matrix must be square for MDS.")
+
+    # Convert accuracy to dissimilarity: higher accuracy -> larger distance separation.
+    filled = np.array(matrix, copy=True)
+    if np.isnan(filled).any():
+        mean_val = np.nanmean(filled[~np.isnan(filled)])
+        mean_val = float(mean_val if not np.isnan(mean_val) else 0.0)
+        filled = np.where(np.isnan(filled), mean_val, filled)
+
+    distances = filled - 50.0
+    distances = np.where(distances < 0.0, 0.0, distances)
+    np.fill_diagonal(distances, 0.0)
+
+    mds = MDS(
+        n_components=2,
+        dissimilarity="precomputed",
+        random_state=42,
+        n_init=10,
+        normalized_stress="auto",
+    )
+    coords = mds.fit_transform(distances)
+    clean_labels = []
+    for lbl in labels:
+        try:
+            clean_labels.append(int(lbl))
+        except (TypeError, ValueError):
+            clean_labels.append(lbl)
+    return pd.DataFrame({"label": clean_labels, "x": coords[:, 0], "y": coords[:, 1]})
+
+
+def plot_rdm_heatmap(matrix: np.ndarray, labels: List[int], output_path: Path) -> None:
+    """Plot and save the RDM heatmap."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(6, 5))
+
+    matrix = np.array(matrix, copy=True)
+    # Hide redundant upper triangle.
+    upper_idx = np.triu_indices_from(matrix, k=1)
+    matrix[upper_idx] = np.nan
+
+    mask = np.isnan(matrix)
+    off_diag = matrix[~mask]
+    fill_value = float(np.nanmean(off_diag)) if off_diag.size else 0.0
+    display_matrix = np.where(mask, fill_value, matrix)
+
+    cmap = plt.cm.Blues
+    norm_vmin = 50.0
+    norm_vmax = 80.0
+    im = ax.imshow(display_matrix, cmap=cmap, vmin=norm_vmin, vmax=norm_vmax)
+    ax.set_xticks(np.arange(len(labels)))
+    ax.set_xticklabels(labels)
+    ax.set_yticks(np.arange(len(labels)))
+    ax.set_yticklabels(labels)
+    ax.set_xlabel("Class B")
+    ax.set_ylabel("Class A")
+    ax.set_title("RSA Matrix (Higher = Easier to Distinguish)")
+
+    # Annotate values
+    for i in range(len(labels)):
+        for j in range(len(labels)):
+            if j > i:
+                continue
+            value = matrix[i, j]
+            if np.isnan(value):
+                continue
+            text = "" if i == j else f"{value:.1f}"
+            color = "white" if i == j else "black"
+            ax.text(j, i, text, ha="center", va="center", color=color, fontsize=8)
+
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="Accuracy / Metric Value")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)
+
+
+def plot_mds_scatter(positions: pd.DataFrame, output_path: Path) -> None:
+    """Plot and save the 2D MDS scatter plot."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(6, 5))
+
+    ax.scatter(positions["x"], positions["y"], s=80, c="#2a6f97")
+    for _, row in positions.iterrows():
+        label = row["label"]
+        if isinstance(label, (float, np.floating)) and float(label).is_integer():
+            label_text = str(int(label))
+        else:
+            label_text = str(label)
+        ax.annotate(label_text, (row["x"], row["y"]), textcoords="offset points", xytext=(5, 5))
+
+    if not positions.empty:
+        y_min, y_max = positions["y"].min(), positions["y"].max()
+        y_pad = max((y_max - y_min) * 0.15, 1.0)
+        ax.set_ylim(y_min - y_pad, y_max + y_pad)
+
+    ax.set_xlim(-7.5, 7.5)
+    ax.set_xticks(np.arange(-7.5, 7.6, 2.5))
+
+    ax.axhline(0, color="gray", linewidth=0.5)
+    ax.axvline(0, color="gray", linewidth=0.5)
+    ax.set_xlabel("MDS Dimension 1")
+    ax.set_ylabel("MDS Dimension 2")
+    ax.set_title("MDS Projection of RSA Matrix")
+    ax.set_aspect("equal")
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300)
+    plt.close(fig)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Visualize RSA matrix results.")
+    parser.add_argument(
+        "--csv",
+        type=Path,
+        default=Path("results") / "runs" / "rsa_results_master.csv",
+        help="Path to rsa_results_master.csv.",
+    )
+    parser.add_argument(
+        "--metric",
+        default="Accuracy",
+        help="Metric column to visualize (default: Accuracy).",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Directory to store the generated figures (defaults to csv_dir/figures).",
+    )
+    parser.add_argument(
+        "--prefix",
+        default="rsa_matrix",
+        help="Filename prefix for output figures.",
+    )
+    parser.add_argument(
+        "--subject",
+        default="OVERALL",
+        help="Subject identifier to visualize (default: OVERALL).",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    csv_path = args.csv
+    if not csv_path.exists():
+        raise FileNotFoundError(f"CSV file not found: {csv_path}")
+
+    matrix, labels = build_accuracy_matrix(csv_path, metric=args.metric, subject_filter=args.subject)
+    positions = compute_mds_positions(matrix, labels)
+
+    output_dir = args.output_dir
+    if output_dir is None:
+        output_dir = csv_path.parent / "figures"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    heatmap_path = output_dir / f"{args.prefix}_rdm_heatmap.png"
+    scatter_path = output_dir / f"{args.prefix}_mds.png"
+
+    plot_rdm_heatmap(matrix, labels, heatmap_path)
+    plot_mds_scatter(positions, scatter_path)
+
+    print(f"[visualize_rsa] Heatmap saved to {heatmap_path}")
+    print(f"[visualize_rsa] MDS scatter saved to {scatter_path}")
+
+
+if __name__ == "__main__":
+    main()
+

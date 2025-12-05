@@ -1,0 +1,42 @@
+# Stage 1 — Scaffold (Clean) for cardinality_3_vs_4
+
+# --- modest training budget (clean) ---
+epochs:         { method: int, low: 30, high: 50 }
+early_stop:     { method: int, low: 10, high: 16 }
+batch_size:     { method: categorical, choices: [8] }
+lr:             { method: log_uniform, low: 1.0e-4, high: 6.0e-4 }
+weight_decay:   { method: categorical, choices: [2.5e-5] }
+drop_prob:      { method: categorical, choices: [0.55] }
+scheduler_patience: { method: categorical, choices: [8] }
+lr_warmup_frac: { method: categorical, choices: [0.0] }
+lr_warmup_init: { method: categorical, choices: [0.0] }
+
+# --- architecture knobs ---
+filter_1:         { method: int, low: 18, high: 28 }
+filter_2:         { method: int, low: 36, high: 54 }
+kernel_block_1_2: { method: int, low: 40, high: 72 }
+kernel_block_4:   { method: int, low: 24, high: 40 }
+kernel_block_5:   { method: int, low: 20, high: 36 }
+avg_pool_block4:  { method: int, low: 4, high: 6 }
+avg_pool_block5:  { method: int, low: 6, high: 8 }
+dilation_block_4: { method: int, low: 2, high: 4 }
+dilation_block_5: { method: int, low: 3, high: 6 }
+depth_multiplier: { method: int, low: 2, high: 4 }
+activation:       { method: categorical, choices: [elu] }
+max_norm_conv:    { method: uniform, low: 1.6, high: 2.2 }
+max_norm_linear:  { method: uniform, low: 0.45, high: 0.60 }
+
+# --- augmentation OFF in Stage 1 ---
+mixup_alpha:     { method: categorical, choices: [0.0] }
+shift_p:         { method: categorical, choices: [0.0] }
+shift_max_frac:  { method: categorical, choices: [0.0] }
+scale_p:         { method: categorical, choices: [0.0] }
+scale_min:       { method: categorical, choices: [1.0] }
+scale_max:       { method: categorical, choices: [1.0] }
+noise_p:         { method: categorical, choices: [0.0] }
+noise_std:       { method: categorical, choices: [0.0] }
+time_mask_p:     { method: categorical, choices: [0.0] }
+time_mask_frac:  { method: categorical, choices: [0.0] }
+chan_mask_p:     { method: categorical, choices: [0.0] }
+chan_mask_ratio: { method: categorical, choices: [0.0] }
+aug_warmup_frac: { method: categorical, choices: [0.0] }

@@ -150,7 +150,6 @@ python -X utf8 -u scripts/run_xai_analysis.py \
 Input data structure:
 - EEG: HAPPE-preprocessed EEGLAB `.set` files (128-channel EGI system)
   - Preprocessed with 0.3-30 Hz bandpass filter
-  - 500ms epochs (-100ms to +400ms relative to stimulus onset)
 - Behavioral: Trial-level CSV files with columns:
   - `SubjectID`, `Block`, `Trial`, `Procedure`, `Condition`
   - `Target.ACC` (accuracy), `Target.RT` (reaction time)
@@ -175,7 +174,7 @@ See [Data Preparation Guide](docs/DATA_PREPARATION.md) for detailed preprocessin
 
 ## Reproducibility
 
-This project implements safeguards to ensure scientific validity:
+This project implements safeguards for scientific validity:
 
 - Determinism: Strict seeding (Python/NumPy/PyTorch/CUDA), `torch.use_deterministic_algorithms(True)`
 - Subject-Aware Splits: GroupKFold/LOSO with assertions preventing subject leakage
@@ -217,33 +216,3 @@ eeg_nn/
 └── data_preprocessed/          # Materialized .fif epochs (gitignored)
 ```
 
-## Citation
-
-If you use this code or approach in your research, please cite:
-
-```
-[Citation to be added upon manuscript submission]
-
-This project extends: Tang-Lonardo, J. E. (2023). The Neurobehavioral Basis
-of the Parallel Individuation and Approximation Number System [Doctoral
-dissertation, Columbia University].
-```
-
-## Contributing
-
-This project is part of ongoing graduate research at Teachers College, Columbia University. For questions, collaboration inquiries, or bug reports, please:
-- Open an issue on GitHub
-- Contact: mkg2145@tc.columbia.edu
-
-## License
-
-MIT License - see LICENSE file for details.
-
-## Acknowledgments
-
-- Theoretical Foundation: Tang-Lonardo, J. E. (2023), PI/ANS neurobehavioral study
-- EEG Preprocessing: [HAPPE](https://github.com/PINE-Lab/HAPPE) pipeline
-- Deep Learning Framework: [Braindecode](https://braindecode.org/) (EEGNeX model)
-- Hyperparameter Optimization: [Optuna](https://optuna.org/) (TPE sampler)
-- Explainability: [Captum](https://captum.ai/) (Integrated Gradients)
-- Neuroimaging Tools: [MNE-Python](https://mne.tools/) (EEG analysis, topoplots)

@@ -27,34 +27,39 @@ def _pick_best_dirname(df) -> Optional[str]:
 
 def _sort_trials(df):
     """
-    Sort trials by the optimization objective.
-    
-    Priority:
-    1. composite_min_f1_plur_corr (if present - composite objective)
-    2. inner_mean_min_per_class_f1 (legacy default)
-    3. inner_mean_macro_f1, inner_mean_plur_corr, inner_mean_acc (fallbacks)
-    4. mean_acc (last resort)
-    
-    Scientific rationale: Ranking must align with the actual Optuna objective
-    to maintain scientific integrity and proper trial selection.
+    Sort trials by the same metric Optuna optimized (when available).
+
+    Falls back to the legacy priority order when the objective column or
+    metric column is missing (e.g., older CSVs).
     """
-    # Check for composite objective first (new recommended approach)
-    if "composite_min_f1_plur_corr" in df.columns:
-        # Filter out None values for composite (only present when that objective is used)
-        composite_data = df["composite_min_f1_plur_corr"]
-        if composite_data.notna().any():
-            return df.sort_values("composite_min_f1_plur_corr", ascending=False).reset_index(drop=True)
-    
-    # Fallback to legacy ranking order
-    preferred_order_cols = [
+    objective_to_metric = {
+        "composite_min_f1_plur_corr": "composite_min_f1_plur_corr",
+        "inner_mean_min_per_class_f1": "inner_mean_min_per_class_f1",
+        "inner_mean_macro_f1": "inner_mean_macro_f1",
+        "inner_mean_plur_corr": "inner_mean_plur_corr",
+        "inner_mean_acc": "inner_mean_acc",
+    }
+
+    if "optuna_objective" in df.columns:
+        objective_series = df["optuna_objective"].dropna().astype(str)
+        if not objective_series.empty:
+            objective = objective_series.iloc[0]
+            metric_col = objective_to_metric.get(objective)
+            if metric_col and metric_col in df.columns:
+                data = df[df[metric_col].notna()] if metric_col == "composite_min_f1_plur_corr" else df
+                if not data.empty:
+                    return data.sort_values(metric_col, ascending=False).reset_index(drop=True)
+
+    fallback_cols = [
+        "composite_min_f1_plur_corr",
         "inner_mean_min_per_class_f1",
-        "inner_mean_macro_f1", 
+        "inner_mean_macro_f1",
         "inner_mean_plur_corr",
-        "inner_mean_acc", 
-        "mean_acc"
+        "inner_mean_acc",
+        "mean_acc",
     ]
-    for col in preferred_order_cols:
-        if col in df.columns:
+    for col in fallback_cols:
+        if col in df.columns and df[col].notna().any():
             return df.sort_values(col, ascending=False).reset_index(drop=True)
     return df
 
