@@ -10,15 +10,11 @@ from __future__ import annotations
 import argparse
 import math
 from pathlib import Path
-from typing import Tuple
+from typing import Tuple, Optional
 
 import numpy as np
 import pandas as pd
-
-try:
-    from scipy import stats as scipy_stats  # type: ignore
-except Exception:  # pragma: no cover
-    scipy_stats = None
+from scipy import stats as scipy_stats  # type: ignore
 
 
 MASTER_FILENAME = "rsa_results_master.csv"
@@ -50,24 +46,10 @@ def filter_subject_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 def _t_test(values: np.ndarray, baseline: float) -> Tuple[float, float]:
     values = values[~np.isnan(values)]
-    if values.size == 0:
+    if values.size < 2:
         return float("nan"), float("nan")
-    if scipy_stats is not None:
-        t_stat, p_value = scipy_stats.ttest_1samp(values, baseline, nan_policy="omit")
-        return float(t_stat), float(p_value)
-    # Fallback: normal approximation
-    mean_val = float(np.nanmean(values))
-    std_val = float(np.nanstd(values, ddof=1))
-    if math.isclose(std_val, 0.0) or np.isnan(std_val):
-        if math.isclose(mean_val, baseline):
-            t_stat = 0.0
-        else:
-            t_stat = math.inf if mean_val > baseline else -math.inf
-    else:
-        t_stat = (mean_val - baseline) / (std_val / math.sqrt(values.size))
-    # Two-sided p-value using normal approximation
-    p_value = math.erfc(abs(t_stat) / math.sqrt(2.0))
-    return t_stat, p_value
+    t_stat, p_value = scipy_stats.ttest_1samp(values, baseline, nan_policy="omit")
+    return float(t_stat), float(p_value)
 
 
 def _apply_holm_correction(df: pd.DataFrame) -> pd.DataFrame:
@@ -94,7 +76,17 @@ def _apply_holm_correction(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def compute_subject_ttests(df: pd.DataFrame, baseline: float = 50.0) -> pd.DataFrame:
+def _pair_chance_rate(group: pd.DataFrame, requested: Optional[float]) -> float:
+    chance_col = group.get("ChanceRate")
+    chance = float(chance_col.dropna().iloc[0]) if chance_col is not None and not chance_col.dropna().empty else float("nan")
+    if requested is not None and not math.isnan(chance) and not math.isclose(chance, requested):
+        print(f"[analyze_rsa_stats] Warning: empirical chance {chance:.2f}% differs from requested {requested:.2f}%.")
+    if math.isnan(chance):
+        chance = requested if requested is not None else 50.0
+    return chance
+
+
+def compute_subject_ttests(df: pd.DataFrame, baseline: Optional[float] = 50.0) -> pd.DataFrame:
     results = []
     for (class_a, class_b), group in df.groupby(["ClassA", "ClassB"]):
         subject_means = (
@@ -103,7 +95,8 @@ def compute_subject_ttests(df: pd.DataFrame, baseline: float = 50.0) -> pd.DataF
             .dropna()
         )
         acc_values = subject_means.astype(float).to_numpy()
-        t_stat, p_value = _t_test(acc_values, baseline)
+        chance = _pair_chance_rate(group, baseline)
+        t_stat, p_value = _t_test(acc_values, chance)
         results.append(
             {
                 "ClassA": int(class_a),
@@ -117,6 +110,7 @@ def compute_subject_ttests(df: pd.DataFrame, baseline: float = 50.0) -> pd.DataF
                 else float("nan"),
                 "t_stat": t_stat,
                 "p_value": p_value,
+                "chance_rate": chance,
             }
         )
     summary_df = pd.DataFrame(results)

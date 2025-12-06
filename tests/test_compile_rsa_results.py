@@ -2,6 +2,7 @@ import csv
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 
 def _write_outer_eval_csv(path: Path, rows: list[dict]) -> None:
@@ -21,6 +22,19 @@ def _write_outer_eval_csv(path: Path, rows: list[dict]) -> None:
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
+
+
+def _write_predictions_csv(path: Path) -> None:
+    rows = [
+        {"outer_fold": 1, "subject_id": "subj_01", "true_label_idx": 0, "pred_label_idx": 0},
+        {"outer_fold": 1, "subject_id": "subj_01", "true_label_idx": 1, "pred_label_idx": 0},
+        {"outer_fold": 1, "subject_id": "subj_02", "true_label_idx": 0, "pred_label_idx": 1},
+    ]
+    fieldnames = ["outer_fold", "subject_id", "true_label_idx", "pred_label_idx"]
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def test_compile_results_produces_master_csv(tmp_path: Path):
@@ -56,22 +70,37 @@ def test_compile_results_produces_master_csv(tmp_path: Path):
             },
         ],
     )
+    _write_predictions_csv(run_dir / "test_predictions_outer.csv")
 
     from scripts.compile_rsa_results import compile_results_dataframe
 
     df = compile_results_dataframe(run_root)
-    expected_cols = {"ClassA", "ClassB", "Seed", "Subject", "Fold", "RecordType", "Accuracy", "MacroF1", "MinClassF1"}
+    expected_cols = {
+        "ClassA",
+        "ClassB",
+        "Seed",
+        "Subject",
+        "Fold",
+        "RecordType",
+        "Accuracy",
+        "MacroF1",
+        "MinClassF1",
+        "n_trials",
+        "n_correct",
+        "ChanceRate",
+    }
     assert set(df.columns) == expected_cols
-    assert len(df) == 2
+    assert len(df) == 4  # 2 outer_eval rows + 2 subject rows
 
-    overall = df[df["Subject"] == "OVERALL"].iloc[0]
+    overall = df[df["RecordType"] == "overall"].iloc[0]
     assert overall["ClassA"] == 11
     assert overall["ClassB"] == 22
     assert overall["Seed"] == 42
     assert overall["Accuracy"] == 62.0
 
-    fold_row = df[df["Subject"] != "OVERALL"].iloc[0]
-    assert fold_row["Subject"] == "9,15"
-    assert fold_row["Fold"] == "1"
-    assert fold_row["Accuracy"] == 60.0
+    subj_rows = df[df["RecordType"] == "subject"].sort_values("Subject")
+    assert list(subj_rows["n_trials"]) == [2, 1]
+    assert list(subj_rows["n_correct"]) == [1, 0]
+    # ChanceRate should reflect observed label imbalance (2 of label 0, 1 of label 1) -> 2/3 * 100
+    assert pytest.approx(subj_rows["ChanceRate"].iloc[0], rel=1e-3) == 66.6667
 

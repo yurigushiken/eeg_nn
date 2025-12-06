@@ -97,10 +97,22 @@ def derive_subject_rows(
     subject_col = _detect_subject_column(df)
     df["correct"] = _ensure_correct_column(df)
 
+    # Empirical chance rate for this pair (overall, from true labels)
+    true_col = next((c for c in TRUE_LABEL_COLS if c in df.columns), None)
+    if true_col is None:
+        raise KeyError("Predictions CSV is missing true-label columns required to derive chance rate.")
+    label_counts = df[true_col].value_counts()
+    if label_counts.empty:
+        chance_rate = float("nan")
+    else:
+        chance_rate = float(label_counts.max() / label_counts.sum() * 100.0)
+
     rows: List[Dict] = []
     for subject_id, group in df.groupby(subject_col):
         fold_values = group["outer_fold"].unique()
         fold_value = str(fold_values[0]) if fold_values.size else "NA"
+        n_trials = int(len(group))
+        n_correct = int(group["correct"].sum())
         accuracy = float(np.nanmean(group["correct"]) * 100.0)
         rows.append(
             {
@@ -113,6 +125,9 @@ def derive_subject_rows(
                 "Accuracy": accuracy,
                 "MacroF1": float("nan"),
                 "MinClassF1": float("nan"),
+                "n_trials": n_trials,
+                "n_correct": n_correct,
+                "ChanceRate": chance_rate,
             }
         )
     return rows
@@ -152,6 +167,9 @@ def compile_results_dataframe(runs_root: Path) -> pd.DataFrame:
                 "Accuracy": float(row["acc"]),
                 "MacroF1": float(row.get("macro_f1", float("nan"))),
                 "MinClassF1": float(row.get("min_per_class_f1", float("nan"))),
+                "n_trials": float("nan"),
+                "n_correct": float("nan"),
+                "ChanceRate": float("nan"),
             }
             rows.append(entry)
 
