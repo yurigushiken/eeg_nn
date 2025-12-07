@@ -121,15 +121,19 @@ def compute_mds_positions(matrix: np.ndarray, labels: Iterable[int]) -> pd.DataF
     return pd.DataFrame({"label": clean_labels, "x": coords[:, 0], "y": coords[:, 1]})
 
 
-def plot_rdm_heatmap(matrix: np.ndarray, labels: List[int], output_path: Path) -> None:
+def plot_rdm_heatmap(
+    matrix: np.ndarray,
+    labels: List[int],
+    output_path: Path,
+    vmin: float = 50.0,
+    vmax: float = 80.0,
+    title: str = "RSA Matrix (Higher = Easier to Distinguish)",
+) -> None:
     """Plot and save the RDM heatmap."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(6, 5))
 
     matrix = np.array(matrix, copy=True)
-    # Hide redundant upper triangle.
-    upper_idx = np.triu_indices_from(matrix, k=1)
-    matrix[upper_idx] = np.nan
 
     mask = np.isnan(matrix)
     off_diag = matrix[~mask]
@@ -137,26 +141,22 @@ def plot_rdm_heatmap(matrix: np.ndarray, labels: List[int], output_path: Path) -
     display_matrix = np.where(mask, fill_value, matrix)
 
     cmap = plt.cm.Blues
-    norm_vmin = 50.0
-    norm_vmax = 80.0
-    im = ax.imshow(display_matrix, cmap=cmap, vmin=norm_vmin, vmax=norm_vmax)
+    im = ax.imshow(display_matrix, cmap=cmap, vmin=vmin, vmax=vmax)
     ax.set_xticks(np.arange(len(labels)))
     ax.set_xticklabels(labels)
     ax.set_yticks(np.arange(len(labels)))
     ax.set_yticklabels(labels)
     ax.set_xlabel("Class B")
     ax.set_ylabel("Class A")
-    ax.set_title("RSA Matrix (Higher = Easier to Distinguish)")
+    ax.set_title(title)
 
     # Annotate values
     for i in range(len(labels)):
         for j in range(len(labels)):
-            if j > i:
-                continue
             value = matrix[i, j]
             if np.isnan(value):
                 continue
-            text = "" if i == j else f"{value:.1f}"
+            text = f"{value:.1f}"
             color = "white" if i == j else "black"
             ax.text(j, i, text, ha="center", va="center", color=color, fontsize=8)
 

@@ -1,0 +1,6 @@
+master_csv: results/runs/rsa_matrix_v1/rsa_results_master.csv
+stimuli_csv: data/stimuli/stimuli_analysis.csv
+output_dir: results/runs/rsa_matrix_v1/confounds
+baseline_r: 0.0
+codes: [11, 22, 33, 44, 55, 66]
+

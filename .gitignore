@@ -106,3 +106,4 @@ pytest.ini
 /diagnosis/
 /number_sense/
 /stimuli/
+/data/

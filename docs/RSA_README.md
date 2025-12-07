@@ -15,6 +15,7 @@ We train fixed EEGNeX models on every cross-digit pairing from the cardinality s
 | `scripts/visualize_rsa.py` | Produces the Columbia-blue RDM heatmap and the publication-ready MDS scatter. |
 | `scripts/analyze_rsa_stats.py` | Runs per-pair t-tests over subject means (seed-averaged) with Holm correction against a configurable baseline (default 50%). |
 | `scripts/generate_rsa_tables.py` | Generates publication-ready tables (LaTeX, CSV, PNG) from stats summary with formatted p-values and significance markers. |
+| `scripts/analyze_rsa_confounds.py` | Pixel-control partial correlation analysis with theory/pixel/brain and residual RDM heatmaps plus per-subject partial Spearman stats. |
 
 ---
 
@@ -154,7 +155,35 @@ LaTeX tables use booktabs style (no vertical lines) suitable for journal submiss
 
 ---
 
-## 8. Typical Output Tree
+## 8. Pixel-Control Confound Analysis (Theory vs. Pixel vs. Brain)
+
+```powershell
+python -X utf8 -u scripts/analyze_rsa_confounds.py `
+  --config configs/tasks/rsa_pixel_control.yaml
+```
+
+Config defaults:
+- `master_csv`: `results/runs/rsa_matrix_v1/rsa_results_master.csv`
+- `stimuli_csv`: `data/stimuli/stimuli_analysis.csv` (uses only the `e` variants)
+- `output_dir`: `results/runs/rsa_matrix_v1/confounds`
+- `baseline_r`: 0.0 (tests partial R > 0)
+- Codes: `[11, 22, 33, 44, 55, 66]`
+
+What it does:
+- Builds hardcoded Theory RDM (singular–plural with 5 distinctness: 22/33/44 vs 55 = 1.25, 33 vs 66 = 0.5).
+- Builds Pixel RDM from white_pixel_area differences.
+- Builds Brain RDMs per subject (from master CSV subject rows).
+- Partial Spearman (brain vs theory | pixel) per subject; group t-test on Fisher-z against baseline (default 0.0).
+- Residual Brain RDM (pixels regressed out in accuracy space, diagonal=0), plotted on the same 50–80 scale as the raw brain RDM.
+- Outputs:
+  - `confound_stats.csv`
+  - `theory_rdm_heatmap.png` (Blues, vmin=0, vmax=auto)
+  - `pixel_rdm_heatmap.png` (Blues, vmin=0, vmax=auto)
+  - `residual_brain_rdm_heatmap.png` (Blues, vmin=50, vmax=80, annotated)
+
+---
+
+## 9. Typical Output Tree
 
 ```
 results/
@@ -163,6 +192,11 @@ results/
       ├─ rsa_matrix_results.csv
       ├─ rsa_results_master.csv
       ├─ stats_summary.csv
+      ├─ confounds/
+      │   ├─ confound_stats.csv
+      │   ├─ theory_rdm_heatmap.png
+      │   ├─ pixel_rdm_heatmap.png
+      │   └─ residual_brain_rdm_heatmap.png
       ├─ 20251204_195154_rsa_11v22_seed_42/
       │   ├─ outer_eval_metrics.csv
       │   ├─ logs/…
