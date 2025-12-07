@@ -77,16 +77,52 @@ def _apply_holm_correction(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _pair_chance_rate(group: pd.DataFrame, requested: Optional[float]) -> float:
+    """
+    Return the requested baseline for statistical testing.
+
+    Uses theoretical baseline (default 50%) for clean hypothesis testing.
+    Empirical ChanceRate is logged for QC but not used, since slight
+    imbalances due to trial rejection should not affect cognitive testing.
+
+    Args:
+        group: DataFrame with subject rows for one pair
+        requested: Theoretical baseline (default 50%)
+
+    Returns:
+        Baseline chance rate for t-test
+    """
+    baseline = requested if requested is not None else 50.0
+
+    # Check empirical chance for QC (warn if major deviation)
     chance_col = group.get("ChanceRate")
-    chance = float(chance_col.dropna().iloc[0]) if chance_col is not None and not chance_col.dropna().empty else float("nan")
-    if requested is not None and not math.isnan(chance) and not math.isclose(chance, requested):
-        print(f"[analyze_rsa_stats] Warning: empirical chance {chance:.2f}% differs from requested {requested:.2f}%.")
-    if math.isnan(chance):
-        chance = requested if requested is not None else 50.0
-    return chance
+    if chance_col is not None and not chance_col.dropna().empty:
+        empirical = float(chance_col.dropna().iloc[0])
+        if not math.isclose(empirical, baseline, abs_tol=2.0):
+            print(
+                f"[analyze_rsa_stats] Note: empirical chance {empirical:.2f}% "
+                f"differs from theoretical baseline {baseline:.2f}% "
+                f"(likely due to trial rejection). Using theoretical baseline for testing."
+            )
+
+    return baseline
 
 
-def compute_subject_ttests(df: pd.DataFrame, baseline: Optional[float] = 50.0) -> pd.DataFrame:
+def compute_subject_ttests(
+    df: pd.DataFrame,
+    baseline: Optional[float] = 50.0,
+    expected_n_subjects: Optional[int] = None,
+) -> pd.DataFrame:
+    """
+    Compute subject-level t-tests for each pair.
+
+    Args:
+        df: Subject-level rows from rsa_results_master.csv
+        baseline: Theoretical baseline (default 50%)
+        expected_n_subjects: Expected number of subjects for QC warnings (optional)
+
+    Returns:
+        DataFrame with summary statistics and Holm-corrected p-values
+    """
     results = []
     for (class_a, class_b), group in df.groupby(["ClassA", "ClassB"]):
         subject_means = (
@@ -95,13 +131,22 @@ def compute_subject_ttests(df: pd.DataFrame, baseline: Optional[float] = 50.0) -
             .dropna()
         )
         acc_values = subject_means.astype(float).to_numpy()
+        n_subjects = int(np.count_nonzero(~np.isnan(acc_values)))
+
+        # QC check for expected subject count
+        if expected_n_subjects is not None and n_subjects < expected_n_subjects:
+            print(
+                f"[analyze_rsa_stats] Warning: {class_a}v{class_b} has only {n_subjects} subjects "
+                f"(expected {expected_n_subjects}). Some predictions may be missing."
+            )
+
         chance = _pair_chance_rate(group, baseline)
         t_stat, p_value = _t_test(acc_values, chance)
         results.append(
             {
                 "ClassA": int(class_a),
                 "ClassB": int(class_b),
-                "n_subjects": int(np.count_nonzero(~np.isnan(acc_values))),
+                "n_subjects": n_subjects,
                 "mean_accuracy": float(np.nanmean(acc_values))
                 if acc_values.size
                 else float("nan"),
@@ -129,7 +174,13 @@ def parse_args() -> argparse.Namespace:
         "--baseline",
         type=float,
         default=50.0,
-        help="Chance-level baseline accuracy for significance testing.",
+        help="Theoretical baseline accuracy for significance testing (default: 50%%).",
+    )
+    parser.add_argument(
+        "--expected-subjects",
+        type=int,
+        default=None,
+        help="Expected number of subjects for QC warnings (optional).",
     )
     parser.add_argument(
         "--output",
@@ -144,7 +195,11 @@ def main() -> None:
     args = parse_args()
     df = load_master_csv(args.csv)
     subject_df = filter_subject_rows(df)
-    summary_df = compute_subject_ttests(subject_df, baseline=args.baseline)
+    summary_df = compute_subject_ttests(
+        subject_df,
+        baseline=args.baseline,
+        expected_n_subjects=args.expected_subjects,
+    )
 
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

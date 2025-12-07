@@ -286,7 +286,7 @@ def parse_args() -> argparse.Namespace:
         "--csv",
         type=Path,
         required=True,
-        help="Path to rsa_results_master.csv or similar RSA results file.",
+        help="Path to stats_summary.csv (output from analyze_rsa_stats.py).",
     )
     parser.add_argument(
         "--output-dir",

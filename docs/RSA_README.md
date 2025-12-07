@@ -14,6 +14,7 @@ We train fixed EEGNeX models on every cross-digit pairing from the cardinality s
 | `scripts/compile_rsa_results.py` | Crawls run folders and writes a master CSV (`rsa_results_master.csv`) with every OVERALL, fold, and true per-subject metric (using `test_predictions_outer.csv`). |
 | `scripts/visualize_rsa.py` | Produces the Columbia-blue RDM heatmap and the publication-ready MDS scatter. |
 | `scripts/analyze_rsa_stats.py` | Runs per-pair t-tests over subject means (seed-averaged) with Holm correction against a configurable baseline (default 50%). |
+| `scripts/generate_rsa_tables.py` | Generates publication-ready tables (LaTeX, CSV, PNG) from stats summary with formatted p-values and significance markers. |
 
 ---
 
@@ -70,7 +71,7 @@ python -X utf8 -u scripts/compile_rsa_results.py `
   --output results\runs\rsa_matrix_v1\rsa_results_master.csv
 ```
 
-* The script parses folder names (`rsa_<AA>v<BB>_seed_<SS>`), ingests `outer_eval_metrics.csv`, **and** derives per-subject accuracies from each run's `test_predictions_outer.csv` (fallback `test_predictions.csv`).
+* The script parses folder names (`rsa_<AA>v<BB>_seed_<SS>`), ingests `outer_eval_metrics.csv`, **and** derives per-subject accuracies from each run's `test_predictions_outer.csv`.
 * Each row includes `ClassA`, `ClassB`, `Seed`, `Fold`, `Subject`, `RecordType`, `Accuracy`, `MacroF1`, and `MinClassF1`.
 * OVERALL rows capture ensemble metrics; fold rows retain the held-out quartet ID string; subject rows set `RecordType: subject` and one subject ID per line. The stats scripts refuse to run unless these subject rows exist, so do not delete the predictions CSVs.
 
@@ -107,6 +108,7 @@ Additional flags:
 python -X utf8 -u scripts/analyze_rsa_stats.py `
   --csv results\runs\rsa_matrix_v1\rsa_results_master.csv `
   --baseline 50 `
+  --expected-subjects 24 `
   --output results\runs\rsa_matrix_v1\stats_summary.csv
 ```
 
@@ -114,13 +116,45 @@ What you get per pair:
 
 * `n_subjects` – number of unique participants contributing to that pairing (after averaging each participant across seeds; 24 for the current dataset when every subject has data).
 * `mean_accuracy` and `std_accuracy` – subject means in percentage units.
-* `t_stat`, `p_value`, `p_value_holm` – one-sample t-test vs. the specified baseline plus Holm-Bonferroni correction across all 15 pairings. If SciPy is unavailable, the script falls back to a normal approximation.
+* `t_stat`, `p_value`, `p_value_holm` – one-sample t-test vs. the specified baseline plus Holm-Bonferroni correction across all 15 pairings.
+* `chance_rate` – the theoretical baseline used for testing (matches `--baseline` argument).
 
-Use the CSV for quick tables or import it into notebooks for visualization.
+**Baseline testing**: The script uses the theoretical baseline (default 50%) for all t-tests, ensuring clean hypothesis testing without cross-contamination from empirical class distributions. Empirical chance rates are logged for QC but do not affect statistical testing. This approach is appropriate for cognitive neuroscience where slight class imbalances due to trial rejection should not shift the null hypothesis.
+
+**QC options**:
+* `--expected-subjects 24` triggers warnings if any pair has fewer subjects than expected (helps catch missing predictions).
+* Empirical chance rates >2% away from theoretical baseline will trigger informational notes.
+
+Use the CSV for downstream table generation or import it into notebooks for visualization.
 
 ---
 
-## 7. Typical Output Tree
+## 7. Publication Tables
+
+Once you have `stats_summary.csv`, generate publication-ready tables in LaTeX, CSV, and PNG formats:
+
+```powershell
+python -X utf8 -u scripts/generate_rsa_tables.py `
+  --csv results\runs\rsa_matrix_v1\stats_summary.csv `
+  --output-dir results\runs\rsa_matrix_v1\tables
+```
+
+This generates three table sets (each with .tex, .csv, and .png versions):
+
+* **table1_untitled** – Selected comparisons highlighting PI/ANS boundary (1v2, 2v3, 3v4, 3v6, 4v5, 5v6)
+* **table2_one_vs_all** – Numerosity 1 vs. all higher numerosities (1v2, 1v3, 1v4, 1v5, 1v6)
+* **table3_all_pairs** – Complete pairwise comparison matrix (all 15 pairs)
+
+All tables include:
+* Accuracy (%) rounded to 1 decimal place
+* p-values (Holm-corrected when available, with `<0.001` formatting for very small values)
+* Significance markers: `***` (p<0.001), `**` (p<0.01), `*` (p<0.05)
+
+LaTeX tables use booktabs style (no vertical lines) suitable for journal submission.
+
+---
+
+## 8. Typical Output Tree
 
 ```
 results/
@@ -133,16 +167,20 @@ results/
       │   ├─ outer_eval_metrics.csv
       │   ├─ logs/…
       │   └─ plots/…
-      └─ figures/
-          ├─ rsa_matrix_v1_rdm_heatmap.png
-          └─ rsa_matrix_v1_mds.png
+      ├─ figures/
+      │   ├─ rsa_matrix_v1_rdm_heatmap.png
+      │   └─ rsa_matrix_v1_mds.png
+      └─ tables/
+          ├─ table1_untitled.{tex,csv,png}
+          ├─ table2_one_vs_all.{tex,csv,png}
+          └─ table3_all_pairs.{tex,csv,png}
 ```
 
 Adjust names if you run LOSO (`rsa_matrix_loso10` etc.), but keep the structure consistent so automation scripts find what they need.
 
 ---
 
-## 8. Tips & Troubleshooting
+## 9. Tips & Troubleshooting
 
 * **Missing `outer_eval_metrics.csv`** – The compile script skips directories without the file. If a run crashed mid-way it won’t show up; rerun `run_rsa_matrix.py` for that pair/seed.
 * **Mismatched folder names** – `compile_rsa_results.py` expects `rsa_<AA>v<BB>_seed_<SS>`. If you copy or rename folders, keep this format.
@@ -153,7 +191,7 @@ Adjust names if you run LOSO (`rsa_matrix_loso10` etc.), but keep the structure 
 
 ---
 
-## 9. Quick Reference Commands
+## 10. Quick Reference Commands
 
 | Stage | Command |
 |-------|---------|
@@ -161,7 +199,7 @@ Adjust names if you run LOSO (`rsa_matrix_loso10` etc.), but keep the structure 
 | Training (LOSO 10 seeds) | `python -X utf8 -u scripts/run_rsa_matrix.py --config configs/tasks/rsa_binary_loso10.yaml --output-dir results\runs\rsa_matrix_loso10` |
 | Compile master CSV | `python -X utf8 -u scripts/compile_rsa_results.py --runs-dir <run_dir> --output <run_dir>\rsa_results_master.csv` |
 | Visualize | `python -X utf8 -u scripts/visualize_rsa.py --csv <run_dir>\rsa_results_master.csv --subject OVERALL --output-dir <run_dir>\figures --prefix <tag>` |
-| Stats | `python -X utf8 -u scripts/analyze_rsa_stats.py --csv <run_dir>\rsa_results_master.csv --baseline 50 --output <run_dir>\stats_summary.csv` |
+| Stats | `python -X utf8 -u scripts/analyze_rsa_stats.py --csv <run_dir>\rsa_results_master.csv --baseline 50 --expected-subjects 24 --output <run_dir>\stats_summary.csv` |
 | Tables (LaTeX/Markdown) | `python -X utf8 -u scripts/generate_rsa_tables.py --csv <run_dir>\stats_summary.csv --output-dir <run_dir>\tables` |
 
 ---
