@@ -10,23 +10,27 @@ We train fixed EEGNeX models on every cross-digit pairing from the cardinality s
 
 | Component | Purpose |
 |-----------|---------|
-| `scripts/run_rsa_matrix.py` | Launches training for all pairs × seeds using a base YAML config. Optionally auto-generates figures. |
-| `scripts/compile_rsa_results.py` | Crawls run folders and writes a master CSV (`rsa_results_master.csv`) with every OVERALL, fold, and true per-subject metric (using `test_predictions_outer.csv`). |
-| `scripts/visualize_rsa.py` | Produces the Columbia-blue RDM heatmap and the publication-ready MDS scatter. |
-| `scripts/analyze_rsa_stats.py` | Runs per-pair t-tests over subject means (seed-averaged) with Holm correction against a configurable baseline (default 50%). |
-| `scripts/generate_rsa_tables.py` | Generates publication-ready tables (LaTeX, CSV, PNG) from stats summary with formatted p-values and significance markers. |
-| `scripts/analyze_rsa_confounds.py` | Pixel-control partial correlation analysis with theory/pixel/brain and residual RDM heatmaps plus per-subject partial Spearman stats. |
+| `scripts/rsa/run_rsa_matrix.py` | Launches training for all pairs × seeds using a base YAML config. Optionally auto-generates figures. |
+| `scripts/rsa/compile_rsa_results.py` | Crawls run folders and writes a master CSV (`rsa_results_master.csv`) with every OVERALL, fold, and true per-subject metric (using `test_predictions_outer.csv`). |
+| `scripts/rsa/visualize_rsa.py` | Produces the Columbia-blue RDM heatmap and the publication-ready MDS scatter. |
+| `scripts/rsa/analyze_rsa_stats.py` | Runs per-pair t-tests over subject means (seed-averaged) with Holm correction against a configurable baseline (default 50%). |
+| `scripts/rsa/generate_rsa_tables.py` | Generates publication-ready tables (LaTeX, CSV, PNG) from stats summary with formatted p-values and significance markers. |
+| `scripts/rsa/analyze_rsa_confounds.py` | Pixel-control partial correlation analysis with theory/pixel/brain and residual RDM heatmaps plus per-subject partial Spearman stats. |
 
 ---
 
 ## 2. Configurations & Variants
 
-We keep configs in `configs/tasks/`:
+We keep configs in `configs/tasks/rsa/`:
 
 | Config | Description |
 |--------|-------------|
 | `rsa_binary.yaml` | Default workflow—GroupKFold with `n_folds: 6` and seeds `[42, 43, 44]`. Fast enough for daily iterations. |
 | `rsa_binary_loso10.yaml` | LOSO version with 10 seeds `[41…50]` for publication-grade robustness. |
+| `rsa_temporal.yaml` | Time-resolved RSA (50 ms window, 20 ms stride) with pilot defaults. |
+| `rsa_pixel_control.yaml` | Confound-control analysis defaults. |
+
+Legacy classifier configs (cardinality/landing_digit families) are parked under `configs/tasks/legacy_decoding/` and are not part of the current RSA workflows.
 
 Both configs share the same locked hyperparameters (from the best `cardinality_3_vs_4` Optuna run) and disable augmentation for reproducibility. They also bake in visualization defaults:
 
@@ -47,8 +51,8 @@ You can override any of these on the CLI (see below).
 conda activate eegnex-env
 cd D:\eeg_nn
 
-python -X utf8 -u scripts/run_rsa_matrix.py `
-  --config configs/tasks/rsa_binary.yaml `
+python -X utf8 -u scripts/rsa/run_rsa_matrix.py `
+  --config configs/tasks/rsa/rsa_binary.yaml `
   --output-dir results\runs\rsa_matrix_v1
 ```
 
@@ -67,7 +71,7 @@ Key notes:
 After all runs finish:
 
 ```powershell
-python -X utf8 -u scripts/compile_rsa_results.py `
+python -X utf8 -u scripts/rsa/compile_rsa_results.py `
   --runs-dir results\runs\rsa_matrix_v1 `
   --output results\runs\rsa_matrix_v1\rsa_results_master.csv
 ```
@@ -83,7 +87,7 @@ If you rerun training or add new seeds later, rerun this command—the master CS
 ## 5. Visualization (RDM + MDS)
 
 ```powershell
-python -X utf8 -u scripts/visualize_rsa.py `
+python -X utf8 -u scripts/rsa/visualize_rsa.py `
   --csv results\runs\rsa_matrix_v1\rsa_results_master.csv `
   --subject OVERALL `
   --output-dir results\figures\rsa_matrix_v1 `
@@ -106,7 +110,7 @@ Additional flags:
 ## 6. Subject-Level Statistics
 
 ```powershell
-python -X utf8 -u scripts/analyze_rsa_stats.py `
+python -X utf8 -u scripts/rsa/analyze_rsa_stats.py `
   --csv results\runs\rsa_matrix_v1\rsa_results_master.csv `
   --baseline 50 `
   --expected-subjects 24 `
@@ -135,7 +139,7 @@ Use the CSV for downstream table generation or import it into notebooks for visu
 Once you have `stats_summary.csv`, generate publication-ready tables in LaTeX, CSV, and PNG formats:
 
 ```powershell
-python -X utf8 -u scripts/generate_rsa_tables.py `
+python -X utf8 -u scripts/rsa/generate_rsa_tables.py `
   --csv results\runs\rsa_matrix_v1\stats_summary.csv `
   --output-dir results\runs\rsa_matrix_v1\tables
 ```
@@ -158,8 +162,8 @@ LaTeX tables use booktabs style (no vertical lines) suitable for journal submiss
 ## 8. Pixel-Control Confound Analysis (Theory vs. Pixel vs. Brain)
 
 ```powershell
-python -X utf8 -u scripts/analyze_rsa_confounds.py `
-  --config configs/tasks/rsa_pixel_control.yaml
+python -X utf8 -u scripts/rsa/analyze_rsa_confounds.py `
+  --config configs/tasks/rsa/rsa_pixel_control.yaml
 ```
 
 Config defaults:
@@ -229,12 +233,12 @@ Adjust names if you run LOSO (`rsa_matrix_loso10` etc.), but keep the structure 
 
 | Stage | Command |
 |-------|---------|
-| Training (default) | `python -X utf8 -u scripts/run_rsa_matrix.py --config configs/tasks/rsa_binary.yaml --output-dir results\runs\rsa_matrix_v1` |
-| Training (LOSO 10 seeds) | `python -X utf8 -u scripts/run_rsa_matrix.py --config configs/tasks/rsa_binary_loso10.yaml --output-dir results\runs\rsa_matrix_loso10` |
-| Compile master CSV | `python -X utf8 -u scripts/compile_rsa_results.py --runs-dir <run_dir> --output <run_dir>\rsa_results_master.csv` |
-| Visualize | `python -X utf8 -u scripts/visualize_rsa.py --csv <run_dir>\rsa_results_master.csv --subject OVERALL --output-dir <run_dir>\figures --prefix <tag>` |
-| Stats | `python -X utf8 -u scripts/analyze_rsa_stats.py --csv <run_dir>\rsa_results_master.csv --baseline 50 --expected-subjects 24 --output <run_dir>\stats_summary.csv` |
-| Tables (LaTeX/Markdown) | `python -X utf8 -u scripts/generate_rsa_tables.py --csv <run_dir>\stats_summary.csv --output-dir <run_dir>\tables` |
+| Training (default) | `python -X utf8 -u scripts/rsa/run_rsa_matrix.py --config configs/tasks/rsa/rsa_binary.yaml --output-dir results\runs\rsa_matrix_v1` |
+| Training (LOSO 10 seeds) | `python -X utf8 -u scripts/rsa/run_rsa_matrix.py --config configs/tasks/rsa/rsa_binary_loso10.yaml --output-dir results\runs\rsa_matrix_loso10` |
+| Compile master CSV | `python -X utf8 -u scripts/rsa/compile_rsa_results.py --runs-dir <run_dir> --output <run_dir>\rsa_results_master.csv` |
+| Visualize | `python -X utf8 -u scripts/rsa/visualize_rsa.py --csv <run_dir>\rsa_results_master.csv --subject OVERALL --output-dir <run_dir>\figures --prefix <tag>` |
+| Stats | `python -X utf8 -u scripts/rsa/analyze_rsa_stats.py --csv <run_dir>\rsa_results_master.csv --baseline 50 --expected-subjects 24 --output <run_dir>\stats_summary.csv` |
+| Tables (LaTeX/Markdown) | `python -X utf8 -u scripts/rsa/generate_rsa_tables.py --csv <run_dir>\stats_summary.csv --output-dir <run_dir>\tables` |
 
 ---
 

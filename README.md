@@ -1,6 +1,6 @@
 # EEG Deep Learning for Numerical Cognition
 
-A deep learning pipeline for decoding numerical representations from 128-channel EEG data, investigating the neural signatures of the Parallel Individuation (PI) and Approximate Number System (ANS) during numerical change detection.
+A deep learning pipeline for decoding numerical representations from 128-channel EEG data. This project implements **Deep Learning-based Representational Similarity Analysis (RSA)** to map the neural geometry of the Parallel Individuation (PI) and Approximate Number System (ANS).
 
 ## Scientific Motivation
 
@@ -8,211 +8,66 @@ A deep learning pipeline for decoding numerical representations from 128-channel
 
 Cognitive neuroscience proposes two distinct systems for processing quantities:
 
-1. Parallel Individuation (PI) / Object File System:
-   - Processes small numbers (1-3) via "subitizing": rapid, precise enumeration
-   - Limited capacity of ~3-4 objects
-   - Linked to visual short-term memory and object tracking
+1. **Parallel Individuation (PI):** Processes small numbers via rapid, precise "object files."
+2. **Approximate Number System (ANS):** Processes larger numbers via magnitude estimation, where precision follows Weber's law.
 
-2. Approximate Number System (ANS):
-   - Processes larger numbers (4 or 5+) via magnitude estimation
-   - Weber's law: discrimination depends on numerical ratio
-   - Imprecise representations as overlapping Gaussian distributions
+### The Geometric Debate
 
-### Research Questions
+While the existence of these systems is established, the precise neural geometry of the transition remains debated. Does the brain switch systems abruptly? Are small numbers represented as distinct "slots," or do they form a categorical cluster?
 
-This project asks: Can we decode individual numerosities from trial-level EEG data using deep learning? Specifically:
-- Do neural signatures distinguish numerosities within and across the PI/ANS boundary?
-- Can we identify the "border" between the two systems from decoding performance?
-- How do neural patterns differ for increasing vs. decreasing numerical changes?
-- Can we decode not just change detection, but specific landing digits (which number participants saw)?
+**This project asks:** Can we use Convolutional Neural Networks (CNNs) to map the representational state space of numerosity?
+
+Specifically:
+- **The Boundary:** Can we decode the exact transition between the precision of PI and the approximation of ANS?
+- **The Structure:** Is there a unique representational geometry within the small-number range?
+- **Grouping:** Does the brain utilize grouping mechanisms to represent composite numbers?
 
 ## Study Background
 
-This project uses data from a 2023 doctoral dissertation (Tang-Lonardo, Columbia University) that examined numerical change detection using traditional ERP analysis. We apply deep learning to the expanded dataset (N=24, 6,480 trials) to decode individual numerosities from single-trial EEG patterns. The original ERP study (N=15) found N1 amplitudes scaled with small numbers but plateaued for large numbers, and P3b latencies mirrored reaction times.
-
-Data collection: 128-channel EEG recorded during an oddball task where participants detected numerical changes (1-6 dots). Example trial: 4 → 4 → 4 → 6 (participant presses spacebar on "6").
+This project analyzes data from a numerical oddball task (N=24 adults, 6,480 trials). Participants viewed dot arrays while EEG was recorded. Unlike traditional ERP analyses that average signals across electrodes, we apply **Deep Learning RSA** to decode fine-grained spatiotemporal patterns from raw, single-trial data.
 
 ## What This Pipeline Does
 
-This repository implements a deep learning pipeline for EEG decoding with:
-- Subject-aware nested cross-validation (prevents data leakage)
-- Three-stage automated hyperparameter search (Optuna TPE)
-- Multiple decoding objectives: cardinality classification, landing digit identification
-- Explainable AI: Integrated Gradients with brain topographic maps
-- Statistical rigor: permutation testing, deterministic seeding, full audit trails
+This repository implements a rigorous pipeline that uses a compact CNN (**EEGNeX**) as a distance metric for Representational Similarity Analysis.
 
-We train convolutional neural networks (EEGNeX architecture) directly on raw EEG epochs to classify:
-1. Which numerosity range (1-3, 4-6)
-2. Which specific landing digit (e.g., "was it 2 or 3?")
-3. Combined cardinality + landing digit tasks
+Instead of standard correlation-based RSA, we:
+1.  Train neural networks to distinguish every possible pair of numerosities.
+2.  Use **decoding accuracy** as the measure of representational dissimilarity.
+3.  Construct a **Representational Dissimilarity Matrix (RDM)** to visualize the neural geometry.
+4.  Control for visual confounds (pixel area) using partial correlation analysis.
 
-## Preliminary Results
+## Findings
 
-Summary: The models reliably classify several two-class contrasts (e.g., specific small numerosity pairs, change vs. no-change) above chance, while three-way and six-way tasks are more fragile and reveal substantial individual variability. Contrasts that include "one" are the most robust, suggesting that oneness has a more distinct neural pattern than other numerosities in this dataset.
+### Uncovering the Neural State Space
 
-### Three-Way Classification: Numerosities 1, 2, 3 (PI Range)
+By projecting our Deep Learning RDM into 2D space (Multidimensional Scaling), we uncovered a non-linear architecture of number processing in the adult brain.
 
-Confusion Matrix (Leave-One-Subject-Out, N=24)
+**1. System Distinctness & Boundary:**
+We identified a representational boundary that delineates the limit of the object-tracking system. Confirm the existence of two distinct neural codes for small versus large quantities, with a clear transition between them.
 
-The ternary PI-range experiment continues to outperform chance but remains fragile: class “1” retains the clearest signature, whereas “2” and “3” are often interchangeable in the confusion matrix. This mirrors prior PI literature where oneness shows the most distinctive neural trace. We summarize the qualitative takeaways here and reserve exact percentages for the eventual manuscript.
+**2. Structure Within Object Tracking:**
+we do not find uniform distinctness for all small numbers. We find a similarity cluster.
 
-### Binary Classification: Distinguishing Landing Digits 2 vs 3
+**3. The Divisibility Effect:**
+(awaiting results)
 
-Confusion Matrix (Leave-One-Subject-Out, N=24)
-![Binary Confusion Matrix](docs/media/landing_on_2_3_overall_confusion.png)
+### Robustness to Visual Confounds
+We performed a rigorous control analysis to ensure these results were not driven by low-level visual features. 
 
-When isolating “2” vs “3,” the model delivers a modest but consistent edge over chance with roughly balanced per-class performance. The figure illustrates that these two numerosities become more separable once “1” is removed, hinting at distinct neural patterns even within the subitizing range. Exact scores will be reported in the manuscript.
+## Supported Workflows
 
-### Hyperparameter Optimization
+The pipeline supports end-to-end RSA execution:
 
-Convergence:
-![Optimization History](docs/media/landing_on_2_3_history.png)
-
-Optuna’s TPE search quickly homes in on stable architectures; even early trials already satisfy the composite decodability+distinctness objective, and later trials mostly refine robustness.
-
-Importance Analysis:
-![Hyperparameter Importance](docs/media/landing_on_2_3_importances.png)
-
-Temporal augmentation knobs (`time_mask_p`, `time_mask_frac`) emerge as the dominant levers for generalization, reinforcing the ERP-inspired hypothesis that time-varying signatures carry most of the discriminative power.
-
-## Supported Tasks
-
-The pipeline currently supports 7 decoding tasks:
-
-Cardinality Tasks (binary/ternary classification by range):
-- `cardinality_1_3`: Classify numerosities in the PI range (1 vs 2 vs 3)
-- `cardinality_4_6`: Classify numerosities in the ANS range (4 vs 5 vs 6)
-- `cardinality_1_6`: Six-way classification across both systems (1-6)
-
-Landing Digit Tasks (identify the specific target numerosity):
-- `landing_on_2_3`: Binary classification (2 vs 3) within PI range
-- `landing_digit_1_3_within_small`: Ternary classification of landing digit (1/2/3)
-- `landing_digit_1_3_within_small_and_cardinality`: Combined task (includes no-change trials)
-- `landing_digit_4_6_within_large_and_cardinality`: Combined task for ANS range (4/5/6 + no-change)
-
+* `rsa_binary`: Trains pairwise classifiers across 10 random seeds using Leave-One-Subject-Out (LOSO) cross-validation.
+* `rsa_pixel_control`: Performs post-hoc statistical analysis to regress out pixel confounds from the brain RDM.
+* `generate_rsa_tables`: Produces publication-ready LaTeX tables of pairwise decoding statistics (Holm-corrected).
 
 ## Features
 
-- Leak-Free Validation: Subject-aware splits ensure no participant data appears in both train and test
-- Constitutional Rigor: All parameters must be explicitly specified
-- Three-Stage Optuna Search: Progressive refinement (architecture, recipe, augmentation)
-- Composite Objectives: Balance decodability (min-per-class F1) and distinctness (plurality correctness)
-- Explainable AI: Integrated Gradients reveal which channels/timepoints drive predictions
-- Permutation Testing: Generate empirical null distributions with fixed splits
-- Full Provenance: Every run logs model class, library versions, hardware, seeds, hyperparameters
-- Publication-Ready: Automated figure generation 
-
-## Quick Start
-
-### Installation
-
-```powershell
-# Clone repository
-git clone https://github.com/yourusername/eeg_nn.git
-cd eeg_nn
-
-# Create conda environment
-conda env create -f environment.yml
-conda activate eegnex-env
-
-# Optional: Enable PDF report generation
-playwright install
-```
-
-### Basic Usage
-
-```powershell
-# 1. Prepare data (one-time conversion from HAPPE-cleaned EEGLAB .set files)
-python scripts/prepare_from_happe.py
-
-# 2. Run a single LOSO evaluation (Leave-One-Subject-Out)
-python -X utf8 -u train.py \
-  --task cardinality_1_3 \
-  --engine eeg \
-  --base configs/tasks/cardinality_1_3/base.yaml
-
-# 3. Run hyperparameter search (Stage 1: architecture exploration)
-python -X utf8 -u scripts/optuna_search.py \
-  --stage step1 \
-  --task cardinality_1_3 \
-  --base configs/tasks/cardinality_1_3/base.yaml \
-  --cfg configs/tasks/cardinality_1_3/step1_search.yaml \
-  --space configs/tasks/cardinality_1_3/step1_space_scaffold.yaml \
-  --trials 48
-
-# 4. Generate explainability analysis (topomaps, time-frequency, attributions)
-python -X utf8 -u scripts/run_xai_analysis.py \
-  --run-dir "results\runs\<run_dir_name>"
-```
-
-## Data Requirements
-
-Input data structure:
-- EEG: HAPPE-preprocessed EEGLAB `.set` files (128-channel EGI system)
-  - Preprocessed with 0.3-30 Hz bandpass filter
-- Behavioral: Trial-level CSV files with columns:
-  - `SubjectID`, `Block`, `Trial`, `Procedure`, `Condition`
-  - `Target.ACC` (accuracy), `Target.RT` (reaction time)
-  - Derived columns: `direction` (increasing/decreasing), `size` (small/large), `change_group`
-- Montage: 128-channel sensor positions (`net/AdultAverageNet128_v1.sfp`) for topoplot generation
-
-See [Data Preparation Guide](docs/DATA_PREPARATION.md) for detailed preprocessing steps.
-
-## Documentation
-
-- [Quick Start Guide](docs/QUICK_START.md) - Get running in 5 minutes
-- [Configuration Reference](docs/CONFIGURATION.md) - Complete configuration options
-- [CLI Reference](docs/CLI_REFERENCE.md) - All command-line tools
-- [Workflows](docs/WORKFLOWS.md) - Common usage patterns (multi-seed, permutation testing)
-- [XAI Guide](docs/XAI_GUIDE.md) - Explainability analysis (Integrated Gradients, topomaps)
-- [Optuna Guide](docs/OPTUNA_GUIDE.md) - Hyperparameter optimization strategies
-- [Statistics Guide](docs/STATISTICS.md) - Post-hoc analysis (GLMM, permutation tests)
-- [Data Preparation](docs/DATA_PREPARATION.md) - Preprocessing pipeline details
-- [Technical Details](docs/TECHNICAL_DETAILS.md) - Implementation specifics
-- [Architecture](docs/ARCHITECTURE.md) - Repository organization
-- [Troubleshooting](docs/TROUBLESHOOTING.md) - Common issues and solutions
-
-## Reproducibility
-
-This project implements safeguards for scientific validity:
-
-- Determinism: Strict seeding (Python/NumPy/PyTorch/CUDA), `torch.use_deterministic_algorithms(True)`
-- Subject-Aware Splits: GroupKFold/LOSO with assertions preventing subject leakage
-- Nested Cross-Validation: Inner K-fold for hyperparameter selection, outer fold for unbiased test evaluation
-- Provenance Tracking: Every run logs model architecture, library versions, hardware specs, determinism flags
-- Audit Trails: Exports split indices, per-trial predictions, learning curves, checkpoint metadata
-- Permutation Testing: Empirical null distributions with fixed split structure (label shuffling only)
-- Constitutional Requirements: All critical parameters must be explicitly specified (no silent fallbacks)
-- Objective-Aligned Pruning: Early stopping and checkpoint selection use the same metric as hyperparameter optimization
-
-## Repository Structure
-
-```
-eeg_nn/
-├── code/                       # Core implementation
-│   ├── training/              # Modular training orchestration
-│   │   ├── setup_orchestrator.py
-│   │   ├── inner_loop.py
-│   │   ├── outer_loop.py
-│   │   └── evaluation.py
-│   ├── artifacts/             # CSV writers, plot builders
-│   ├── preprocessing/         # MNE pipeline, spatial sampling
-│   ├── datasets.py            # EEG data loaders
-│   ├── model_builders.py      # EEGNeX architecture
-│   └── training_runner.py     # Thin coordinator
-├── configs/                    # YAML configuration files
-│   ├── common.yaml            # Global defaults
-│   └── tasks/                 # Per-task configs (base, search spaces)
-├── scripts/                    # Command-line entry points
-│   ├── train.py
-│   ├── optuna_search.py
-│   ├── run_xai_analysis.py
-│   └── run_posthoc_stats.py
-├── docs/                       # Detailed documentation
-├── results/                    # Training outputs, Optuna studies
-│   ├── runs/                  # Individual training runs
-│   └── optuna/                # Hyperparameter search databases
-├── publication-ready-media/    # Figures meeting journal standards
-└── data_preprocessed/          # Materialized .fif epochs (gitignored)
-```
+- **Leak-Free Validation:** Subject-aware splits ensure no participant data appears in both train and test.
+- **Constitutional Rigor:** All parameters must be explicitly specified via YAML.
+- **Automated RSA:** End-to-end scripts for training, RDM generation, and Multidimensional Scaling (MDS) visualization.
+- **Explainable AI:** Integrated Gradients to map spatiotemporal feature importance.
+- **Statistical Rigor:** Deterministic seeding, permutation testing, and partial correlation analysis for confounds.
+- **Full Provenance:** Every run logs model class, library versions, hardware, and seeds.
 

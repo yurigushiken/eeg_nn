@@ -19,7 +19,7 @@ from typing import Dict, Iterable, Iterator, List, Sequence, Tuple, Optional, Se
 
 import yaml
 
-PROJ_ROOT = Path(__file__).resolve().parents[1]
+PROJ_ROOT = Path(__file__).resolve().parents[2]
 code_root = PROJ_ROOT / "code"
 for path in (PROJ_ROOT, code_root):
     if str(path) not in sys.path:
@@ -28,7 +28,7 @@ for path in (PROJ_ROOT, code_root):
 from engines import get as get_engine
 from tasks import get as get_task
 from tasks import rsa_binary
-from scripts.visualize_rsa import (
+from scripts.rsa.visualize_rsa import (
     build_accuracy_matrix,
     compute_mds_positions,
     plot_rdm_heatmap,
@@ -39,7 +39,7 @@ try:
 except ModuleNotFoundError:
     from importlib.util import module_from_spec, spec_from_file_location
 
-    _PROJ_ROOT = Path(__file__).resolve().parents[1]
+    _PROJ_ROOT = Path(__file__).resolve().parents[2]
     _seed_module_path = _PROJ_ROOT / "utils" / "seeding.py"
     _spec = spec_from_file_location("_rsa_seeding", str(_seed_module_path))
     if _spec and _spec.loader:
@@ -85,7 +85,7 @@ def aggregate_outer_metrics(run_dir: Path, class_a: int, class_b: int, seed: int
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run RSA binary matrix training.")
-    parser.add_argument("--config", default="configs/tasks/rsa_binary.yaml")
+    parser.add_argument("--config", default="configs/tasks/rsa/rsa_binary.yaml")
     parser.add_argument(
         "--output-dir",
         default="results/runs",
