@@ -1,0 +1,60 @@
+# Time-Resolved RSA Configuration
+# Sliding window temporal decoding to track numerosity representation emergence
+
+# Inherit base RSA settings
+model_name: eegnex
+
+# PILOT RUN: 1 seed, 1 pair for testing
+# After validation, change to: seeds: [42, 43, 44] and conditions: [11, 22, 33, 44, 55, 66]
+optuna_objective: inner_mean_min_per_class_f1
+seeds: [42]  # Single seed for pilot
+
+# Temporal windowing parameters
+temporal:
+  epoch_ms: 500      # Total epoch duration (matches materialized data)
+  window_ms: 50      # Window duration (≈12-13 samples at 250Hz)
+  stride_ms: 20      # Stride between windows (≈5 samples, 75% overlap)
+  # This generates 23 time windows: t0-50ms, t20-70ms, ..., t450-500ms
+
+# Data
+materialized_dir: data_preprocessed/hpf_1.5_lpf_35_baseline-on-avgref
+crop_ms: null  # Will be overwritten by temporal windows
+exclude_channel_list: non_scalp
+trial_filter: all
+
+# Training schedule (same as rsa_binary.yaml)
+epochs: 100
+early_stop: 20
+batch_size: 128
+lr: 0.001
+inner_n_folds: 5
+n_folds: 6              # Subject-aware GroupKFold
+outer_eval_mode: ensemble
+
+# Regularization
+weight_decay: 0.000025
+drop_prob: 0.5
+scheduler_patience: 5
+lr_warmup_frac: 0.0
+lr_warmup_init: 0.0
+
+# EEGNeX architecture (canonical EEGNeX-8,32)
+filter_1: 8
+filter_2: 32
+kernel_block_1_2: 32
+kernel_block_4: 16
+kernel_block_5: 16
+avg_pool_block4: 4
+avg_pool_block5: 4   # Reduced for 50ms windows to avoid zero-length time dim
+dilation_block_4: 2
+dilation_block_5: 4
+depth_multiplier: 2
+activation: elu
+max_norm_conv: 1.0
+max_norm_linear: 0.25
+
+dataset_cache_memory: true
+
+# Output
+output_dir: results/runs/rsa_temporal_v1
+results_filename: rsa_temporal_results.csv
