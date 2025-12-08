@@ -166,37 +166,66 @@ def plot_rdm_heatmap(
     plt.close(fig)
 
 
-def plot_mds_scatter(positions: pd.DataFrame, output_path: Path) -> None:
-    """Plot and save the 2D MDS scatter plot."""
+def plot_mds_scatter(positions: pd.DataFrame, output_path: Path, flip_xy: bool = False) -> None:
+    """Plot and save the 2D MDS scatter plot.
+
+    Args:
+        positions: DataFrame with x, y coordinates
+        output_path: Path to save PNG
+        flip_xy: If True, swap x and y axes for alternative view
+    """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(figsize=(6, 5))
 
-    ax.scatter(positions["x"], positions["y"], s=80, c="#2a6f97")
+    # Optionally flip x and y for alternative visualization
+    if flip_xy:
+        x_coord = positions["y"]
+        y_coord = positions["x"]
+    else:
+        x_coord = positions["x"]
+        y_coord = positions["y"]
+
+    ax.scatter(x_coord, y_coord, s=80, c="#2a6f97")
     for _, row in positions.iterrows():
         label = row["label"]
         if isinstance(label, (float, np.floating)) and float(label).is_integer():
             label_text = str(int(label))
         else:
             label_text = str(label)
-        ax.annotate(label_text, (row["x"], row["y"]), textcoords="offset points", xytext=(5, 5))
+        x_pos = row["y"] if flip_xy else row["x"]
+        y_pos = row["x"] if flip_xy else row["y"]
+        ax.annotate(label_text, (x_pos, y_pos), textcoords="offset points", xytext=(5, 5))
 
-    if not positions.empty:
-        y_min, y_max = positions["y"].min(), positions["y"].max()
-        y_pad = max((y_max - y_min) * 0.15, 1.0)
-        ax.set_ylim(y_min - y_pad, y_max + y_pad)
-
-    ax.set_xlim(-7.5, 7.5)
-    ax.set_xticks(np.arange(-7.5, 7.6, 2.5))
+    # Set x-axis range and ticks based on whether flipped
+    if flip_xy:
+        ax.set_xlim(-15, 15)
+        ax.set_xticks(np.arange(-10, 11, 5))  # Labels only from -10 to 10, step 5
+        ax.set_ylim(-6, 6)  # Fixed y-axis range for flipped version
+    else:
+        ax.set_xlim(-7.5, 7.5)
+        ax.set_xticks(np.arange(-7.5, 7.6, 2.5))
+        # Auto y-axis for non-flipped
+        if not positions.empty:
+            coord_min, coord_max = y_coord.min(), y_coord.max()
+            coord_pad = max((coord_max - coord_min) * 0.02, 0.2)
+            ax.set_ylim(coord_min - coord_pad, coord_max + coord_pad)
 
     ax.axhline(0, color="gray", linewidth=0.5)
     ax.axvline(0, color="gray", linewidth=0.5)
-    ax.set_xlabel("MDS Dimension 1")
-    ax.set_ylabel("MDS Dimension 2")
-    ax.set_title("MDS Projection of RSA Matrix")
+
+    if flip_xy:
+        ax.set_xlabel("MDS Dimension 2")
+        ax.set_ylabel("MDS Dimension 1")
+        ax.set_title("MDS Projection of RSA Matrix")
+    else:
+        ax.set_xlabel("MDS Dimension 1")
+        ax.set_ylabel("MDS Dimension 2")
+        ax.set_title("MDS Projection of RSA Matrix")
+
     ax.set_aspect("equal")
 
-    fig.tight_layout()
-    fig.savefig(output_path, dpi=300)
+    fig.tight_layout(pad=0.5)
+    fig.savefig(output_path, dpi=300, bbox_inches='tight')
     plt.close(fig)
 
 
@@ -249,10 +278,10 @@ def main() -> None:
     scatter_path = output_dir / f"{args.prefix}_mds.png"
 
     plot_rdm_heatmap(matrix, labels, heatmap_path)
-    plot_mds_scatter(positions, scatter_path)
+    plot_mds_scatter(positions, scatter_path, flip_xy=True)
 
     print(f"[visualize_rsa] Heatmap saved to {heatmap_path}")
-    print(f"[visualize_rsa] MDS scatter saved to {scatter_path}")
+    print(f"[visualize_rsa] MDS scatter (flipped) saved to {scatter_path}")
 
 
 if __name__ == "__main__":

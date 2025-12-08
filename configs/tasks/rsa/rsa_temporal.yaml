@@ -4,10 +4,10 @@
 # Inherit base RSA settings
 model_name: eegnex
 
-# PILOT RUN: 1 seed, 1 pair for testing
-# After validation, change to: seeds: [42, 43, 44] and conditions: [11, 22, 33, 44, 55, 66]
+# FULL RUN: All pairs, all seeds for publication
+# Pilot was successful (peak 62% @ 185ms for 1v2) - now ready for overnight run
 optuna_objective: inner_mean_min_per_class_f1
-seeds: [42]  # Single seed for pilot
+seeds: [49]  # One seeds for time
 
 # Temporal windowing parameters
 temporal:

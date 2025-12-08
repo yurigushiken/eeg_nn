@@ -28,7 +28,8 @@ from typing import Dict, Iterable, Iterator, List, Sequence, Tuple, Optional, Se
 
 import yaml
 
-PROJ_ROOT = Path(__file__).resolve().parents[1]
+# This script is in scripts/rsa/, so go up 2 levels to reach project root
+PROJ_ROOT = Path(__file__).resolve().parents[2]
 code_root = PROJ_ROOT / "code"
 for path in (PROJ_ROOT, code_root):
     if str(path) not in sys.path:
