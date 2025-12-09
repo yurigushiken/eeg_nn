@@ -45,6 +45,6 @@ dataset_cache_memory: true
 
 # Visualization defaults
 rsa_visualize: true
-rsa_visualize_output_dir: results/figures/rsa_matrix_loso10
+# rsa_visualize_output_dir will default to output_dir/figures
 rsa_visualize_prefix: rsa_matrix_loso10
 rsa_visualize_metric: Accuracy

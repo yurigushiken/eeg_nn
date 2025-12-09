@@ -87,19 +87,29 @@ conda_env.yml
 /media/**/*.csv
 /media/**/*.pdf
 
-# Allow documentation and specs (but not media outputs)
+# Publication-ready media (generated outputs)
+/publication_ready_media/
+/media/
+
+# Feature map outputs
+number_sense_feature_map.pdf
+number_sense_feature_map.png
+
+# Allow documentation (but not media outputs)
 !docs/**
-!specs/**
 !**/*README*
 !.gitkeep
 
 
-# Spec Kit / Codex
+# Spec Kit / Codex / Development directories
 .codex/
 .codex.bak_20250930_190152/
 .cursor/
 .claude/
 .specify/
+/specs/
+/tasks/
+/tests/
 DECISION_LAYER_REPORTING_IMPLEMENTATION_STATUS.md
 pytest.ini
 

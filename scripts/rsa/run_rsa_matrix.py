@@ -342,7 +342,8 @@ def main() -> None:
     visualize = args.visualize or config_visualize
     viz_dir = args.viz_output_dir or config_viz_dir
     if viz_dir is None:
-        viz_dir = summary_path.parent / "figures"
+        # Default to figures directory inside the run output directory
+        viz_dir = output_root / "figures"
     viz_prefix = args.viz_prefix if args.viz_prefix else config_viz_prefix
     viz_metric = args.viz_metric if args.viz_metric else config_viz_metric
 
@@ -354,7 +355,7 @@ def main() -> None:
         heatmap_path = viz_dir / f"{viz_prefix}_rdm_heatmap.png"
         scatter_path = viz_dir / f"{viz_prefix}_mds.png"
         plot_rdm_heatmap(matrix, labels, heatmap_path)
-        plot_mds_scatter(positions, scatter_path)
+        plot_mds_scatter(positions, scatter_path, flip_xy=True)
         print(f"[rsa-matrix] Heatmap saved to {heatmap_path.resolve()}", flush=True)
         print(f"[rsa-matrix] MDS scatter saved to {scatter_path.resolve()}", flush=True)
 

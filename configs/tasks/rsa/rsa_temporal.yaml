@@ -7,7 +7,7 @@ model_name: eegnex
 # FULL RUN: All pairs, all seeds for publication
 # Pilot was successful (peak 62% @ 185ms for 1v2) - now ready for overnight run
 optuna_objective: inner_mean_min_per_class_f1
-seeds: [49]  # One seeds for time
+seeds: [50, 51]  # Adding seeds 50 and 51 to complete the run
 
 # Temporal windowing parameters
 temporal:
