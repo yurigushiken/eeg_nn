@@ -89,6 +89,7 @@ conda_env.yml
 
 # Publication-ready media (generated outputs)
 /publication_ready_media/
+/publication-ready-media/
 /media/
 
 # Feature map outputs
