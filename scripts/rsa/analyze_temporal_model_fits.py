@@ -36,6 +36,7 @@ from scripts.rsa.rdm_models import (
     build_ans_log_ratio_rdm,
     build_pi_ans_rdm,
     build_pixel_rdm_e_only,
+    build_rt_landing_rdm,
     noise_ceiling_loocv_lower,
     partial_spearman_r,
     spearman_r,
@@ -77,7 +78,8 @@ def run_temporal_model_fits(
     output_dir: Path,
     stimuli_csv: Path = Path("data/stimuli/stimuli_analysis.csv"),
     codes: Optional[Sequence[int]] = None,
-    pi_ans_boundary: float = 10.0,
+    pi_ans_boundary: float = 4.0,
+    rt_summary_csv: Optional[Path] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Compute and write temporal model fits (Spearman + partial) and figures.
@@ -106,10 +108,12 @@ def run_temporal_model_fits(
     pi_ans_rdm = build_pi_ans_rdm(codes, boundary=pi_ans_boundary)
     pixel_rdm = build_pixel_rdm_e_only(stimuli_csv, codes)
     ans_rdm = build_ans_log_ratio_rdm(codes)
+    rt_rdm = build_rt_landing_rdm(rt_summary_csv, codes) if rt_summary_csv else None
 
     pi_ans_vec = _model_vec_from_rdm(pi_ans_rdm, codes, pairs)
     pixel_vec = _model_vec_from_rdm(pixel_rdm, codes, pairs)
     ans_vec = _model_vec_from_rdm(ans_rdm, codes, pairs)
+    rt_vec = _model_vec_from_rdm(rt_rdm, codes, pairs) if rt_rdm is not None else None
 
     # Ensure output structure
     tables_dir = output_dir / "tables"
@@ -128,6 +132,7 @@ def run_temporal_model_fits(
         pi_rs: List[float] = []
         pixel_rs: List[float] = []
         ans_rs: List[float] = []
+        rt_rs: List[float] = []
         pi_partial_rs: List[float] = []
 
         for subj, group in time_df.groupby("Subject"):
@@ -154,6 +159,8 @@ def run_temporal_model_fits(
             pi_rs.append(spearman_r(brain_vec, pi_ans_vec))
             pixel_rs.append(spearman_r(brain_vec, pixel_vec))
             ans_rs.append(spearman_r(brain_vec, ans_vec))
+            if rt_vec is not None:
+                rt_rs.append(spearman_r(brain_vec, rt_vec))
 
             _, pi_partial = partial_spearman_r(brain_vec, pi_ans_vec, pixel_vec)
             pi_partial_rs.append(pi_partial)
@@ -173,6 +180,8 @@ def run_temporal_model_fits(
                 "Pixel_SEM": _sem(pixel_rs),
                 "ANS_Mean": float(np.nanmean(ans_rs)) if ans_rs else float("nan"),
                 "ANS_SEM": _sem(ans_rs),
+                "RT_Landing_Mean": float(np.nanmean(rt_rs)) if rt_rs else float("nan"),
+                "RT_Landing_SEM": _sem(rt_rs) if rt_rs else float("nan"),
                 "NoiseCeiling_Mean": float(nc),
             }
         )
@@ -208,6 +217,8 @@ def run_temporal_model_fits(
     plot_line("PI_ANS_Mean", "PI_ANS_SEM", "PI-ANS (raw)")
     plot_line("Pixel_Mean", "Pixel_SEM", "Pixel (raw)")
     plot_line("ANS_Mean", "ANS_SEM", "ANS log-ratio (raw)")
+    if "RT_Landing_Mean" in spearman_df.columns and spearman_df["RT_Landing_Mean"].notna().any():
+        plot_line("RT_Landing_Mean", "RT_Landing_SEM", "RT landing (raw)")
 
     ax.plot(x, spearman_df["NoiseCeiling_Mean"].to_numpy(), color="gray", linestyle=":", linewidth=2, label="Noise ceiling (LOOCV)")
     ax.axhline(0.0, color="black", linewidth=1, linestyle="--", alpha=0.5)
@@ -272,8 +283,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--pi-ans-boundary",
         type=float,
-        default=10.0,
-        help="Cross PI↔ANS boundary distance for PI-ANS model (default: 10.0).",
+        default=4.0,
+        help="Cross PI↔ANS boundary distance for PI-ANS model (default: 4.0).",
+    )
+    parser.add_argument(
+        "--rt-summary-csv",
+        type=Path,
+        default=None,
+        help="Optional RT subject-level summary CSV for building an RT landing model RDM.",
     )
     return parser.parse_args()
 
@@ -286,6 +303,7 @@ def main() -> None:
         stimuli_csv=args.stimuli_csv,
         codes=args.codes,
         pi_ans_boundary=float(args.pi_ans_boundary),
+        rt_summary_csv=args.rt_summary_csv,
     )
 
 

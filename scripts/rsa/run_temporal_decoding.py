@@ -349,7 +349,14 @@ def main() -> None:
     stride_ms = float(temporal_cfg.get("stride_ms", 20))
 
     # Generate temporal windows
-    windows = generate_temporal_windows(epoch_ms, window_ms, stride_ms)
+    # Optional: allow a restricted set of training windows for pilots (while keeping the
+    # canonical epoch/window/stride definition in config for downstream tooling).
+    train_windows_cfg = temporal_cfg.get("train_windows")
+    if isinstance(train_windows_cfg, list) and train_windows_cfg:
+        windows = [(int(w[0]), int(w[1])) for w in train_windows_cfg]
+        print(f"[temporal-rsa] Using {len(windows)} explicit train_windows from config.")
+    else:
+        windows = generate_temporal_windows(epoch_ms, window_ms, stride_ms)
     print(f"[temporal-rsa] Generated {len(windows)} temporal windows:")
     print(f"[temporal-rsa]   Epoch: {epoch_ms}ms, Window: {window_ms}ms, Stride: {stride_ms}ms")
     print(f"[temporal-rsa]   Windows: {windows[0]} ... {windows[-1]}")

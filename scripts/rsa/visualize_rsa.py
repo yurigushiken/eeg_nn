@@ -283,7 +283,9 @@ def main() -> None:
     if output_dir is None:
         output_dir = csv_path.parent / "figures"
     output_dir.mkdir(parents=True, exist_ok=True)
-    heatmap_path = output_dir / f"{args.prefix}_rdm_heatmap.png"
+    # Use explicit "brain" suffix for clarity; keep legacy filename only for backwards compatibility.
+    heatmap_path = output_dir / f"{args.prefix}_brain_rdm_heatmap.png"
+    legacy_heatmap_path = output_dir / f"{args.prefix}_rdm_heatmap.png"
     scatter_path = output_dir / f"{args.prefix}_mds.png"
 
     plot_rdm_heatmap(matrix, labels, heatmap_path)
@@ -291,6 +293,14 @@ def main() -> None:
 
     print(f"[visualize_rsa] Heatmap saved to {heatmap_path}")
     print(f"[visualize_rsa] MDS scatter (flipped) saved to {scatter_path}")
+
+    # If a legacy heatmap exists from older runs, remove it to avoid confusion.
+    # (The new name is clearer and the content is identical.)
+    try:
+        if legacy_heatmap_path.exists():
+            legacy_heatmap_path.unlink()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

@@ -447,6 +447,46 @@ class TrainingRunner:
         # Accumulate per-trial inner validation predictions
         test_pred_rows_inner: List[dict] = []
 
+        # Optional: temporal generalization (train at this window, test across many windows)
+        tg_cfg = self.cfg.get("temporal_generalization", {}) or {}
+        tg_enabled = bool(tg_cfg.get("enabled", False))
+        tg_write_preds = bool(tg_cfg.get("write_predictions", True))
+        tg_train_window: tuple[int, int] | None = None
+        tg_datasets_by_window: Dict[tuple[int, int], Any] | None = None
+        tg_test_pred_rows_outer: List[dict] = []
+        tg_outer_metrics_rows: List[dict] = []
+
+        if tg_enabled and self.run_dir:
+            crop = self.cfg.get("crop_ms")
+            if not isinstance(crop, (list, tuple)) or len(crop) != 2:
+                raise ValueError("temporal_generalization.enabled requires cfg['crop_ms'] = [train_start_ms, train_end_ms]")
+            tg_train_window = (int(crop[0]), int(crop[1]))
+
+            # Determine which test windows to evaluate.
+            test_windows_cfg = tg_cfg.get("test_windows")
+            if isinstance(test_windows_cfg, list) and test_windows_cfg:
+                test_windows = [(int(w[0]), int(w[1])) for w in test_windows_cfg]
+            else:
+                temporal_cfg = self.cfg.get("temporal", {}) or {}
+                epoch_ms = float(temporal_cfg.get("epoch_ms", 500))
+                window_ms = float(temporal_cfg.get("window_ms", 50))
+                stride_ms = float(temporal_cfg.get("stride_ms", 20))
+                from code.training.temporal_generalization import generate_temporal_windows
+
+                test_windows = generate_temporal_windows(epoch_ms=epoch_ms, window_ms=window_ms, stride_ms=stride_ms)
+
+            # Build datasets for each test window (uses in-process cache if enabled).
+            from code.datasets import make_dataset
+            from code.training.temporal_generalization import validate_datasets_compatible
+
+            tg_datasets_by_window = {}
+            for w_start, w_end in test_windows:
+                cfg_test = copy.deepcopy(self.cfg)
+                cfg_test["crop_ms"] = [int(w_start), int(w_end)]
+                ds_test = make_dataset(cfg_test, self.label_fn)
+                validate_datasets_compatible(dataset, ds_test)
+                tg_datasets_by_window[(int(w_start), int(w_end))] = ds_test
+
         for fold, (tr_idx, va_idx) in enumerate(outer_pairs):
             if self.cfg.get("max_folds") is not None and fold >= int(self.cfg["max_folds"]):
                 break
@@ -512,6 +552,70 @@ class TrainingRunner:
             learning_curve_rows.extend(fold_result["learning_curves"])
             test_pred_rows_outer.extend(fold_result["test_pred_rows_outer"])
             test_pred_rows_inner.extend(fold_result["test_pred_rows_inner"])
+
+            # Temporal generalization: evaluate the trained ensemble across all test windows.
+            if tg_enabled and tg_datasets_by_window is not None and tg_train_window is not None:
+                # Ensure inner_results ordering is stable for ensemble averaging
+                ordered_inner_results = sorted(
+                    fold_result["inner_results"],
+                    key=lambda r: int(r.get("fold_info", {}).get("inner_fold", 0))
+                    if isinstance(r.get("fold_info"), dict) else 0
+                )
+
+                from code.training.temporal_generalization import evaluate_generalization_for_fold
+
+                gen_rows = evaluate_generalization_for_fold(
+                    cfg=self.cfg,
+                    outer_evaluator=outer_evaluator,
+                    model_builder=model_builder,
+                    num_classes=num_cls,
+                    inner_results=ordered_inner_results,
+                    datasets_by_window=tg_datasets_by_window,
+                    groups=groups,
+                    te_idx=va_idx,
+                    class_names=class_names,
+                    fold=int(fold + 1),
+                    input_adapter=input_adapter,
+                    train_window=tg_train_window,
+                )
+                if gen_rows:
+                    tg_test_pred_rows_outer.extend(gen_rows)
+
+                    # Compute per-window fold metrics from the prediction rows (no extra forward pass).
+                    window_to_labels: Dict[tuple[int, int], Dict[str, List[int]]] = {}
+                    for r in gen_rows:
+                        key = (int(r["test_window_start"]), int(r["test_window_end"]))
+                        bucket = window_to_labels.setdefault(key, {"y_true": [], "y_pred": []})
+                        bucket["y_true"].append(int(r["true_label_idx"]))
+                        bucket["y_pred"].append(int(r["pred_label_idx"]))
+
+                    for (w_start, w_end), yp in window_to_labels.items():
+                        m = fold_orchestrator._compute_fold_metrics(yp["y_true"], yp["y_pred"])
+                        per_class_f1 = m.get("per_class_f1_list")
+                        tg_outer_metrics_rows.append(
+                            {
+                                "outer_fold": int(fold + 1),
+                                "test_subjects": ",".join(map(str, test_subjects)),
+                                "n_test_trials": int(len(yp["y_true"])),
+                                "acc": float(m["acc"]),
+                                "acc_std": "",
+                                "macro_f1": float(m["macro_f1"]),
+                                "macro_f1_std": "",
+                                "min_per_class_f1": float(m["min_per_class_f1"]),
+                                "min_per_class_f1_std": "",
+                                "plur_corr": float(m["plur_corr"]),
+                                "plur_corr_std": "",
+                                "cohen_kappa": float(m["cohen_kappa"]),
+                                "cohen_kappa_std": "",
+                                "per_class_f1": json.dumps(per_class_f1) if per_class_f1 is not None else "",
+                                "train_window_start": int(tg_train_window[0]),
+                                "train_window_end": int(tg_train_window[1]),
+                                "train_window_center": float((tg_train_window[0] + tg_train_window[1]) / 2.0),
+                                "test_window_start": int(w_start),
+                                "test_window_end": int(w_end),
+                                "test_window_center": float((w_start + w_end) / 2.0),
+                            }
+                        )
             
             # Build outer metrics row for CSV
             per_class_f1 = metrics.get("per_class_f1_list")
@@ -607,6 +711,59 @@ class TrainingRunner:
             )
             # Capture decision layer stats if available (for summary writer)
             decision_layer_stats = artifact_writer.decision_layer_stats
+
+            # Write temporal generalization artifacts (optional; does not affect baseline outputs)
+            if tg_enabled and tg_outer_metrics_rows:
+                try:
+                    # Add OVERALL rows per test window (mean/std across folds).
+                    by_test_window: Dict[tuple[int, int], List[dict]] = {}
+                    for r in tg_outer_metrics_rows:
+                        if str(r.get("outer_fold")).strip().upper() == "OVERALL":
+                            continue
+                        key = (int(r["test_window_start"]), int(r["test_window_end"]))
+                        by_test_window.setdefault(key, []).append(r)
+
+                    for (w_start, w_end), rows_w in by_test_window.items():
+                        accs = np.asarray([float(r["acc"]) for r in rows_w], dtype=float)
+                        macs = np.asarray([float(r["macro_f1"]) for r in rows_w], dtype=float)
+                        mins = np.asarray([float(r["min_per_class_f1"]) for r in rows_w], dtype=float)
+                        plur = np.asarray([float(r["plur_corr"]) for r in rows_w], dtype=float)
+                        kaps = np.asarray([float(r["cohen_kappa"]) for r in rows_w], dtype=float)
+                        tg_outer_metrics_rows.append(
+                            {
+                                "outer_fold": "OVERALL",
+                                "test_subjects": "-",
+                                "n_test_trials": int(sum(int(r["n_test_trials"]) for r in rows_w)),
+                                "acc": float(np.mean(accs)) if accs.size else 0.0,
+                                "acc_std": float(np.std(accs)) if accs.size else 0.0,
+                                "macro_f1": float(np.mean(macs)) if macs.size else 0.0,
+                                "macro_f1_std": float(np.std(macs)) if macs.size else 0.0,
+                                "min_per_class_f1": float(np.mean(mins)) if mins.size else 0.0,
+                                "min_per_class_f1_std": float(np.std(mins)) if mins.size else 0.0,
+                                "plur_corr": float(np.mean(plur)) if plur.size else 0.0,
+                                "plur_corr_std": float(np.std(plur)) if plur.size else 0.0,
+                                "cohen_kappa": float(np.mean(kaps)) if kaps.size else 0.0,
+                                "cohen_kappa_std": float(np.std(kaps)) if kaps.size else 0.0,
+                                "per_class_f1": "",
+                                "train_window_start": int(tg_train_window[0]) if tg_train_window else "",
+                                "train_window_end": int(tg_train_window[1]) if tg_train_window else "",
+                                "train_window_center": float((tg_train_window[0] + tg_train_window[1]) / 2.0) if tg_train_window else "",
+                                "test_window_start": int(w_start),
+                                "test_window_end": int(w_end),
+                                "test_window_center": float((w_start + w_end) / 2.0),
+                            }
+                        )
+
+                    from code.artifacts.generalization_writers import (
+                        write_generalization_outer_eval_metrics,
+                        write_generalization_test_predictions,
+                    )
+
+                    write_generalization_outer_eval_metrics(self.run_dir, tg_outer_metrics_rows)
+                    if tg_write_preds and tg_test_pred_rows_outer:
+                        write_generalization_test_predictions(self.run_dir, tg_test_pred_rows_outer)
+                except Exception as e:
+                    _log_event("temporal_generalization_write_failed", f"Failed to write temporal generalization artifacts: {e}")
 
         # Compute all summary metrics
         summary_inner_mean_acc = float(np.mean(inner_accs)) if inner_accs else 0.0

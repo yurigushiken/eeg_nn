@@ -126,6 +126,12 @@ def main():
         action="store_true",
         help="Skip temporal model-fit step (model–brain RDM correlation over time)."
     )
+    parser.add_argument(
+        "--rt-summary-csv",
+        type=Path,
+        default=None,
+        help="Optional RT subject-level summary CSV to include an RT landing model in the model-fit time series.",
+    )
 
     args = parser.parse_args()
 
@@ -263,6 +269,8 @@ def main():
             "--subject-data", str(subject_agg_csv),
             "--output-dir", str(args.output_dir),
         ]
+        if args.rt_summary_csv:
+            cmd_model_fits.extend(["--rt-summary-csv", str(args.rt_summary_csv)])
 
         success = run_command(
             cmd=cmd_model_fits,

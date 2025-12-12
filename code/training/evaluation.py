@@ -147,7 +147,19 @@ class OuterEvaluator:
         y_true_fold: List[int] = []
         y_pred_fold: List[int] = []
         test_pred_rows: List[Dict] = []
-        
+
+        # Build and load each inner model ONCE per evaluation call (performance-critical,
+        # especially for temporal generalization where we evaluate across many windows).
+        models: List[nn.Module] = []
+        for r in inner_results:
+            state = r.get("best_state")
+            if state is None:
+                continue
+            m = model_builder(self.cfg, num_classes).to(self.device)
+            m.load_state_dict(state)
+            m.eval()
+            models.append(m)
+
         with torch.no_grad():
             pos = 0
             for xb, yb in test_loader:
@@ -157,13 +169,7 @@ class OuterEvaluator:
                 
                 # Ensemble: average softmax predictions from all inner models
                 accum_probs = None
-                for r in inner_results:
-                    state = r.get("best_state")
-                    if state is None:
-                        continue
-                    model = model_builder(self.cfg, num_classes).to(self.device)
-                    model.load_state_dict(state)
-                    model.eval()
+                for model in models:
                     out = model(xb_gpu) if not isinstance(xb_gpu, (list, tuple)) else model(*xb_gpu)
                     probs = F.softmax(out.float(), dim=1).cpu()
                     if accum_probs is None:

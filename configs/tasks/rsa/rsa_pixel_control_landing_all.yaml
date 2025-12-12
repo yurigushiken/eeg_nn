@@ -1,0 +1,12 @@
+# Pixel-control confound analysis for LANDING data (ALL trials, correct + incorrect)
+# Landing digit = the "target" number participants saw after being primed
+# Uses digit codes [1,2,3,4,5,6] instead of cardinality codes [11,22,...,66]
+
+master_csv: results/runs/rsa_landing_matrix_all/rsa_results_master.csv
+stimuli_csv: data/stimuli/stimuli_analysis.csv
+output_dir: results/runs/rsa_landing_matrix_all/confounds
+baseline_r: 0.0
+codes: [1, 2, 3, 4, 5, 6]
+
+# RT summary for landing digits
+rt_summary_csv: reaction_time_landing/tables/rt_summary_by_landing_subject_level.csv

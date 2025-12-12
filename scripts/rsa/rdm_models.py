@@ -101,7 +101,50 @@ def build_pixel_rdm_e_only(stimuli_csv: Path, codes: Sequence[Code]) -> np.ndarr
     return mat
 
 
-def build_pi_ans_rdm(codes: Sequence[Code], *, boundary: float = 10.0) -> np.ndarray:
+def build_rt_landing_rdm(rt_summary_csv: Path, codes: Sequence[Code], *, value_column: str = "Mean_RT_Subj") -> np.ndarray:
+    """
+    Reaction-time (RT) landing-digit model RDM: absolute differences in mean RT.
+
+    This model is computed from a subject-level RT summary (ACC=1, change trials),
+    e.g. `reaction_time_landing/tables/rt_summary_by_landing_subject_level.csv`.
+
+    Args:
+        rt_summary_csv: CSV with at least columns:
+            - Landing (1..6)
+            - Mean_RT_Subj (default `value_column`), in milliseconds
+        codes: Condition codes (e.g., 11,22,...,66 or 1..6). We map them to
+            numerosities via `code_to_numerosity`.
+        value_column: Which column in the summary holds the mean RT value.
+
+    Returns:
+        NxN symmetric matrix where entry (i,j) is |RT_i - RT_j| and diagonal is 0.
+    """
+    df = pd.read_csv(rt_summary_csv)
+    if "Landing" not in df.columns:
+        raise ValueError(f"RT summary CSV missing required column 'Landing': {rt_summary_csv}")
+    if value_column not in df.columns:
+        raise ValueError(f"RT summary CSV missing required column '{value_column}': {rt_summary_csv}")
+
+    landing = df["Landing"].astype(int).to_numpy()
+    values = df[value_column].astype(float).to_numpy()
+    rt_map: Dict[int, float] = {int(k): float(v) for k, v in zip(landing, values)}
+
+    nums = [code_to_numerosity(c) for c in codes]
+    missing = sorted({n for n in nums if n not in rt_map})
+    if missing:
+        raise KeyError(f"Missing RT means for landing digits {missing} in {rt_summary_csv}")
+
+    n = len(nums)
+    mat = np.zeros((n, n), dtype=float)
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            mat[i, j] = abs(rt_map[nums[i]] - rt_map[nums[j]])
+    return mat
+
+
+def build_pi_ans_rdm(codes: Sequence[Code], *, boundary: float = 4.0) -> np.ndarray:
     """
     PI-ANS model RDM (project-specific).
 
@@ -110,6 +153,8 @@ def build_pi_ans_rdm(codes: Sequence[Code], *, boundary: float = 10.0) -> np.nda
     - Cross PI↔ANS: boundary + scaled abs distance
 
     boundary is chosen so every cross pair is larger than any within-PI pair.
+    The default is intentionally "moderate" so PI↔ANS cross-pairs don't dominate
+    heatmap visualization numerically (we use Spearman for RSA fits).
     """
     nums = [code_to_numerosity(c) for c in codes]
     n = len(nums)

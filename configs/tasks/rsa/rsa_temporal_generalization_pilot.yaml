@@ -1,0 +1,71 @@
+# Temporal Generalization (PILOT)
+# Train on ONE time window, test across ALL windows (train×test generalization row).
+#
+# Intended use:
+# - Verify temporal generalization artifacts are produced correctly
+# - Keep compute manageable (1 pair × 1 seed × 1 train window)
+
+model_name: eegnex
+optuna_objective: inner_mean_min_per_class_f1
+
+# Pilot: single seed
+seeds: [49]
+
+temporal:
+  epoch_ms: 500
+  window_ms: 50
+  stride_ms: 20
+  # Pilot restriction: only train this one window
+  train_windows:
+    - [180, 230]
+
+temporal_generalization:
+  enabled: true
+  # Evaluate across all canonical windows derived from temporal.{epoch_ms,window_ms,stride_ms}
+  # (test_windows can be explicitly provided if you want to restrict further)
+  write_predictions: true
+
+# Data
+materialized_dir: data_preprocessed/hpf_1.5_lpf_35_baseline-on-avgref
+crop_ms: null  # overwritten by temporal train window(s)
+exclude_channel_list: non_scalp
+trial_filter: all
+
+# Training schedule
+epochs: 100
+early_stop: 20
+batch_size: 128
+lr: 0.001
+inner_n_folds: 5
+n_folds: 6
+outer_eval_mode: ensemble
+
+# Regularization
+weight_decay: 0.000025
+drop_prob: 0.5
+scheduler_patience: 5
+lr_warmup_frac: 0.0
+lr_warmup_init: 0.0
+
+# EEGNeX architecture (50ms windows safe pooling)
+filter_1: 8
+filter_2: 32
+kernel_block_1_2: 32
+kernel_block_4: 16
+kernel_block_5: 16
+avg_pool_block4: 4
+avg_pool_block5: 4
+dilation_block_4: 2
+dilation_block_5: 4
+depth_multiplier: 2
+activation: elu
+max_norm_conv: 1.0
+max_norm_linear: 0.25
+
+dataset_cache_memory: true
+
+# Output
+output_dir: results/runs/rsa_temporal_generalization_pilot
+results_filename: rsa_temporal_results.csv
+
+

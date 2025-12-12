@@ -108,6 +108,9 @@ def plot_rdm(
     # Mask diagonal (self-discrimination)
     rdm_masked = rdm.copy()
     np.fill_diagonal(rdm_masked, np.nan)
+    # Mask upper triangle to avoid redundant symmetric information
+    triu_idx = np.triu_indices(len(numerosities), k=1)
+    rdm_masked[triu_idx] = np.nan
 
     # Heatmap
     im = ax.imshow(
@@ -222,7 +225,8 @@ def create_rdm_evolution_gif(
     subject_data: pd.DataFrame,
     output_path: Path,
     numerosities: List[int] = [11, 22, 33, 44, 55, 66],
-    fps: int = 4
+    fps: int = 4,
+    save_frames_dir: Optional[Path] = None
 ) -> None:
     """
     Create animated GIF showing RDM evolution across all time windows.
@@ -232,6 +236,7 @@ def create_rdm_evolution_gif(
         output_path: Output GIF path
         numerosities: List of numerosity codes
         fps: Frames per second for GIF
+        save_frames_dir: Optional directory to save individual frames as PNGs
     """
     # Get all time windows (sorted)
     time_windows = sorted(subject_data['TimeWindow_Center'].unique())
@@ -239,13 +244,85 @@ def create_rdm_evolution_gif(
 
     print(f"[viz] Creating animated GIF with {n_frames} frames...")
 
+    if save_frames_dir is not None:
+        save_frames_dir.mkdir(parents=True, exist_ok=True)
+
     # Create figure
     fig, ax = plt.subplots(figsize=(8, 7))
 
+    # Shared axis formatting (set once)
+    ax.set_xticks(np.arange(len(numerosities)))
+    ax.set_yticks(np.arange(len(numerosities)))
+    ax.set_xticklabels(numerosities, fontsize=9)
+    ax.set_yticklabels(numerosities, fontsize=9)
+    ax.set_xlabel('Numerosity', fontsize=10)
+    ax.set_ylabel('Numerosity', fontsize=10)
+    ax.set_xticks(np.arange(len(numerosities) + 1) - 0.5, minor=True)
+    ax.set_yticks(np.arange(len(numerosities) + 1) - 0.5, minor=True)
+    ax.grid(which="minor", color="gray", linestyle='-', linewidth=0.5)
+    ax.tick_params(which="minor", size=0)
+
+    # Initial frame setup
+    initial_rdm = create_rdm_at_timepoint(
+        subject_data=subject_data,
+        time_center=time_windows[0],
+        numerosities=numerosities
+    )
+    initial_rdm_masked = initial_rdm.copy()
+    np.fill_diagonal(initial_rdm_masked, np.nan)
+
+    im = ax.imshow(
+        initial_rdm_masked,
+        cmap='Blues',
+        vmin=50.0,
+        vmax=80.0,
+        aspect='equal',
+        origin='upper',
+        interpolation='nearest'
+    )
+    cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label('Accuracy (%)', rotation=270, labelpad=15, fontsize=9)
+
+    # Text annotations managed manually so we don't clear the axis
+    text_artists: List[plt.Text] = []
+
+    def update_annotations(rdm_masked: np.ndarray) -> None:
+        # Remove old annotations
+        for t in text_artists:
+            t.remove()
+        text_artists.clear()
+
+        for i in range(len(numerosities)):
+            for j in range(len(numerosities)):
+                if i == j:
+                    continue
+                if not np.isnan(rdm_masked[i, j]):
+                    text_color = 'white' if rdm_masked[i, j] > 65 else 'black'
+                    text_artists.append(
+                        ax.text(
+                            j, i, f"{rdm_masked[i, j]:.1f}",
+                            ha="center", va="center",
+                            color=text_color,
+                            fontsize=7
+                        )
+                    )
+
+    # Frame counter text (updated each frame)
+    frame_counter = ax.text(
+        0.98, -0.15,
+        f"Frame 1/{n_frames}",
+        transform=ax.transAxes,
+        ha='right',
+        fontsize=8,
+        color='gray'
+    )
+
+    # Initial annotations/title
+    ax.set_title(f"Time: {int(time_windows[0])}ms", fontsize=11, fontweight='bold')
+    update_annotations(initial_rdm_masked)
+
     def update_frame(frame_idx):
         """Update function for animation."""
-        ax.clear()
-
         time_center = time_windows[frame_idx]
 
         # Create RDM at this timepoint
@@ -255,27 +332,19 @@ def create_rdm_evolution_gif(
             numerosities=numerosities
         )
 
-        # Plot
-        plot_rdm(
-            rdm=rdm,
-            ax=ax,
-            time_center=time_center,
-            numerosities=numerosities,
-            vmin=50.0,
-            vmax=80.0,
-            show_colorbar=True,
-            title_prefix="Time: "
-        )
+        rdm_masked = rdm.copy()
+        np.fill_diagonal(rdm_masked, np.nan)
 
-        # Add frame counter (using ax.text so it gets cleared with ax.clear())
-        ax.text(
-            0.98, -0.15,
-            f"Frame {frame_idx + 1}/{n_frames}",
-            transform=ax.transAxes,
-            ha='right',
-            fontsize=8,
-            color='gray'
-        )
+        # Update heatmap and annotations without recreating axes/colorbar
+        im.set_data(rdm_masked)
+        ax.set_title(f"Time: {int(time_center)}ms", fontsize=11, fontweight='bold')
+        update_annotations(rdm_masked)
+        frame_counter.set_text(f"Frame {frame_idx + 1}/{n_frames}")
+
+        # Optionally save this frame as a standalone PNG
+        if save_frames_dir is not None:
+            frame_path = save_frames_dir / f"frame_{frame_idx:03d}.png"
+            fig.savefig(frame_path, dpi=300, bbox_inches='tight')
 
     # Create animation
     anim = FuncAnimation(
@@ -392,6 +461,11 @@ def main():
         default=4,
         help="Frames per second for GIF (default: 4)"
     )
+    parser.add_argument(
+        "--save-gif-frames",
+        action="store_true",
+        help="Also save each GIF frame as a PNG in a subdirectory"
+    )
 
     args = parser.parse_args()
 
@@ -427,10 +501,12 @@ def main():
     if args.create_gif:
         print(f"[viz] Creating animated GIF (this may take 1-2 minutes)...")
         output_gif = args.output_dir / "temporal_rdm_evolution.gif"
+        frames_dir = args.output_dir / "temporal_rdm_evolution_frames" if args.save_gif_frames else None
         create_rdm_evolution_gif(
             subject_data=subject_df,
             output_path=output_gif,
-            fps=args.gif_fps
+            fps=args.gif_fps,
+            save_frames_dir=frames_dir
         )
 
     print("="*70)

@@ -23,6 +23,7 @@ from scripts.rsa.rdm_models import (
     build_ans_log_ratio_rdm,
     build_pi_ans_rdm as build_pi_ans_model_rdm,
     build_pixel_rdm_e_only,
+    build_rt_landing_rdm,
     lower_tri_vector,
     partial_spearman_r,
 )
@@ -137,17 +138,44 @@ def plot_heatmap_diverging(
     plt.close(fig)
 
 
-def run_analysis(master_csv: Path, stimuli_csv: Path, output_dir: Path, codes: List[int], baseline: float) -> pd.DataFrame:
+def run_analysis(
+    master_csv: Path,
+    stimuli_csv: Path,
+    output_dir: Path,
+    codes: List[int],
+    baseline: float,
+    rt_summary_csv: Path | None = None,
+) -> pd.DataFrame:
     output_dir.mkdir(parents=True, exist_ok=True)
+    models_dir = output_dir / "models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+
     # Model RDMs (project models + pixel confound)
     pi_ans = build_pi_ans_rdm(codes)
     ans = build_ans_log_ratio_rdm(codes)
     pixel = build_pixel_rdm(stimuli_csv, codes)
+    rt_rdm = build_rt_landing_rdm(rt_summary_csv, codes) if rt_summary_csv else None
 
     # Model RDMs on their native scale; vmin=0 for consistent comparison
     plot_heatmap(pi_ans, codes, "PI-ANS Model RDM", output_dir / "theory_rdm_heatmap.png", vmin=0.0, vmax=np.nanmax(pi_ans))
+    # Alias for clarity (keep theory_rdm_heatmap.png for backwards compatibility)
+    plot_heatmap(pi_ans, codes, "PI-ANS Model RDM", output_dir / "pi_ans_rdm_heatmap.png", vmin=0.0, vmax=np.nanmax(pi_ans))
     plot_heatmap(ans, codes, "ANS Log-Ratio RDM", output_dir / "ans_rdm_heatmap.png", vmin=0.0, vmax=np.nanmax(ans))
     plot_heatmap(pixel, codes, "Pixel Model RDM (e-only target)", output_dir / "pixel_rdm_heatmap.png", vmin=0.0, vmax=np.nanmax(pixel))
+
+    # Clean layout: also write the pure model heatmaps under confounds/models/
+    plot_heatmap(pi_ans, codes, "PI-ANS Model RDM", models_dir / "pi_ans_rdm_heatmap.png", vmin=0.0, vmax=np.nanmax(pi_ans))
+    plot_heatmap(ans, codes, "ANS Log-Ratio RDM", models_dir / "ans_rdm_heatmap.png", vmin=0.0, vmax=np.nanmax(ans))
+    plot_heatmap(pixel, codes, "Pixel Model RDM (e-only target)", models_dir / "pixel_rdm_heatmap.png", vmin=0.0, vmax=np.nanmax(pixel))
+    if rt_rdm is not None:
+        plot_heatmap(
+            rt_rdm,
+            codes,
+            "RT Landing Model RDM (|mean RT_i - mean RT_j|)",
+            models_dir / "rt_landing_rdm_heatmap.png",
+            vmin=0.0,
+            vmax=np.nanmax(rt_rdm),
+        )
 
     brain_rdms = build_brain_rdms(master_csv, codes)
     records = []
@@ -156,18 +184,22 @@ def run_analysis(master_csv: Path, stimuli_csv: Path, output_dir: Path, codes: L
     pi_vec = _lower_tri(pi_ans)
     ans_vec = _lower_tri(ans)
     pixel_vec = _lower_tri(pixel)
+    rt_vec = _lower_tri(rt_rdm) if rt_rdm is not None else None
     for subj, brain_vec in brain_rdms.items():
         r_raw, r_partial = partial_spearman(brain_vec, pi_vec, pixel_vec)
         r_ans_raw, r_ans_partial = partial_spearman(brain_vec, ans_vec, pixel_vec)
-        records.append(
-            {
-                "Subject": subj,
-                "Raw_Spearman_R": r_raw,
-                "Partial_Spearman_R": r_partial,
-                "Raw_Spearman_R_ANS": r_ans_raw,
-                "Partial_Spearman_R_ANS": r_ans_partial,
-            }
-        )
+        rec = {
+            "Subject": subj,
+            "Raw_Spearman_R": r_raw,
+            "Partial_Spearman_R": r_partial,
+            "Raw_Spearman_R_ANS": r_ans_raw,
+            "Partial_Spearman_R_ANS": r_ans_partial,
+        }
+        if rt_vec is not None:
+            r_rt_raw, r_rt_partial = partial_spearman(brain_vec, rt_vec, pixel_vec)
+            rec["Raw_Spearman_R_RT"] = r_rt_raw
+            rec["Partial_Spearman_R_RT"] = r_rt_partial
+        records.append(rec)
         # Track raw mean accuracy (before ranking) for offsetting residuals
         raw_means.append(float(np.nanmean(brain_vec)))
         # Residualize brain vs pixel in accuracy space (no ranking)
@@ -180,6 +212,8 @@ def run_analysis(master_csv: Path, stimuli_csv: Path, output_dir: Path, codes: L
         residuals.append(bx_resid)
 
     subj_df = pd.DataFrame(records)
+    raw_vals_rt = subj_df["Raw_Spearman_R_RT"].dropna().to_numpy() if "Raw_Spearman_R_RT" in subj_df.columns else np.array([])
+    partial_vals_rt = subj_df["Partial_Spearman_R_RT"].dropna().to_numpy() if "Partial_Spearman_R_RT" in subj_df.columns else np.array([])
 
     # TEST 1: Compare raw vs partial correlations (paired t-test)
     raw_vals = subj_df["Raw_Spearman_R"].dropna().to_numpy()
@@ -233,6 +267,8 @@ def run_analysis(master_csv: Path, stimuli_csv: Path, output_dir: Path, codes: L
                     "Partial_Spearman_R": float(np.mean(partial_vals)) if partial_vals.size else np.nan,
                 "Raw_Spearman_R_ANS": float(np.mean(raw_vals_ans)) if raw_vals_ans.size else np.nan,
                 "Partial_Spearman_R_ANS": float(np.mean(partial_vals_ans)) if partial_vals_ans.size else np.nan,
+                    "Raw_Spearman_R_RT": float(np.mean(raw_vals_rt)) if raw_vals_rt.size else np.nan,
+                    "Partial_Spearman_R_RT": float(np.mean(partial_vals_rt)) if partial_vals_rt.size else np.nan,
                     "Group_T": t_stat,
                     "Group_P": p_value,
                     "N": len(z_vals),
@@ -293,7 +329,7 @@ def run_analysis(master_csv: Path, stimuli_csv: Path, output_dir: Path, codes: L
     subj_df.to_csv(out_csv, index=False)
 
     # Generate summary statistics table
-    summary_stats = pd.DataFrame([
+    summary_rows = [
         {
             "Test": "Raw Brain–PI-ANS Correlation",
             "Mean_r": float(np.mean(raw_vals)),
@@ -326,6 +362,30 @@ def run_analysis(master_csv: Path, stimuli_csv: Path, output_dir: Path, codes: L
             "p_value": subj_df[subj_df["Subject"] == "SUMMARY"].get("Group_P_ANS", pd.Series([np.nan])).iloc[0],
             "Interpretation": "Brain matches ANS model (after pixel control)",
         },
+    ]
+    if raw_vals_rt.size or partial_vals_rt.size:
+        summary_rows.extend(
+            [
+                {
+                    "Test": "Raw Brain–RT Landing Correlation",
+                    "Mean_r": float(np.mean(raw_vals_rt)) if raw_vals_rt.size else np.nan,
+                    "SD_r": float(np.std(raw_vals_rt, ddof=1)) if raw_vals_rt.size else np.nan,
+                    "t_statistic": np.nan,
+                    "p_value": np.nan,
+                    "Interpretation": "Brain aligns with behavioral RT distances (raw)",
+                },
+                {
+                    "Test": "Partial Brain–RT Landing Correlation (controlling pixels)",
+                    "Mean_r": float(np.mean(partial_vals_rt)) if partial_vals_rt.size else np.nan,
+                    "SD_r": float(np.std(partial_vals_rt, ddof=1)) if partial_vals_rt.size else np.nan,
+                    "t_statistic": np.nan,
+                    "p_value": np.nan,
+                    "Interpretation": "Brain aligns with RT distances (after pixel control)",
+                },
+            ]
+        )
+
+    summary_stats = pd.DataFrame(summary_rows + [
         {
             "Test": "Raw vs Partial Difference",
             "Mean_r": mean_diff,
@@ -543,6 +603,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default="configs/tasks/rsa/rsa_pixel_control.yaml")
     parser.add_argument("--master-csv", type=Path, default=None)
     parser.add_argument("--stimuli-csv", type=Path, default=None)
+    parser.add_argument(
+        "--rt-summary-csv",
+        type=Path,
+        default=None,
+        help="Optional RT subject-level summary CSV for building an RT landing model RDM.",
+    )
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--baseline", type=float, default=None)
     return parser.parse_args()
@@ -562,7 +628,21 @@ def main() -> None:
     output_dir = Path(args.output_dir) if args.output_dir else Path(cfg["output_dir"])
     baseline = args.baseline if args.baseline is not None else float(cfg.get("baseline_r", 0.4))
     codes = cfg.get("codes", DEFAULT_CODES)
-    df = run_analysis(master_csv, stimuli_csv, output_dir, codes=codes, baseline=baseline)
+    rt_summary_csv = (
+        Path(args.rt_summary_csv)
+        if args.rt_summary_csv
+        else Path(cfg["rt_summary_csv"])
+        if cfg.get("rt_summary_csv")
+        else None
+    )
+    df = run_analysis(
+        master_csv,
+        stimuli_csv,
+        output_dir,
+        codes=codes,
+        baseline=baseline,
+        rt_summary_csv=rt_summary_csv,
+    )
     print(df.to_string(index=False))
 
 
