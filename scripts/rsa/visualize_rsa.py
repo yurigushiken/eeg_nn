@@ -140,6 +140,12 @@ def plot_rdm_heatmap(
     fill_value = float(np.nanmean(off_diag)) if off_diag.size else 0.0
     display_matrix = np.where(mask, fill_value, matrix)
 
+    # Mask upper triangle (redundant for symmetric matrices) using diagonal color/value.
+    # We do this in display space only, so downstream numeric summaries are unaffected.
+    diag_value = float(display_matrix[0, 0]) if display_matrix.size else fill_value
+    upper = np.triu(np.ones_like(display_matrix, dtype=bool), k=1)
+    display_matrix[upper] = diag_value
+
     cmap = plt.cm.Blues
     im = ax.imshow(display_matrix, cmap=cmap, vmin=vmin, vmax=vmax)
     ax.set_xticks(np.arange(len(labels)))
@@ -153,6 +159,9 @@ def plot_rdm_heatmap(
     # Annotate values
     for i in range(len(labels)):
         for j in range(len(labels)):
+            if j > i:
+                # Upper triangle is intentionally blocked out.
+                continue
             value = matrix[i, j]
             if np.isnan(value):
                 continue
@@ -200,7 +209,7 @@ def plot_mds_scatter(positions: pd.DataFrame, output_path: Path, flip_xy: bool =
     if flip_xy:
         ax.set_xlim(-15, 15)
         ax.set_xticks(np.arange(-10, 11, 5))  # Labels only from -10 to 10, step 5
-        ax.set_ylim(-6, 6)  # Fixed y-axis range for flipped version
+        ax.set_ylim(-8, 8)  # Fixed y-axis range for flipped version
     else:
         ax.set_xlim(-7.5, 7.5)
         ax.set_xticks(np.arange(-7.5, 7.6, 2.5))

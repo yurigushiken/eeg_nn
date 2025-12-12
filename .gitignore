@@ -96,8 +96,13 @@ conda_env.yml
 number_sense_feature_map.pdf
 number_sense_feature_map.png
 
-# Allow documentation (but not media outputs)
-!docs/**
+# Documentation (internal, not tracked)
+/docs/
+
+# Windows null device artifact
+nul
+
+# Allow READMEs and gitkeep files
 !**/*README*
 !.gitkeep
 

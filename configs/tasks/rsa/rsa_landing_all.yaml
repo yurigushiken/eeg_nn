@@ -1,0 +1,50 @@
+model_name: eegnex
+
+# Landing-digit RSA matrix (all trials). Three seeds for trial run.
+optuna_objective: inner_mean_min_per_class_f1
+seeds: [41, 42, 43]
+
+materialized_dir: data_preprocessed/hpf_1.5_lpf_35_baseline-on-avgref
+crop_ms: [0, 496]
+exclude_channel_list: non_scalp
+trial_filter: all            # keep all trials (no accuracy filtering)
+
+# Training schedule
+epochs: 100
+early_stop: 20
+batch_size: 128
+lr: 0.001
+inner_n_folds: 5
+n_folds: 6               # Subject-aware GroupKFold (faster than LOSO)
+outer_eval_mode: ensemble
+
+# Regularization
+weight_decay: 0.000025
+drop_prob: 0.5
+scheduler_patience: 5
+lr_warmup_frac: 0.0
+lr_warmup_init: 0.0
+
+# EEGNeX architecture knobs (canonical EEGNeX-8,32 settings)
+filter_1: 8
+filter_2: 32
+kernel_block_1_2: 32
+kernel_block_4: 16
+kernel_block_5: 16
+avg_pool_block4: 4
+avg_pool_block5: 8
+dilation_block_4: 2
+dilation_block_5: 4
+depth_multiplier: 2
+activation: elu
+max_norm_conv: 1.0
+max_norm_linear: 0.25
+
+dataset_cache_memory: true
+
+# Visualization defaults
+rsa_visualize: true
+rsa_visualize_output_dir: results/figures/rsa_landing_matrix
+rsa_visualize_prefix: rsa_landing_matrix
+rsa_visualize_metric: Accuracy
+

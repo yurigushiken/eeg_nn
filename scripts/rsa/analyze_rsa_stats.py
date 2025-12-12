@@ -91,10 +91,15 @@ def _pair_chance_rate(group: pd.DataFrame, requested: Optional[float]) -> float:
     Returns:
         Baseline chance rate for t-test
     """
-    baseline = requested if requested is not None else 50.0
-
-    # Check empirical chance for QC (warn if major deviation)
+    # If baseline is omitted, fall back to empirical chance when available.
     chance_col = group.get("ChanceRate")
+    if requested is None:
+        if chance_col is not None and not chance_col.dropna().empty:
+            return float(chance_col.dropna().iloc[0])
+        return 50.0
+
+    baseline = float(requested)
+    # Check empirical chance for QC (warn if major deviation)
     if chance_col is not None and not chance_col.dropna().empty:
         empirical = float(chance_col.dropna().iloc[0])
         if not math.isclose(empirical, baseline, abs_tol=2.0):

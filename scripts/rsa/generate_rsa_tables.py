@@ -23,19 +23,40 @@ def load_rsa_data(csv_path: Path) -> pd.DataFrame:
     return pd.read_csv(csv_path)
 
 
-def condition_code_to_numerosity(code: int) -> int:
+def infer_code_style(df: pd.DataFrame) -> str:
     """
-    Convert condition code to numerosity.
-    Examples: 11→1, 22→2, 33→3, 44→4, 55→5, 66→6
+    Infer how ClassA/ClassB are encoded.
+
+    Returns:
+        - "digit": ClassA/B are already numerosities (1–6), e.g., landing-digit stats.
+        - "cardinality": ClassA/B are 11,22,... (same-digit cardinality codes).
+        - "raw": mixed/other; treat ClassA/B as-is.
     """
-    # Condition codes are same-digit pairs (11, 22, 33, ...)
-    return code // 11
+    codes = set(pd.concat([df["ClassA"], df["ClassB"]]).unique())
+    if all(c <= 10 for c in codes):
+        return "digit"
+    if all(c % 11 == 0 for c in codes):
+        return "cardinality"
+    return "raw"
+
+
+def condition_code_to_numerosity(code: int, style: str) -> int:
+    """
+    Convert condition code to numerosity based on encoding style.
+    """
+    if style == "digit":
+        return code
+    if style == "cardinality":
+        return code // 11
+    # raw: pass through (used when comparisons are given directly in code space)
+    return code
 
 
 def extract_comparison_data(
     df: pd.DataFrame,
     comparisons: List[Tuple[int, int]],
     metric: str = "mean_accuracy",
+    code_style: str = "auto",
 ) -> pd.DataFrame:
     """
     Extract accuracy and p-value for specified numerosity comparisons.
@@ -49,10 +70,19 @@ def extract_comparison_data(
         DataFrame with columns: Comparison, Accuracy, p_value, Significance
     """
     rows = []
+    style = code_style
+    if style == "auto":
+        style = infer_code_style(df)
+
     for a, b in comparisons:
-        # Convert numerosities to condition codes (1→11, 2→22, etc.)
-        code_a = a * 11
-        code_b = b * 11
+        if style == "cardinality":
+            # Convert numerosities to condition codes (1→11, 2→22, etc.)
+            code_a = a * 11
+            code_b = b * 11
+        else:
+            # digit/raw: treat comparisons as already in the same space as ClassA/B
+            code_a = a
+            code_b = b
 
         # Find matching row (order-independent)
         mask = ((df["ClassA"] == code_a) & (df["ClassB"] == code_b)) | (
@@ -241,6 +271,7 @@ def generate_table_set(
     output_dir: Path,
     caption: str = "",
     label: str = "tab:rsa",
+    code_style: str = "auto",
 ) -> None:
     """
     Generate LaTeX, CSV, and PNG for one table.
@@ -257,7 +288,7 @@ def generate_table_set(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Extract data
-    data = extract_comparison_data(df, comparisons)
+    data = extract_comparison_data(df, comparisons, code_style=code_style)
 
     if data.empty:
         print(f"Warning: No data extracted for {title}")
@@ -299,6 +330,12 @@ def parse_args() -> argparse.Namespace:
         default="Accuracy",
         help="Metric column to use (default: Accuracy).",
     )
+    parser.add_argument(
+        "--code-style",
+        choices=["auto", "digit", "cardinality", "raw"],
+        default="auto",
+        help="How ClassA/ClassB are encoded: auto-detect, raw, digit (1-6), or cardinality (11,22,...).",
+    )
     return parser.parse_args()
 
 
@@ -325,6 +362,7 @@ def main() -> None:
         output_dir=args.output_dir,
         caption="Pairwise decoding accuracies for numerosity comparisons.",
         label="tab:rsa_untitled",
+        code_style=args.code_style,
     )
 
     # Table 2: One vs. All (decoding 1 against higher numerosities)
@@ -343,6 +381,7 @@ def main() -> None:
         output_dir=args.output_dir,
         caption="Decoding accuracy for contrasts between numerosity 1 and all higher numerosities (2–6).",
         label="tab:rsa_one_vs_all",
+        code_style=args.code_style,
     )
 
     # Table 3: All Pairwise Comparisons (complete RSA matrix)
@@ -361,6 +400,7 @@ def main() -> None:
         output_dir=args.output_dir,
         caption="Decoding accuracies for all pairwise numerosity comparisons (1–6).",
         label="tab:rsa_all_pairs",
+        code_style=args.code_style,
     )
 
     print(f"\n[generate_rsa_tables] All tables saved to {args.output_dir}")

@@ -44,7 +44,7 @@ try:
 except ModuleNotFoundError:
     from importlib.util import module_from_spec, spec_from_file_location
 
-    _PROJ_ROOT = Path(__file__).resolve().parents[1]
+    _PROJ_ROOT = Path(__file__).resolve().parents[2]
     _seed_module_path = _PROJ_ROOT / "utils" / "seeding.py"
     _spec = spec_from_file_location("_rsa_seeding", str(_seed_module_path))
     if _spec and _spec.loader:

@@ -51,6 +51,7 @@ except ModuleNotFoundError:
         raise
 
 CARDINALITY_CODES = [11, 22, 33, 44, 55, 66]
+LANDING_CODES = [1, 2, 3, 4, 5, 6]
 RESULTS_FILENAME = "rsa_matrix_results.csv"
 STATE_FILENAME = ".rsa_resume_state.json"
 
@@ -266,11 +267,19 @@ def main() -> None:
 
     engine_run = get_engine(args.engine)
     label_fn = get_task(args.task)
+    task_module = sys.modules[label_fn.__module__]
 
     output_root = Path(args.output_dir)
     ensure_directory(output_root)
 
-    codes = args.conditions if args.conditions else CARDINALITY_CODES
+    # Choose condition codes: CLI overrides; else config override; else task-aware default.
+    codes = (
+        args.conditions
+        if args.conditions
+        else base_cfg.get("rsa_conditions")
+        if base_cfg.get("rsa_conditions")
+        else (LANDING_CODES if args.task == "rsa_landing_binary" else CARDINALITY_CODES)
+    )
     pairs = generate_cross_digit_pairs(codes)
 
     state = build_initial_state(args, output_root, pairs, seeds)
@@ -304,7 +313,12 @@ def main() -> None:
             if key in completed_keys:
                 continue
 
-            rsa_binary.set_active_pair((class_a, class_b))
+            # Set active pair on the task module when available; fall back to rsa_binary
+            set_pair = getattr(task_module, "set_active_pair", None)
+            if callable(set_pair):
+                set_pair((class_a, class_b))
+            else:
+                rsa_binary.set_active_pair((class_a, class_b))
             cfg = copy.deepcopy(base_cfg)
             cfg["seed"] = int(seed)
             cfg["task"] = args.task
@@ -330,7 +344,12 @@ def main() -> None:
             ]
             atomic_write_state(state_path(output_root), state)
 
-    rsa_binary.reset_active_pair()
+    # Reset active pair on the task module when available; fall back to rsa_binary
+    reset_pair = getattr(task_module, "reset_active_pair", None)
+    if callable(reset_pair):
+        reset_pair()
+    else:
+        rsa_binary.reset_active_pair()
 
     summary_path = output_root / RESULTS_FILENAME
     write_summary_csv(rows, summary_path)

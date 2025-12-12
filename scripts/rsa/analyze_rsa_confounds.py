@@ -5,73 +5,54 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Dict, List, Tuple, Iterable
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from scipy.stats import spearmanr, ttest_1samp, rankdata
+from scipy.stats import spearmanr, ttest_1samp
+
+# Ensure project root is importable when running as a script.
+PROJ_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJ_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJ_ROOT))
+
+from scripts.rsa.rdm_models import (
+    build_ans_log_ratio_rdm,
+    build_pi_ans_rdm as build_pi_ans_model_rdm,
+    build_pixel_rdm_e_only,
+    lower_tri_vector,
+    partial_spearman_r,
+)
 
 DEFAULT_CODES = [11, 22, 33, 44, 55, 66]
 
 
-def build_theory_rdm(codes: List[int]) -> np.ndarray:
-    # Hardcoded singular-plural model
-    n = len(codes)
-    mat = np.zeros((n, n), dtype=float)
-    # Helper to set symmetric
-    def setv(i, j, v):
-        mat[i, j] = v
-        mat[j, i] = v
-    idx = {c: i for i, c in enumerate(codes)}
-    setv(idx[11], idx[22], 1.0)
-    setv(idx[11], idx[33], 1.0)
-    setv(idx[11], idx[44], 1.0)
-    setv(idx[11], idx[55], 1.5)
-    setv(idx[11], idx[66], 2.0)
-    setv(idx[22], idx[33], 0.0)
-    setv(idx[22], idx[44], 0.0)
-    setv(idx[22], idx[55], 1.25)
-    setv(idx[22], idx[66], 1.0)
-    setv(idx[33], idx[44], 0.0)
-    setv(idx[33], idx[55], 1.25)
-    setv(idx[33], idx[66], 0.5)
-    setv(idx[44], idx[55], 1.25)
-    setv(idx[44], idx[66], 1.0)
-    setv(idx[55], idx[66], 0.0)
-    return mat
+def build_pi_ans_rdm(codes: List[int]) -> np.ndarray:
+    """
+    PI-ANS model RDM (project-specific; replaces the legacy theory model).
+
+    PI set: 1-4 (absolute distance structure)\n
+    ANS set: 5-6 (log-ratio for 5v6)\n
+    Cross PI↔ANS: large boundary separation.
+    """
+    return build_pi_ans_model_rdm(codes)
 
 
 def build_pixel_rdm(stimuli_csv: Path, codes: List[int]) -> np.ndarray:
-    df = pd.read_csv(stimuli_csv)
-    df = df[df["filename"].str.contains("e\\.jpg")]
-    df["code"] = df["dot_count"] * 11
-    area_map = df.set_index("code")["white_pixel_area"].to_dict()
-    n = len(codes)
-    mat = np.zeros((n, n), dtype=float)
-    for i, ci in enumerate(codes):
-        for j, cj in enumerate(codes):
-            mat[i, j] = abs(area_map[ci] - area_map[cj])
-    return mat
+    """Pixel model RDM using e-only target stimuli (absolute pixel-area difference)."""
+    return build_pixel_rdm_e_only(stimuli_csv, codes)
 
 
 def _lower_tri(mat: np.ndarray) -> np.ndarray:
-    idx = np.tril_indices_from(mat, k=-1)
-    return mat[idx]
+    return lower_tri_vector(mat, k=-1)
 
 
 def partial_spearman(brain_vec: np.ndarray, theory_vec: np.ndarray, pixel_vec: np.ndarray) -> Tuple[float, float]:
-    # Spearman will handle ranking internally; use raw vectors here.
-    r_bt, _ = spearmanr(brain_vec, theory_vec)
-    r_bp, _ = spearmanr(brain_vec, pixel_vec)
-    r_tp, _ = spearmanr(theory_vec, pixel_vec)
-    denom = np.sqrt((1 - r_bp**2) * (1 - r_tp**2))
-    if denom == 0 or np.isnan(denom):
-        partial = np.nan
-    else:
-        partial = (r_bt - r_bp * r_tp) / denom
-    return r_bt, partial
+    # Backwards-compatible wrapper: partial Spearman of brain↔theory controlling pixels.
+    return partial_spearman_r(brain_vec, theory_vec, pixel_vec)
 
 
 def build_brain_rdms(master_csv: Path, codes: List[int]) -> Dict[str, np.ndarray]:
@@ -158,25 +139,33 @@ def plot_heatmap_diverging(
 
 def run_analysis(master_csv: Path, stimuli_csv: Path, output_dir: Path, codes: List[int], baseline: float) -> pd.DataFrame:
     output_dir.mkdir(parents=True, exist_ok=True)
-    theory = build_theory_rdm(codes)
+    # Model RDMs (project models + pixel confound)
+    pi_ans = build_pi_ans_rdm(codes)
+    ans = build_ans_log_ratio_rdm(codes)
     pixel = build_pixel_rdm(stimuli_csv, codes)
-    # Model RDMs on their native scale (0-~2); vmin=0 for consistent comparison, vmax auto to max
-    plot_heatmap(theory, codes, "Theory RDM", output_dir / "theory_rdm_heatmap.png", vmin=0.0, vmax=np.nanmax(theory))
-    plot_heatmap(pixel, codes, "Pixel RDM", output_dir / "pixel_rdm_heatmap.png", vmin=0.0, vmax=np.nanmax(pixel))
+
+    # Model RDMs on their native scale; vmin=0 for consistent comparison
+    plot_heatmap(pi_ans, codes, "PI-ANS Model RDM", output_dir / "theory_rdm_heatmap.png", vmin=0.0, vmax=np.nanmax(pi_ans))
+    plot_heatmap(ans, codes, "ANS Log-Ratio RDM", output_dir / "ans_rdm_heatmap.png", vmin=0.0, vmax=np.nanmax(ans))
+    plot_heatmap(pixel, codes, "Pixel Model RDM (e-only target)", output_dir / "pixel_rdm_heatmap.png", vmin=0.0, vmax=np.nanmax(pixel))
 
     brain_rdms = build_brain_rdms(master_csv, codes)
     records = []
     residuals = []
     raw_means: List[float] = []
-    theory_vec = _lower_tri(theory)
+    pi_vec = _lower_tri(pi_ans)
+    ans_vec = _lower_tri(ans)
     pixel_vec = _lower_tri(pixel)
     for subj, brain_vec in brain_rdms.items():
-        r_raw, r_partial = partial_spearman(brain_vec, theory_vec, pixel_vec)
+        r_raw, r_partial = partial_spearman(brain_vec, pi_vec, pixel_vec)
+        r_ans_raw, r_ans_partial = partial_spearman(brain_vec, ans_vec, pixel_vec)
         records.append(
             {
                 "Subject": subj,
                 "Raw_Spearman_R": r_raw,
                 "Partial_Spearman_R": r_partial,
+                "Raw_Spearman_R_ANS": r_ans_raw,
+                "Partial_Spearman_R_ANS": r_ans_partial,
             }
         )
         # Track raw mean accuracy (before ranking) for offsetting residuals
@@ -197,6 +186,10 @@ def run_analysis(master_csv: Path, stimuli_csv: Path, output_dir: Path, codes: L
     partial_vals = subj_df["Partial_Spearman_R"].dropna().to_numpy()
     diff_vals = partial_vals - raw_vals
 
+    raw_vals_ans = subj_df["Raw_Spearman_R_ANS"].dropna().to_numpy()
+    partial_vals_ans = subj_df["Partial_Spearman_R_ANS"].dropna().to_numpy()
+    diff_vals_ans = partial_vals_ans - raw_vals_ans
+
     if diff_vals.size > 0:
         # Fisher z-transform for both
         z_raw = np.arctanh(raw_vals)
@@ -209,6 +202,15 @@ def run_analysis(master_csv: Path, stimuli_csv: Path, output_dir: Path, codes: L
     else:
         t_diff, p_diff, mean_diff = np.nan, np.nan, np.nan
 
+    if diff_vals_ans.size > 0:
+        z_raw_ans = np.arctanh(raw_vals_ans)
+        z_partial_ans = np.arctanh(partial_vals_ans)
+        z_diff_ans = z_partial_ans - z_raw_ans
+        t_diff_ans, p_diff_ans = ttest_1samp(z_diff_ans, 0.0)
+        mean_diff_ans = np.mean(diff_vals_ans)
+    else:
+        t_diff_ans, p_diff_ans, mean_diff_ans = np.nan, np.nan, np.nan
+
     # TEST 2: Brain-pixel correlation (averaged across subjects)
     brain_pixel_correlations = []
     for subj, brain_vec in brain_rdms.items():
@@ -219,6 +221,7 @@ def run_analysis(master_csv: Path, stimuli_csv: Path, output_dir: Path, codes: L
 
     # Group stats on partial r (original test)
     vals = subj_df["Partial_Spearman_R"].dropna().to_numpy()
+    vals_ans = subj_df["Partial_Spearman_R_ANS"].dropna().to_numpy()
     if vals.size:
         z_vals = np.arctanh(vals)
         t_stat, p_value = ttest_1samp(z_vals, baseline)
@@ -228,17 +231,29 @@ def run_analysis(master_csv: Path, stimuli_csv: Path, output_dir: Path, codes: L
                     "Subject": "SUMMARY",
                     "Raw_Spearman_R": float(np.mean(raw_vals)) if raw_vals.size else np.nan,
                     "Partial_Spearman_R": float(np.mean(partial_vals)) if partial_vals.size else np.nan,
+                "Raw_Spearman_R_ANS": float(np.mean(raw_vals_ans)) if raw_vals_ans.size else np.nan,
+                "Partial_Spearman_R_ANS": float(np.mean(partial_vals_ans)) if partial_vals_ans.size else np.nan,
                     "Group_T": t_stat,
                     "Group_P": p_value,
                     "N": len(z_vals),
                     "Diff_T": t_diff,
                     "Diff_P": p_diff,
                     "Mean_Diff": mean_diff,
+                "Diff_T_ANS": t_diff_ans,
+                "Diff_P_ANS": p_diff_ans,
+                "Mean_Diff_ANS": mean_diff_ans,
                     "Brain_Pixel_R": mean_brain_pixel_r,
                 }
             ]
         )
         subj_df = pd.concat([subj_df, summary], ignore_index=True)
+
+    # Optional: group stats on ANS partial (same baseline)
+    if vals_ans.size:
+        z_vals_ans = np.arctanh(vals_ans)
+        t_stat_ans, p_value_ans = ttest_1samp(z_vals_ans, baseline)
+        subj_df.loc[subj_df["Subject"] == "SUMMARY", "Group_T_ANS"] = t_stat_ans
+        subj_df.loc[subj_df["Subject"] == "SUMMARY", "Group_P_ANS"] = p_value_ans
 
     # Residual heatmap averaged across subjects (add back mean to align with accuracy scale)
     if residuals:
@@ -280,20 +295,36 @@ def run_analysis(master_csv: Path, stimuli_csv: Path, output_dir: Path, codes: L
     # Generate summary statistics table
     summary_stats = pd.DataFrame([
         {
-            "Test": "Raw Brain-Theory Correlation",
+            "Test": "Raw Brain–PI-ANS Correlation",
             "Mean_r": float(np.mean(raw_vals)),
             "SD_r": float(np.std(raw_vals, ddof=1)),
             "t_statistic": np.nan,
             "p_value": np.nan,
-            "Interpretation": "Brain matches theory (before pixel control)",
+            "Interpretation": "Brain matches PI-ANS model (before pixel control)",
         },
         {
-            "Test": "Partial Brain-Theory Correlation",
+            "Test": "Partial Brain–PI-ANS Correlation (controlling pixels)",
             "Mean_r": float(np.mean(partial_vals)),
             "SD_r": float(np.std(partial_vals, ddof=1)),
             "t_statistic": t_stat,
             "p_value": p_value,
-            "Interpretation": "Brain matches theory (after pixel control)",
+            "Interpretation": "Brain matches PI-ANS model (after pixel control)",
+        },
+        {
+            "Test": "Raw Brain–ANS (log-ratio) Correlation",
+            "Mean_r": float(np.mean(raw_vals_ans)) if raw_vals_ans.size else np.nan,
+            "SD_r": float(np.std(raw_vals_ans, ddof=1)) if raw_vals_ans.size else np.nan,
+            "t_statistic": np.nan,
+            "p_value": np.nan,
+            "Interpretation": "Brain matches ANS model (before pixel control)",
+        },
+        {
+            "Test": "Partial Brain–ANS (log-ratio) Correlation (controlling pixels)",
+            "Mean_r": float(np.mean(partial_vals_ans)) if partial_vals_ans.size else np.nan,
+            "SD_r": float(np.std(partial_vals_ans, ddof=1)) if partial_vals_ans.size else np.nan,
+            "t_statistic": subj_df[subj_df["Subject"] == "SUMMARY"].get("Group_T_ANS", pd.Series([np.nan])).iloc[0],
+            "p_value": subj_df[subj_df["Subject"] == "SUMMARY"].get("Group_P_ANS", pd.Series([np.nan])).iloc[0],
+            "Interpretation": "Brain matches ANS model (after pixel control)",
         },
         {
             "Test": "Raw vs Partial Difference",
@@ -301,7 +332,15 @@ def run_analysis(master_csv: Path, stimuli_csv: Path, output_dir: Path, codes: L
             "SD_r": float(np.std(diff_vals, ddof=1)) if diff_vals.size else np.nan,
             "t_statistic": t_diff,
             "p_value": p_diff,
-            "Interpretation": "Pixels did not drive brain-theory match" if abs(mean_diff) < 0.05 else "Pixels affected brain-theory match",
+            "Interpretation": "Pixels did not drive brain–PI-ANS match" if abs(mean_diff) < 0.05 else "Pixels affected brain–PI-ANS match",
+        },
+        {
+            "Test": "Raw vs Partial Difference (ANS)",
+            "Mean_r": mean_diff_ans,
+            "SD_r": float(np.std(diff_vals_ans, ddof=1)) if diff_vals_ans.size else np.nan,
+            "t_statistic": t_diff_ans,
+            "p_value": p_diff_ans,
+            "Interpretation": "Pixels did not drive brain–ANS match" if abs(mean_diff_ans) < 0.05 else "Pixels affected brain–ANS match",
         },
         {
             "Test": "Brain-Pixel Correlation",
@@ -398,8 +437,8 @@ def run_analysis(master_csv: Path, stimuli_csv: Path, output_dir: Path, codes: L
     ax.scatter(raw_vals, partial_vals, alpha=0.6, s=80, color='C0')
     ax.plot([raw_vals.min(), raw_vals.max()], [raw_vals.min(), raw_vals.max()],
             'k--', alpha=0.5, label='y=x (no change)')
-    ax.set_xlabel('Raw Spearman r (Brain-Theory)')
-    ax.set_ylabel('Partial Spearman r (Brain-Theory, controlling pixels)')
+    ax.set_xlabel('Raw Spearman r (Brain–PI-ANS)')
+    ax.set_ylabel('Partial Spearman r (Brain–PI-ANS, controlling pixels)')
     ax.set_title('Raw vs Partial Correlations\n(n=24 subjects)')
     ax.legend()
     ax.grid(True, alpha=0.3)
@@ -417,19 +456,19 @@ def run_analysis(master_csv: Path, stimuli_csv: Path, output_dir: Path, codes: L
     ax.legend()
     ax.grid(True, alpha=0.3, axis='y')
 
-    # Plot 3: Brain-Pixel vs Brain-Theory correlations
+    # Plot 3: Brain-Pixel vs Brain-PI-ANS correlations
     ax = axes[2]
     brain_theory_raw = raw_vals
     x_pos = np.arange(len(brain_pixel_correlations))
     width = 0.35
-    ax.bar(x_pos - width/2, brain_theory_raw, width, label='Brain-Theory (raw)',
+    ax.bar(x_pos - width/2, brain_theory_raw, width, label='Brain–PI-ANS (raw)',
            alpha=0.8, color='C0')
     ax.bar(x_pos + width/2, brain_pixel_correlations, width, label='Brain-Pixel',
            alpha=0.8, color='C3')
     ax.axhline(0, color='black', linewidth=0.8)
     ax.set_xlabel('Subject Index')
     ax.set_ylabel('Spearman r')
-    ax.set_title(f'Brain-Theory vs Brain-Pixel Correlations\n(Mean Brain-Pixel r = {mean_brain_pixel_r:.3f})')
+    ax.set_title(f'Brain–PI-ANS vs Brain-Pixel Correlations\n(Mean Brain-Pixel r = {mean_brain_pixel_r:.3f})')
     ax.legend()
     ax.grid(True, alpha=0.3, axis='y')
 
@@ -444,8 +483,8 @@ def run_analysis(master_csv: Path, stimuli_csv: Path, output_dir: Path, codes: L
     ax1.scatter(raw_vals, partial_vals, alpha=0.6, s=100, color='C0', edgecolors='black', linewidth=0.5)
     ax1.plot([raw_vals.min(), raw_vals.max()], [raw_vals.min(), raw_vals.max()],
             'k--', alpha=0.5, linewidth=2, label='y=x (no change)')
-    ax1.set_xlabel('Raw Spearman r (Brain-Theory)', fontsize=12)
-    ax1.set_ylabel('Partial Spearman r\n(Brain-Theory, controlling pixels)', fontsize=12)
+    ax1.set_xlabel('Raw Spearman r (Brain–PI-ANS)', fontsize=12)
+    ax1.set_ylabel('Partial Spearman r\n(Brain–PI-ANS, controlling pixels)', fontsize=12)
     ax1.set_title('Raw vs Partial Correlations\n(n=24 subjects)', fontsize=14, weight='bold')
     ax1.legend(fontsize=10)
     ax1.grid(True, alpha=0.3)
@@ -471,11 +510,11 @@ def run_analysis(master_csv: Path, stimuli_csv: Path, output_dir: Path, codes: L
     fig2.savefig(output_dir / "plot2_difference_distribution.png", dpi=300)
     plt.close(fig2)
 
-    # Individual Plot 3: Brain-Theory vs Brain-Pixel comparison
+    # Individual Plot 3: Brain–PI-ANS vs Brain-Pixel comparison
     fig3, ax3 = plt.subplots(figsize=(10, 6))
     x_pos = np.arange(len(brain_pixel_correlations))
     width = 0.35
-    ax3.bar(x_pos - width/2, raw_vals, width, label='Brain-Theory (raw)',
+    ax3.bar(x_pos - width/2, raw_vals, width, label='Brain–PI-ANS (raw)',
            alpha=0.85, color='C0', edgecolor='black', linewidth=0.5)
     ax3.bar(x_pos + width/2, brain_pixel_correlations, width, label='Brain-Pixel',
            alpha=0.85, color='C3', edgecolor='black', linewidth=0.5)
@@ -484,7 +523,7 @@ def run_analysis(master_csv: Path, stimuli_csv: Path, output_dir: Path, codes: L
                 label=f'Mean Brain-Pixel r={mean_brain_pixel_r:.3f}')
     ax3.set_xlabel('Subject Index', fontsize=12)
     ax3.set_ylabel('Spearman r', fontsize=12)
-    ax3.set_title(f'Brain-Theory vs Brain-Pixel Correlations',
+    ax3.set_title(f'Brain–PI-ANS vs Brain-Pixel Correlations',
                   fontsize=14, weight='bold')
     ax3.legend(fontsize=11, loc='best')
     ax3.grid(True, alpha=0.3, axis='y')
@@ -501,7 +540,7 @@ def run_analysis(master_csv: Path, stimuli_csv: Path, output_dir: Path, codes: L
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="RSA pixel control partial correlation analysis.")
-    parser.add_argument("--config", default="configs/tasks/rsa_pixel_control.yaml")
+    parser.add_argument("--config", default="configs/tasks/rsa/rsa_pixel_control.yaml")
     parser.add_argument("--master-csv", type=Path, default=None)
     parser.add_argument("--stimuli-csv", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
