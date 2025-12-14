@@ -1,0 +1,58 @@
+# Temporal Generalization (PILOT) — within-prime=1 (change-only), ACC==1
+#
+# Single pair (14 vs 15), single seed, single train window.
+
+model_name: eegnex
+optuna_objective: inner_mean_min_per_class_f1
+seeds: [49]
+
+materialized_dir: data_preprocessed/hpf_1.5_lpf_35_baseline-on-avgref
+exclude_channel_list: non_scalp
+trial_filter: acc1
+crop_ms: null
+
+# Explicit condition codes: prime=1, target 4 vs 5
+rsa_conditions: [14, 15]
+
+temporal:
+  epoch_ms: 500
+  window_ms: 50
+  stride_ms: 20
+  train_windows: [[180, 230]]
+
+temporal_generalization:
+  enabled: true
+  write_predictions: true
+
+# Pilot schedule
+epochs: 8
+early_stop: 3
+batch_size: 128
+lr: 0.001
+inner_n_folds: 5
+n_folds: 6
+outer_eval_mode: ensemble
+
+weight_decay: 0.000025
+drop_prob: 0.5
+scheduler_patience: 3
+lr_warmup_frac: 0.0
+lr_warmup_init: 0.0
+
+filter_1: 8
+filter_2: 32
+kernel_block_1_2: 32
+kernel_block_4: 16
+kernel_block_5: 16
+avg_pool_block4: 4
+avg_pool_block5: 4
+dilation_block_4: 2
+dilation_block_5: 4
+depth_multiplier: 2
+activation: elu
+max_norm_conv: 1.0
+max_norm_linear: 0.25
+
+dataset_cache_memory: true
+
+

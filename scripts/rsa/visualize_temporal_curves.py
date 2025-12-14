@@ -24,6 +24,8 @@ PROJ_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJ_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJ_ROOT))
 
+from scripts.rsa.naming import analysis_id_from_run_root, prefixed_path, prefixed_title
+
 # Matplotlib settings for publication quality
 plt.rcParams['font.family'] = 'sans-serif'
 plt.rcParams['font.size'] = 10
@@ -118,7 +120,8 @@ def create_temporal_curve_figure(
     subject_data: pd.DataFrame,
     stats_data: Optional[pd.DataFrame],
     output_path: Path,
-    show_all_pairs: bool = True
+    show_all_pairs: bool = True,
+    analysis_id: Optional[str] = None,
 ) -> None:
     """
     Create multi-panel figure with all temporal curves.
@@ -152,7 +155,8 @@ def create_temporal_curve_figure(
                 show_significance=True
             )
 
-        fig.suptitle('Temporal Decoding Accuracy: All Pairs', fontsize=16, fontweight='bold', y=0.995)
+        title = "Temporal Decoding Accuracy: All Pairs"
+        fig.suptitle(f"{analysis_id} - {title}" if analysis_id else title, fontsize=16, fontweight="bold", y=0.995)
 
     else:
         # Grouped by difficulty (3 panels)
@@ -193,7 +197,8 @@ def create_temporal_curve_figure(
             ax.grid(True, alpha=0.3, linestyle=':')
             ax.legend(loc='upper right', fontsize=8, ncol=2)
 
-        fig.suptitle('Temporal Decoding Accuracy by Difficulty', fontsize=14, fontweight='bold')
+        title = "Temporal Decoding Accuracy by Difficulty"
+        fig.suptitle(f"{analysis_id} - {title}" if analysis_id else title, fontsize=14, fontweight="bold")
 
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     print(f"[viz] Saved: {output_path}")
@@ -202,7 +207,8 @@ def create_temporal_curve_figure(
 
 def plot_significance_heatmap(
     stats_data: pd.DataFrame,
-    output_path: Path
+    output_path: Path,
+    analysis_id: Optional[str] = None,
 ) -> None:
     """
     Create heatmap showing significance across pairs × time windows.
@@ -237,7 +243,8 @@ def plot_significance_heatmap(
 
     ax.set_xlabel('Time Window Center (ms)', fontsize=11)
     ax.set_ylabel('Numerosity Pair', fontsize=11)
-    ax.set_title('Significant Discrimination (FDR q<0.05)', fontsize=13, fontweight='bold')
+    title = 'Significant Discrimination (FDR q<0.05)'
+    ax.set_title(f"{analysis_id} - {title}" if analysis_id else title, fontsize=13, fontweight='bold')
 
     # Colorbar
     cbar = plt.colorbar(im, ax=ax, fraction=0.02, pad=0.04)
@@ -270,13 +277,14 @@ def main():
         "--output-dir",
         type=Path,
         required=True,
-        help="Output directory for figures"
+        help="Run root directory for outputs (figures written into <run_root>/figures)."
     )
 
     args = parser.parse_args()
 
-    # Create output directory
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    run_root = args.output_dir
+    run_root.mkdir(parents=True, exist_ok=True)
+    analysis_id = analysis_id_from_run_root(run_root)
 
     print("="*70)
     print("  TEMPORAL RSA: VISUALIZATION")
@@ -293,31 +301,34 @@ def main():
 
     # Create all pairs figure
     print(f"[viz] Creating temporal curves (all pairs)...")
-    output_all = args.output_dir / "temporal_curves_all_pairs.png"
+    output_all = prefixed_path(run_root=run_root, kind="figures", stem="temporal_curves_all_pairs", ext=".png")
     create_temporal_curve_figure(
         subject_data=subject_df,
         stats_data=stats_df,
         output_path=output_all,
-        show_all_pairs=True
+        show_all_pairs=True,
+        analysis_id=analysis_id,
     )
 
     # Create grouped figure
     print(f"[viz] Creating temporal curves (grouped by difficulty)...")
-    output_grouped = args.output_dir / "temporal_curves_grouped.png"
+    output_grouped = prefixed_path(run_root=run_root, kind="figures", stem="temporal_curves_grouped", ext=".png")
     create_temporal_curve_figure(
         subject_data=subject_df,
         stats_data=stats_df,
         output_path=output_grouped,
-        show_all_pairs=False
+        show_all_pairs=False,
+        analysis_id=analysis_id,
     )
 
     # Create significance heatmap
     if stats_df is not None:
         print(f"[viz] Creating significance heatmap...")
-        output_heatmap = args.output_dir / "temporal_significance_heatmap.png"
+        output_heatmap = prefixed_path(run_root=run_root, kind="figures", stem="temporal_significance_heatmap", ext=".png")
         plot_significance_heatmap(
             stats_data=stats_df,
-            output_path=output_heatmap
+            output_path=output_heatmap,
+            analysis_id=analysis_id,
         )
 
     print("="*70)

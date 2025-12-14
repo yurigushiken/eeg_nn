@@ -1,11 +1,14 @@
 """
-Paper figure: model comparison over time (PI-ANS vs Pixel).
+Paper figure: model comparison over time (PI(2-4)-ANS vs Pixel).
 
 Computes, per subject and time window:
-  Δr = r(Brain, PI-ANS) - r(Brain, Pixel)
+  Δr = r(Brain, PI(k)-ANS) - r(Brain, Pixel)
 
 For inference we test Δz > 0 using Fisher-z transformed correlations (one-sided),
 then apply BH-FDR across timepoints.
+
+Outputs (into output_dir/{tables,figures}):
+- temporal_model_comparison_pi_24_ans_vs_pixel.{csv,png}
 """
 
 from __future__ import annotations
@@ -13,7 +16,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
@@ -28,6 +31,7 @@ if str(PROJ_ROOT) not in sys.path:
 from scripts.rsa.analyze_temporal_stats import apply_fdr_correction, find_significant_clusters
 from scripts.rsa.rdm_models import build_pi_ans_rdm, build_pixel_rdm_e_only, spearman_r
 from scripts.rsa.temporal_paper_utils import fisher_z, mask_to_spans, sem, ttest_1samp_greater
+from scripts.rsa.naming import prefixed_path, prefixed_title
 
 
 def _ensure_cols(df: pd.DataFrame, cols: list[str]) -> None:
@@ -49,26 +53,23 @@ def _model_vec_from_rdm(rdm: np.ndarray, codes: Sequence[int], pairs: Sequence[T
     return np.asarray([float(rdm[idx[a], idx[b]]) for (a, b) in pairs], dtype=float)
 
 
-def run_model_comparison_pi_ans_vs_pixel(
+def _run_one_pi_range(
     *,
-    subject_data_csv: Path,
+    df: pd.DataFrame,
     output_dir: Path,
     stimuli_csv: Path,
-    codes: Optional[Sequence[int]] = None,
-    pi_ans_boundary: float = 4.0,
-    fdr_alpha: float = 0.05,
-    min_cluster_size: int = 2,
+    codes: Sequence[int],
+    pi_min: int,
+    pi_max: int,
+    pi_ans_boundary: float,
+    fdr_alpha: float,
+    min_cluster_size: int,
 ) -> pd.DataFrame:
-    df = pd.read_csv(subject_data_csv)
-    _ensure_cols(df, ["ClassA", "ClassB", "Subject", "TimeWindow_Center", "Accuracy"])
-
-    if codes is None:
-        codes = sorted(set(df["ClassA"]).union(set(df["ClassB"])))
-    codes = [int(c) for c in codes]
+    run_root = output_dir
     pairs = _pairs_from_codes(codes)
 
     # Model vectors (pair order)
-    pi_rdm = build_pi_ans_rdm(codes, boundary=float(pi_ans_boundary))
+    pi_rdm = build_pi_ans_rdm(codes, pi_min=int(pi_min), pi_max=int(pi_max), boundary=float(pi_ans_boundary))
     px_rdm = build_pixel_rdm_e_only(stimuli_csv, codes)
     pi_vec = _model_vec_from_rdm(pi_rdm, codes, pairs)
     px_vec = _model_vec_from_rdm(px_rdm, codes, pairs)
@@ -90,7 +91,7 @@ def run_model_comparison_pi_ans_vs_pixel(
                 {
                     "TimeWindow_Center": float(t_center),
                     "Subject": str(int(subj)) if str(subj).isdigit() else str(subj),
-                    "PI_ANS_r": float(r_pi),
+                    "PI_r": float(r_pi),
                     "Pixel_r": float(r_px),
                 }
             )
@@ -103,7 +104,7 @@ def run_model_comparison_pi_ans_vs_pixel(
     out_rows: list[dict] = []
     for t_center in sorted(subj_df["TimeWindow_Center"].unique()):
         g = subj_df[subj_df["TimeWindow_Center"] == t_center]
-        r_pi = g["PI_ANS_r"].to_numpy(dtype=float)
+        r_pi = g["PI_r"].to_numpy(dtype=float)
         r_px = g["Pixel_r"].to_numpy(dtype=float)
         delta_r = r_pi - r_px
         delta_z = fisher_z(r_pi) - fisher_z(r_px)
@@ -124,18 +125,30 @@ def run_model_comparison_pi_ans_vs_pixel(
     out_df["P_FDR"] = p_fdr
     out_df["Significant_FDR"] = rejected
 
-    clusters = find_significant_clusters(p_values=out_df["P_FDR"].to_numpy(dtype=float), alpha=fdr_alpha, min_cluster_size=min_cluster_size)
+    clusters = find_significant_clusters(
+        p_values=out_df["P_FDR"].to_numpy(dtype=float),
+        alpha=fdr_alpha,
+        min_cluster_size=min_cluster_size,
+    )
     out_df["IsClusterSig"] = False
     for cluster in clusters:
         for idx in cluster:
             out_df.loc[out_df.index[idx], "IsClusterSig"] = True
 
     # Write table + figure
-    figures_dir = output_dir / "figures"
-    tables_dir = output_dir / "tables"
-    figures_dir.mkdir(parents=True, exist_ok=True)
-    tables_dir.mkdir(parents=True, exist_ok=True)
-    out_csv = tables_dir / "temporal_model_comparison_pi_ans_vs_pixel.csv"
+    if int(pi_min) == 2 and int(pi_max) == 4:
+        suffix = "pi_24_ans"
+        model_label = "PI(2-4)-ANS"
+    elif int(pi_min) == 1 and int(pi_max) == 4:
+        suffix = "pi_14_ans"
+        model_label = "PI(1-4)-ANS"
+    elif int(pi_min) == 1 and int(pi_max) == 3:
+        suffix = "pi_13_ans"
+        model_label = "PI(1-3)-ANS"
+    else:
+        suffix = f"pi_{int(pi_min)}{int(pi_max)}_ans"
+        model_label = f"PI({int(pi_min)}-{int(pi_max)})-ANS"
+    out_csv = prefixed_path(run_root=run_root, kind="tables", stem=f"temporal_model_comparison_{suffix}_vs_pixel", ext=".csv")
     out_df.to_csv(out_csv, index=False)
 
     plt.rcParams["figure.dpi"] = 300
@@ -152,14 +165,14 @@ def run_model_comparison_pi_ans_vs_pixel(
     ax = fig.add_subplot(gs[0])
     ax_sig = fig.add_subplot(gs[1], sharex=ax)
 
-    color = "#2E86AB"
+    color = "#1B4F72" if suffix == "pi_24_ans" else "#2E86AB"
     ax.plot(x, y, color=color, linewidth=2.5, label="Δ Spearman r (mean ± SEM)")
     if np.isfinite(y_sem).any():
         ax.fill_between(x, y - y_sem, y + y_sem, color=color, alpha=0.18, linewidth=0)
     ax.axhline(0.0, color="black", linestyle="--", linewidth=1.2, label="No difference (0)")
 
-    ax.set_title("Model Comparison: PI-ANS vs Pixel", fontsize=14, fontweight="bold")
-    ax.set_ylabel("Δ Spearman r (PI-ANS − Pixel)", fontsize=11)
+    ax.set_title(prefixed_title(run_root=run_root, title=f"Model Comparison: {model_label} vs Pixel"), fontsize=14, fontweight="bold")
+    ax.set_ylabel(f"Δ Spearman r ({model_label} − Pixel)", fontsize=11)
     ax.grid(True, alpha=0.3, linestyle=":")
     ax.set_xlim(0, 500)
     ax.axhline(0.0, color="black", linewidth=0.8, alpha=0.3)
@@ -181,20 +194,55 @@ def run_model_comparison_pi_ans_vs_pixel(
     ax.legend(handles, labels, loc="upper right", frameon=True, fancybox=False, edgecolor="black")
 
     fig.tight_layout()
-    out_png = figures_dir / "temporal_model_comparison_pi_ans_vs_pixel.png"
-    fig.savefig(out_png, dpi=300, bbox_inches="tight")
+    fig.savefig(
+        prefixed_path(run_root=run_root, kind="figures", stem=f"temporal_model_comparison_{suffix}_vs_pixel", ext=".png"),
+        dpi=300,
+        bbox_inches="tight",
+    )
     plt.close(fig)
 
     return out_df
 
 
+def run_model_comparisons_pi_variants_vs_pixel(
+    *,
+    subject_data_csv: Path,
+    output_dir: Path,
+    stimuli_csv: Path,
+    codes: Optional[Sequence[int]] = None,
+    pi_ans_boundary: float = 4.0,
+    fdr_alpha: float = 0.05,
+    min_cluster_size: int = 2,
+) -> pd.DataFrame:
+    df = pd.read_csv(subject_data_csv)
+    _ensure_cols(df, ["ClassA", "ClassB", "Subject", "TimeWindow_Center", "Accuracy"])
+
+    if codes is None:
+        codes = sorted(set(df["ClassA"]).union(set(df["ClassB"])))
+    codes = [int(c) for c in codes]
+
+    # Run PI(2-4)-ANS only.
+    out_pi24 = _run_one_pi_range(
+        df=df,
+        output_dir=output_dir,
+        stimuli_csv=stimuli_csv,
+        codes=codes,
+        pi_min=2,
+        pi_max=4,
+        pi_ans_boundary=float(pi_ans_boundary),
+        fdr_alpha=float(fdr_alpha),
+        min_cluster_size=int(min_cluster_size),
+    )
+    return out_pi24
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Paper figure: PI-ANS vs Pixel model comparison over time.")
+    parser = argparse.ArgumentParser(description="Paper figure: PI(2-4)-ANS vs Pixel model comparison over time.")
     parser.add_argument("--subject-data", type=Path, required=True, help="Path to subject_temporal_means.csv (seeds averaged).")
     parser.add_argument("--output-dir", type=Path, required=True, help="Run directory to write figures/ and tables/ into.")
     parser.add_argument("--stimuli-csv", type=Path, default=Path("data") / "stimuli" / "stimuli_analysis.csv", help="Stimuli analysis CSV for Pixel model.")
     parser.add_argument("--codes", nargs="*", type=int, default=None, help="Optional code list (default: infer from CSV).")
-    parser.add_argument("--pi-ans-boundary", type=float, default=4.0, help="PI-ANS boundary distance (default: 4.0).")
+    parser.add_argument("--pi-ans-boundary", type=float, default=4.0, help="Cross PI↔ANS boundary distance (default: 4.0).")
     parser.add_argument("--fdr-alpha", type=float, default=0.05, help="FDR alpha across timepoints (default: 0.05).")
     parser.add_argument("--min-cluster-size", type=int, default=2, help="Cluster size for marking clusters (default: 2).")
     return parser.parse_args()
@@ -202,7 +250,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    run_model_comparison_pi_ans_vs_pixel(
+    run_model_comparisons_pi_variants_vs_pixel(
         subject_data_csv=args.subject_data,
         output_dir=args.output_dir,
         stimuli_csv=args.stimuli_csv,

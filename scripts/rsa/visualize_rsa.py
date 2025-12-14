@@ -9,6 +9,7 @@ builds a symmetric accuracy matrix, and generates:
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import Iterable, List, Tuple, Optional
 
@@ -17,6 +18,12 @@ import numpy as np
 import pandas as pd
 from sklearn.manifold import MDS
 
+# Ensure project root is importable when running as a script.
+PROJ_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJ_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJ_ROOT))
+
+from scripts.rsa.naming import prefixed_path, prefixed_title
 
 def build_accuracy_matrix(
     csv_path: Path,
@@ -175,7 +182,12 @@ def plot_rdm_heatmap(
     plt.close(fig)
 
 
-def plot_mds_scatter(positions: pd.DataFrame, output_path: Path, flip_xy: bool = False) -> None:
+def plot_mds_scatter(
+    positions: pd.DataFrame,
+    output_path: Path,
+    flip_xy: bool = False,
+    title: str = "MDS Projection of RSA Matrix",
+) -> None:
     """Plot and save the 2D MDS scatter plot.
 
     Args:
@@ -225,11 +237,11 @@ def plot_mds_scatter(positions: pd.DataFrame, output_path: Path, flip_xy: bool =
     if flip_xy:
         ax.set_xlabel("MDS Dimension 2")
         ax.set_ylabel("MDS Dimension 1")
-        ax.set_title("MDS Projection of RSA Matrix")
+        ax.set_title(title)
     else:
         ax.set_xlabel("MDS Dimension 1")
         ax.set_ylabel("MDS Dimension 2")
-        ax.set_title("MDS Projection of RSA Matrix")
+        ax.set_title(title)
 
     ax.set_aspect("equal")
 
@@ -255,12 +267,7 @@ def parse_args() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=None,
-        help="Directory to store the generated figures (defaults to csv_dir/figures).",
-    )
-    parser.add_argument(
-        "--prefix",
-        default="rsa_matrix",
-        help="Filename prefix for output figures.",
+        help="Run root directory to store generated figures (defaults to csv_dir). Figures go into <run_root>/figures.",
     )
     parser.add_argument(
         "--subject",
@@ -279,28 +286,26 @@ def main() -> None:
     matrix, labels = build_accuracy_matrix(csv_path, metric=args.metric, subject_filter=args.subject)
     positions = compute_mds_positions(matrix, labels)
 
-    output_dir = args.output_dir
-    if output_dir is None:
-        output_dir = csv_path.parent / "figures"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    # Use explicit "brain" suffix for clarity; keep legacy filename only for backwards compatibility.
-    heatmap_path = output_dir / f"{args.prefix}_brain_rdm_heatmap.png"
-    legacy_heatmap_path = output_dir / f"{args.prefix}_rdm_heatmap.png"
-    scatter_path = output_dir / f"{args.prefix}_mds.png"
+    run_root = args.output_dir if args.output_dir is not None else csv_path.parent
+    run_root.mkdir(parents=True, exist_ok=True)
+    heatmap_path = prefixed_path(run_root=run_root, kind="figures", stem="brain_rdm_heatmap", ext=".png")
+    scatter_path = prefixed_path(run_root=run_root, kind="figures", stem="mds", ext=".png")
 
-    plot_rdm_heatmap(matrix, labels, heatmap_path)
-    plot_mds_scatter(positions, scatter_path, flip_xy=True)
+    plot_rdm_heatmap(
+        matrix,
+        labels,
+        heatmap_path,
+        title=prefixed_title(run_root=run_root, title="RSA Matrix (Higher = Easier to Distinguish)"),
+    )
+    plot_mds_scatter(
+        positions,
+        scatter_path,
+        flip_xy=True,
+        title=prefixed_title(run_root=run_root, title="MDS Projection of RSA Matrix"),
+    )
 
     print(f"[visualize_rsa] Heatmap saved to {heatmap_path}")
     print(f"[visualize_rsa] MDS scatter (flipped) saved to {scatter_path}")
-
-    # If a legacy heatmap exists from older runs, remove it to avoid confusion.
-    # (The new name is clearer and the content is identical.)
-    try:
-        if legacy_heatmap_path.exists():
-            legacy_heatmap_path.unlink()
-    except Exception:
-        pass
 
 
 if __name__ == "__main__":

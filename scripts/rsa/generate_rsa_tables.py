@@ -7,6 +7,7 @@ pairwise decoding accuracies with p-values and significance markers.
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 from typing import List, Tuple
 
@@ -15,6 +16,12 @@ import numpy as np
 import pandas as pd
 from matplotlib.table import Table
 
+# Ensure project root is importable when running as a script.
+PROJ_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJ_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJ_ROOT))
+
+from scripts.rsa.naming import analysis_id_from_run_root, prefixed_title
 
 def load_rsa_data(csv_path: Path) -> pd.DataFrame:
     """Load RSA results CSV."""
@@ -154,7 +161,7 @@ def format_latex_table(
 
     def format_pval(p):
         if pd.isna(p):
-            return "—"
+            return "-"
         elif p < 0.001:
             return "<0.001"
         else:
@@ -213,7 +220,7 @@ def plot_table_as_image(
 
     def format_pval(p):
         if pd.isna(p):
-            return "—"
+            return "-"
         elif p < 0.001:
             return "<0.001"
         else:
@@ -345,6 +352,10 @@ def main() -> None:
     # Load data
     df = load_rsa_data(args.csv)
 
+    # Convention: output_dir is typically <run_root>/tables.
+    run_root = args.output_dir.parent if args.output_dir.name == "tables" else args.output_dir
+    analysis_id = analysis_id_from_run_root(run_root)
+
     # Table 1: Untitled (PI/ANS boundary comparisons)
     table1_comparisons = [
         (1, 2),
@@ -357,8 +368,8 @@ def main() -> None:
     generate_table_set(
         df=df,
         comparisons=table1_comparisons,
-        title="Untitled",
-        output_prefix="table1_untitled",
+        title=prefixed_title(run_root=run_root, title="Untitled"),
+        output_prefix=f"{analysis_id}__table1_untitled",
         output_dir=args.output_dir,
         caption="Pairwise decoding accuracies for numerosity comparisons.",
         label="tab:rsa_untitled",
@@ -376,8 +387,8 @@ def main() -> None:
     generate_table_set(
         df=df,
         comparisons=table2_comparisons,
-        title="Decoding One Against Higher Numerosities",
-        output_prefix="table2_one_vs_all",
+        title=prefixed_title(run_root=run_root, title="Decoding One Against Higher Numerosities"),
+        output_prefix=f"{analysis_id}__table2_one_vs_all",
         output_dir=args.output_dir,
         caption="Decoding accuracy for contrasts between numerosity 1 and all higher numerosities (2–6).",
         label="tab:rsa_one_vs_all",
@@ -395,8 +406,8 @@ def main() -> None:
     generate_table_set(
         df=df,
         comparisons=table3_comparisons,
-        title="Complete Pairwise Decoding Accuracy Matrix",
-        output_prefix="table3_all_pairs",
+        title=prefixed_title(run_root=run_root, title="Complete Pairwise Decoding Accuracy Matrix"),
+        output_prefix=f"{analysis_id}__table3_all_pairs",
         output_dir=args.output_dir,
         caption="Decoding accuracies for all pairwise numerosity comparisons (1–6).",
         label="tab:rsa_all_pairs",

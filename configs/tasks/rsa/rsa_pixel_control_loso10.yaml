@@ -1,0 +1,11 @@
+# Pixel-control confound analysis for cardinality (no-change) data
+# Uses cardinality codes [11,22,33,44,55,66]
+
+master_csv: results/runs/rsa_matrix_loso10-defaults/rsa_results_master.csv
+stimuli_csv: data/stimuli/stimuli_analysis.csv
+output_dir: results/runs/rsa_matrix_loso10-defaults/confounds
+baseline_r: 0.0
+codes: [11, 22, 33, 44, 55, 66]
+
+# RT summary (using same RT data - maps to numerosities 1-6)
+rt_summary_csv: reaction_time_landing/tables/rt_summary_by_landing_subject_level.csv

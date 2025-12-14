@@ -144,13 +144,27 @@ def build_rt_landing_rdm(rt_summary_csv: Path, codes: Sequence[Code], *, value_c
     return mat
 
 
-def build_pi_ans_rdm(codes: Sequence[Code], *, boundary: float = 4.0) -> np.ndarray:
+def build_pi_ans_rdm(
+    codes: Sequence[Code],
+    *,
+    pi_min: int = 1,
+    pi_max: int,
+    boundary: float = 4.0,
+    w_cross: float = 0.25,
+) -> np.ndarray:
     """
     PI-ANS model RDM (project-specific).
 
-    - PI set: 1-4 uses absolute distance
-    - ANS set: 5-6 uses real ANS log-ratio for 5v6
-    - Cross PI↔ANS: boundary + scaled abs distance
+    Naming clarification:
+    - pi_min=1, pi_max=4 corresponds to **PI(1-4)-ANS**
+    - pi_min=1, pi_max=3 corresponds to **PI(1-3)-ANS** (numerosity 4 is treated as ANS)
+    - pi_min=2, pi_max=4 corresponds to **PI(2-4)-ANS** (numerosity 1 becomes cross-only)
+
+    Model definition:
+    - PI set: pi_min..pi_max uses absolute distance |i-j|
+    - ANS set: (pi_max+1)..6 uses ANS log-ratio |log(i)-log(j)|
+    - Numerosities below pi_min (i.e., 1..(pi_min-1)) are cross-only (no within-ANS)
+    - Cross PI↔ANS: boundary + w_cross * |i-j|
 
     boundary is chosen so every cross pair is larger than any within-PI pair.
     The default is intentionally "moderate" so PI↔ANS cross-pairs don't dominate
@@ -160,26 +174,32 @@ def build_pi_ans_rdm(codes: Sequence[Code], *, boundary: float = 4.0) -> np.ndar
     n = len(nums)
     mat = np.zeros((n, n), dtype=float)
 
-    # Choose weights so within-PI max is 3 (|1-4|) and cross dominates that.
-    w_pi = 1.0
-    w_cross = 0.25
+    pi_min_i = int(pi_min)
+    pi_max_i = int(pi_max)
+    if not (1 <= pi_min_i <= 6):
+        raise ValueError(f"pi_min must be in [1,6] for numerosities 1..6, got {pi_min}")
+    if not (1 <= pi_max_i <= 6):
+        raise ValueError(f"pi_max must be in [1,6] for numerosities 1..6, got {pi_max}")
+    if pi_min_i > pi_max_i:
+        raise ValueError(f"pi_min must be <= pi_max, got pi_min={pi_min}, pi_max={pi_max}")
+    w_cross_f = float(w_cross)
 
     for i in range(n):
         for j in range(n):
             if i == j:
                 continue
             a, b = nums[i], nums[j]
-            in_pi_a = a <= 4
-            in_pi_b = b <= 4
-            in_ans_a = a >= 5
-            in_ans_b = b >= 5
+            in_pi_a = pi_min_i <= a <= pi_max_i
+            in_pi_b = pi_min_i <= b <= pi_max_i
+            in_ans_a = a >= (pi_max_i + 1)
+            in_ans_b = b >= (pi_max_i + 1)
 
             if in_pi_a and in_pi_b:
-                mat[i, j] = w_pi * abs(a - b)
+                mat[i, j] = abs(a - b)
             elif in_ans_a and in_ans_b:
                 mat[i, j] = abs(np.log(a) - np.log(b))
             else:
-                mat[i, j] = boundary + w_cross * abs(a - b)
+                mat[i, j] = float(boundary) + w_cross_f * abs(a - b)
     return mat
 
 

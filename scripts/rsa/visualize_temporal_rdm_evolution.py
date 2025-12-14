@@ -29,6 +29,8 @@ PROJ_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJ_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJ_ROOT))
 
+from scripts.rsa.naming import analysis_id_from_run_root, prefixed_path, prefixed_title
+
 # Matplotlib settings for publication quality
 plt.rcParams['font.family'] = 'sans-serif'
 plt.rcParams['font.size'] = 9
@@ -166,7 +168,8 @@ def create_rdm_snapshot_grid(
     subject_data: pd.DataFrame,
     output_path: Path,
     timepoints: List[float] = [50, 100, 150, 200, 300, 400],
-    numerosities: List[int] = [11, 22, 33, 44, 55, 66]
+    numerosities: List[int] = [11, 22, 33, 44, 55, 66],
+    analysis_id: str | None = None,
 ) -> None:
     """
     Create grid of RDM snapshots at key timepoints.
@@ -214,7 +217,8 @@ def create_rdm_snapshot_grid(
             title_prefix=""
         )
 
-    fig.suptitle('Temporal RDM Evolution: Key Snapshots', fontsize=14, fontweight='bold')
+    title = 'Temporal RDM Evolution: Key Snapshots'
+    fig.suptitle(f"{analysis_id} - {title}" if analysis_id else title, fontsize=14, fontweight="bold")
 
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
     print(f"[viz] Saved: {output_path}")
@@ -366,7 +370,8 @@ def create_rdm_evolution_gif(
 def create_rdm_evolution_summary(
     subject_data: pd.DataFrame,
     output_path: Path,
-    numerosities: List[int] = [11, 22, 33, 44, 55, 66]
+    numerosities: List[int] = [11, 22, 33, 44, 55, 66],
+    analysis_id: str | None = None,
 ) -> None:
     """
     Create summary figure showing how each pair's accuracy evolves over time.
@@ -415,7 +420,8 @@ def create_rdm_evolution_summary(
     # Labels and formatting
     ax.set_xlabel('Time (ms)', fontsize=12)
     ax.set_ylabel('Accuracy (%)', fontsize=12)
-    ax.set_title('Temporal Evolution: All Pairwise Discriminations', fontsize=13, fontweight='bold')
+    title = 'Temporal Evolution: All Pairwise Discriminations'
+    ax.set_title(f"{analysis_id} - {title}" if analysis_id else title, fontsize=13, fontweight="bold")
     ax.set_xlim(0, 500)
     ax.set_ylim(45, 85)
     ax.grid(True, alpha=0.3, linestyle=':')
@@ -441,7 +447,7 @@ def main():
         "--output-dir",
         type=Path,
         required=True,
-        help="Output directory for figures"
+        help="Run root directory for outputs (figures written into <run_root>/figures)."
     )
     parser.add_argument(
         "--create-gif",
@@ -469,8 +475,9 @@ def main():
 
     args = parser.parse_args()
 
-    # Create output directory
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    run_root = args.output_dir
+    run_root.mkdir(parents=True, exist_ok=True)
+    analysis_id = analysis_id_from_run_root(run_root)
 
     print("="*70)
     print("  TEMPORAL RSA: RDM EVOLUTION VISUALIZATION")
@@ -482,26 +489,28 @@ def main():
 
     # Create snapshot grid
     print(f"[viz] Creating RDM snapshot grid...")
-    output_snapshots = args.output_dir / "temporal_rdm_snapshots.png"
+    output_snapshots = prefixed_path(run_root=run_root, kind="figures", stem="temporal_rdm_snapshots", ext=".png")
     create_rdm_snapshot_grid(
         subject_data=subject_df,
         output_path=output_snapshots,
-        timepoints=args.snapshot_times
+        timepoints=args.snapshot_times,
+        analysis_id=analysis_id,
     )
 
     # Create summary trajectory plot
     print(f"[viz] Creating temporal trajectory summary...")
-    output_summary = args.output_dir / "temporal_rdm_trajectories.png"
+    output_summary = prefixed_path(run_root=run_root, kind="figures", stem="temporal_rdm_trajectories", ext=".png")
     create_rdm_evolution_summary(
         subject_data=subject_df,
-        output_path=output_summary
+        output_path=output_summary,
+        analysis_id=analysis_id,
     )
 
     # Create animated GIF (optional, slower)
     if args.create_gif:
         print(f"[viz] Creating animated GIF (this may take 1-2 minutes)...")
-        output_gif = args.output_dir / "temporal_rdm_evolution.gif"
-        frames_dir = args.output_dir / "temporal_rdm_evolution_frames" if args.save_gif_frames else None
+        output_gif = prefixed_path(run_root=run_root, kind="figures", stem="temporal_rdm_evolution", ext=".gif")
+        frames_dir = (run_root / "figures" / f"{analysis_id}__temporal_rdm_evolution_frames") if args.save_gif_frames else None
         create_rdm_evolution_gif(
             subject_data=subject_df,
             output_path=output_gif,

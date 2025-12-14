@@ -27,19 +27,26 @@ from scripts.rsa.rdm_models import (
     lower_tri_vector,
     partial_spearman_r,
 )
+from scripts.rsa.naming import prefixed_path, prefixed_title
 
 DEFAULT_CODES = [11, 22, 33, 44, 55, 66]
 
 
-def build_pi_ans_rdm(codes: List[int]) -> np.ndarray:
+def build_pi_ans_rdm(
+    codes: List[int],
+    *,
+    pi_min: int = 1,
+    pi_max: int = 4,
+    boundary: float = 4.0,
+) -> np.ndarray:
     """
-    PI-ANS model RDM (project-specific; replaces the legacy theory model).
+    PI(k)-ANS model RDM (project-specific).
 
-    PI set: 1-4 (absolute distance structure)\n
-    ANS set: 5-6 (log-ratio for 5v6)\n
-    Cross PI↔ANS: large boundary separation.
+    - pi_min=1, pi_max=4 -> PI(1-4)-ANS
+    - pi_min=1, pi_max=3 -> PI(1-3)-ANS (numerosity 4 is treated as ANS)
+    - pi_min=2, pi_max=4 -> PI(2-4)-ANS (numerosity 1 is cross-only)
     """
-    return build_pi_ans_model_rdm(codes)
+    return build_pi_ans_model_rdm(codes, pi_min=int(pi_min), pi_max=int(pi_max), boundary=float(boundary))
 
 
 def build_pixel_rdm(stimuli_csv: Path, codes: List[int]) -> np.ndarray:
@@ -83,6 +90,22 @@ def build_brain_rdms(master_csv: Path, codes: List[int]) -> Dict[str, np.ndarray
     return rdms
 
 
+def infer_codes_from_master_csv(master_csv: Path) -> List[int]:
+    """
+    Infer condition codes from the master CSV (subject-level rows).
+    This enables running confounds on landing-digit runs (ClassA/B in 1..6)
+    without needing a separate config file.
+    """
+    df = pd.read_csv(master_csv)
+    if "RecordType" in df.columns:
+        df = df[df["RecordType"].astype(str).str.lower() == "subject"]
+    if df.empty:
+        # Fallback: infer from all rows
+        df = pd.read_csv(master_csv)
+    codes = sorted(set(df["ClassA"].astype(int)).union(set(df["ClassB"].astype(int))))
+    return [int(c) for c in codes]
+
+
 def plot_heatmap(
     mat: np.ndarray,
     labels: List[int],
@@ -100,15 +123,16 @@ def plot_heatmap(
     ax.set_xticklabels(labels)
     ax.set_yticks(range(len(labels)))
     ax.set_yticklabels(labels)
-    ax.set_title(title)
+    ax.set_title(title, pad=12)
     for i in range(len(labels)):
         for j in range(len(labels)):
             # Use white text on dark diagonal, black text elsewhere
             color = "white" if i == j else "black"
             ax.text(j, i, f"{mat[i, j]:.2f}", ha="center", va="center", color=color, fontsize=7)
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    fig.tight_layout()
-    fig.savefig(outfile, dpi=300)
+    # Avoid clipping multi-line titles: reserve headroom and use tight bbox.
+    fig.tight_layout(rect=[0, 0, 1, 0.92])
+    fig.savefig(outfile, dpi=300, bbox_inches="tight", pad_inches=0.25)
     plt.close(fig)
 
 
@@ -127,14 +151,14 @@ def plot_heatmap_diverging(
     ax.set_xticklabels(labels)
     ax.set_yticks(range(len(labels)))
     ax.set_yticklabels(labels)
-    ax.set_title(title)
+    ax.set_title(title, pad=12)
     for i in range(len(labels)):
         for j in range(len(labels)):
             color = "white" if i == j else "black"
             ax.text(j, i, f"{mat[i, j]:.2f}", ha="center", va="center", color=color, fontsize=7)
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    fig.tight_layout()
-    fig.savefig(outfile, dpi=300)
+    fig.tight_layout(rect=[0, 0, 1, 0.92])
+    fig.savefig(outfile, dpi=300, bbox_inches="tight", pad_inches=0.25)
     plt.close(fig)
 
 
@@ -147,32 +171,67 @@ def run_analysis(
     rt_summary_csv: Path | None = None,
 ) -> pd.DataFrame:
     output_dir.mkdir(parents=True, exist_ok=True)
-    models_dir = output_dir / "models"
+    # Model heatmaps are written once, at the run root (next to confounds/), to avoid clutter.
+    # If output_dir is ".../<run_root>/confounds", models_dir becomes ".../<run_root>/models".
+    run_root = output_dir.parent
+    models_dir = run_root / "models"
     models_dir.mkdir(parents=True, exist_ok=True)
 
     # Model RDMs (project models + pixel confound)
-    pi_ans = build_pi_ans_rdm(codes)
+    pi_14 = build_pi_ans_rdm(codes, pi_min=1, pi_max=4)
+    pi_13 = build_pi_ans_rdm(codes, pi_min=1, pi_max=3)
+    pi_24 = build_pi_ans_rdm(codes, pi_min=2, pi_max=4)
     ans = build_ans_log_ratio_rdm(codes)
     pixel = build_pixel_rdm(stimuli_csv, codes)
     rt_rdm = build_rt_landing_rdm(rt_summary_csv, codes) if rt_summary_csv else None
 
     # Model RDMs on their native scale; vmin=0 for consistent comparison
-    plot_heatmap(pi_ans, codes, "PI-ANS Model RDM", output_dir / "theory_rdm_heatmap.png", vmin=0.0, vmax=np.nanmax(pi_ans))
-    # Alias for clarity (keep theory_rdm_heatmap.png for backwards compatibility)
-    plot_heatmap(pi_ans, codes, "PI-ANS Model RDM", output_dir / "pi_ans_rdm_heatmap.png", vmin=0.0, vmax=np.nanmax(pi_ans))
-    plot_heatmap(ans, codes, "ANS Log-Ratio RDM", output_dir / "ans_rdm_heatmap.png", vmin=0.0, vmax=np.nanmax(ans))
-    plot_heatmap(pixel, codes, "Pixel Model RDM (e-only target)", output_dir / "pixel_rdm_heatmap.png", vmin=0.0, vmax=np.nanmax(pixel))
-
-    # Clean layout: also write the pure model heatmaps under confounds/models/
-    plot_heatmap(pi_ans, codes, "PI-ANS Model RDM", models_dir / "pi_ans_rdm_heatmap.png", vmin=0.0, vmax=np.nanmax(pi_ans))
-    plot_heatmap(ans, codes, "ANS Log-Ratio RDM", models_dir / "ans_rdm_heatmap.png", vmin=0.0, vmax=np.nanmax(ans))
-    plot_heatmap(pixel, codes, "Pixel Model RDM (e-only target)", models_dir / "pixel_rdm_heatmap.png", vmin=0.0, vmax=np.nanmax(pixel))
+    plot_heatmap(
+        pi_14,
+        codes,
+        prefixed_title(run_root=run_root, title="PI(1-4)-ANS Model RDM"),
+        prefixed_path(run_root=run_root, kind="models", stem="pi_14_ans_rdm_heatmap", ext=".png"),
+        vmin=0.0,
+        vmax=np.nanmax(pi_14),
+    )
+    plot_heatmap(
+        pi_13,
+        codes,
+        prefixed_title(run_root=run_root, title="PI(1-3)-ANS Model RDM"),
+        prefixed_path(run_root=run_root, kind="models", stem="pi_13_ans_rdm_heatmap", ext=".png"),
+        vmin=0.0,
+        vmax=np.nanmax(pi_13),
+    )
+    plot_heatmap(
+        pi_24,
+        codes,
+        prefixed_title(run_root=run_root, title="PI(2-4)-ANS Model RDM"),
+        prefixed_path(run_root=run_root, kind="models", stem="pi_24_ans_rdm_heatmap", ext=".png"),
+        vmin=0.0,
+        vmax=np.nanmax(pi_24),
+    )
+    plot_heatmap(
+        ans,
+        codes,
+        prefixed_title(run_root=run_root, title="ANS Log-Ratio RDM"),
+        prefixed_path(run_root=run_root, kind="models", stem="ans_rdm_heatmap", ext=".png"),
+        vmin=0.0,
+        vmax=np.nanmax(ans),
+    )
+    plot_heatmap(
+        pixel,
+        codes,
+        prefixed_title(run_root=run_root, title="Pixel Model RDM\n(e-only target)"),
+        prefixed_path(run_root=run_root, kind="models", stem="pixel_rdm_heatmap", ext=".png"),
+        vmin=0.0,
+        vmax=np.nanmax(pixel),
+    )
     if rt_rdm is not None:
         plot_heatmap(
             rt_rdm,
             codes,
-            "RT Landing Model RDM (|mean RT_i - mean RT_j|)",
-            models_dir / "rt_landing_rdm_heatmap.png",
+            prefixed_title(run_root=run_root, title="RT Landing Model RDM\n(|mean RT_i - mean RT_j|)"),
+            prefixed_path(run_root=run_root, kind="models", stem="rt_landing_rdm_heatmap", ext=".png"),
             vmin=0.0,
             vmax=np.nanmax(rt_rdm),
         )
@@ -181,17 +240,21 @@ def run_analysis(
     records = []
     residuals = []
     raw_means: List[float] = []
-    pi_vec = _lower_tri(pi_ans)
+    pi14_vec = _lower_tri(pi_14)
+    pi13_vec = _lower_tri(pi_13)
     ans_vec = _lower_tri(ans)
     pixel_vec = _lower_tri(pixel)
     rt_vec = _lower_tri(rt_rdm) if rt_rdm is not None else None
     for subj, brain_vec in brain_rdms.items():
-        r_raw, r_partial = partial_spearman(brain_vec, pi_vec, pixel_vec)
+        r_pi14_raw, r_pi14_partial = partial_spearman(brain_vec, pi14_vec, pixel_vec)
+        r_pi13_raw, r_pi13_partial = partial_spearman(brain_vec, pi13_vec, pixel_vec)
         r_ans_raw, r_ans_partial = partial_spearman(brain_vec, ans_vec, pixel_vec)
         rec = {
             "Subject": subj,
-            "Raw_Spearman_R": r_raw,
-            "Partial_Spearman_R": r_partial,
+            "Raw_Spearman_R_PI_14": r_pi14_raw,
+            "Partial_Spearman_R_PI_14": r_pi14_partial,
+            "Raw_Spearman_R_PI_13": r_pi13_raw,
+            "Partial_Spearman_R_PI_13": r_pi13_partial,
             "Raw_Spearman_R_ANS": r_ans_raw,
             "Partial_Spearman_R_ANS": r_ans_partial,
         }
@@ -215,9 +278,9 @@ def run_analysis(
     raw_vals_rt = subj_df["Raw_Spearman_R_RT"].dropna().to_numpy() if "Raw_Spearman_R_RT" in subj_df.columns else np.array([])
     partial_vals_rt = subj_df["Partial_Spearman_R_RT"].dropna().to_numpy() if "Partial_Spearman_R_RT" in subj_df.columns else np.array([])
 
-    # TEST 1: Compare raw vs partial correlations (paired t-test)
-    raw_vals = subj_df["Raw_Spearman_R"].dropna().to_numpy()
-    partial_vals = subj_df["Partial_Spearman_R"].dropna().to_numpy()
+    # TEST 1: Compare raw vs partial correlations (paired t-test) for PI(1-4)-ANS
+    raw_vals = subj_df["Raw_Spearman_R_PI_14"].dropna().to_numpy()
+    partial_vals = subj_df["Partial_Spearman_R_PI_14"].dropna().to_numpy()
     diff_vals = partial_vals - raw_vals
 
     raw_vals_ans = subj_df["Raw_Spearman_R_ANS"].dropna().to_numpy()
@@ -254,7 +317,7 @@ def run_analysis(
     mean_brain_pixel_r = float(np.mean(brain_pixel_correlations)) if brain_pixel_correlations else np.nan
 
     # Group stats on partial r (original test)
-    vals = subj_df["Partial_Spearman_R"].dropna().to_numpy()
+    vals = subj_df["Partial_Spearman_R_PI_14"].dropna().to_numpy()
     vals_ans = subj_df["Partial_Spearman_R_ANS"].dropna().to_numpy()
     if vals.size:
         z_vals = np.arctanh(vals)
@@ -263,8 +326,8 @@ def run_analysis(
             [
                 {
                     "Subject": "SUMMARY",
-                    "Raw_Spearman_R": float(np.mean(raw_vals)) if raw_vals.size else np.nan,
-                    "Partial_Spearman_R": float(np.mean(partial_vals)) if partial_vals.size else np.nan,
+                    "Raw_Spearman_R_PI_14": float(np.mean(raw_vals)) if raw_vals.size else np.nan,
+                    "Partial_Spearman_R_PI_14": float(np.mean(partial_vals)) if partial_vals.size else np.nan,
                 "Raw_Spearman_R_ANS": float(np.mean(raw_vals_ans)) if raw_vals_ans.size else np.nan,
                 "Partial_Spearman_R_ANS": float(np.mean(partial_vals_ans)) if partial_vals_ans.size else np.nan,
                     "Raw_Spearman_R_RT": float(np.mean(raw_vals_rt)) if raw_vals_rt.size else np.nan,
@@ -325,26 +388,26 @@ def run_analysis(
         )
 
     # Save main results CSV
-    out_csv = output_dir / "confound_stats.csv"
+    out_csv = prefixed_path(run_root=run_root, kind="confounds", stem="confound_stats", ext=".csv")
     subj_df.to_csv(out_csv, index=False)
 
     # Generate summary statistics table
     summary_rows = [
         {
-            "Test": "Raw Brain–PI-ANS Correlation",
+            "Test": "Raw Brain–PI(1-4)-ANS Correlation",
             "Mean_r": float(np.mean(raw_vals)),
             "SD_r": float(np.std(raw_vals, ddof=1)),
             "t_statistic": np.nan,
             "p_value": np.nan,
-            "Interpretation": "Brain matches PI-ANS model (before pixel control)",
+            "Interpretation": "Brain matches PI(1-4)-ANS model (before pixel control)",
         },
         {
-            "Test": "Partial Brain–PI-ANS Correlation (controlling pixels)",
+            "Test": "Partial Brain–PI(1-4)-ANS Correlation (controlling pixels)",
             "Mean_r": float(np.mean(partial_vals)),
             "SD_r": float(np.std(partial_vals, ddof=1)),
             "t_statistic": t_stat,
             "p_value": p_value,
-            "Interpretation": "Brain matches PI-ANS model (after pixel control)",
+            "Interpretation": "Brain matches PI(1-4)-ANS model (after pixel control)",
         },
         {
             "Test": "Raw Brain–ANS (log-ratio) Correlation",
@@ -392,7 +455,7 @@ def run_analysis(
             "SD_r": float(np.std(diff_vals, ddof=1)) if diff_vals.size else np.nan,
             "t_statistic": t_diff,
             "p_value": p_diff,
-            "Interpretation": "Pixels did not drive brain–PI-ANS match" if abs(mean_diff) < 0.05 else "Pixels affected brain–PI-ANS match",
+            "Interpretation": "Pixels did not drive brain–PI(1-4)-ANS match" if abs(mean_diff) < 0.05 else "Pixels affected brain–PI(1-4)-ANS match",
         },
         {
             "Test": "Raw vs Partial Difference (ANS)",
@@ -411,7 +474,7 @@ def run_analysis(
             "Interpretation": "Brain weakly driven by pixels" if abs(mean_brain_pixel_r) < 0.3 else "Brain may use pixel features",
         },
     ])
-    summary_csv = output_dir / "confound_summary_statistics.csv"
+    summary_csv = prefixed_path(run_root=run_root, kind="confounds", stem="confound_summary_statistics", ext=".csv")
     summary_stats.to_csv(summary_csv, index=False)
 
     # Generate publication-quality LaTeX-style table
@@ -440,7 +503,7 @@ def run_analysis(
                 p_str = f"{p_val:.3f}"
             stats = f"t={t_val}, p={p_str}"
         else:
-            stats = "—"
+            stats = "-"
 
         interp = row['Interpretation']
         table_data.append([test_name, mean_r, sd_r, stats, interp])
@@ -483,7 +546,7 @@ def run_analysis(
     fig_table.text(0.5, 0.02, footnote, ha='center', fontsize=9, style='italic', color='gray')
 
     plt.tight_layout()
-    table_path = output_dir / "confound_summary_table.png"
+    table_path = prefixed_path(run_root=run_root, kind="confounds", stem="confound_summary_table", ext=".png")
     fig_table.savefig(table_path, dpi=300, bbox_inches='tight')
     plt.close(fig_table)
 
@@ -497,8 +560,8 @@ def run_analysis(
     ax.scatter(raw_vals, partial_vals, alpha=0.6, s=80, color='C0')
     ax.plot([raw_vals.min(), raw_vals.max()], [raw_vals.min(), raw_vals.max()],
             'k--', alpha=0.5, label='y=x (no change)')
-    ax.set_xlabel('Raw Spearman r (Brain–PI-ANS)')
-    ax.set_ylabel('Partial Spearman r (Brain–PI-ANS, controlling pixels)')
+    ax.set_xlabel('Raw Spearman r (Brain–PI(1-4)-ANS)')
+    ax.set_ylabel('Partial Spearman r (Brain–PI(1-4)-ANS, controlling pixels)')
     ax.set_title('Raw vs Partial Correlations\n(n=24 subjects)')
     ax.legend()
     ax.grid(True, alpha=0.3)
@@ -516,24 +579,24 @@ def run_analysis(
     ax.legend()
     ax.grid(True, alpha=0.3, axis='y')
 
-    # Plot 3: Brain-Pixel vs Brain-PI-ANS correlations
+    # Plot 3: Brain-Pixel vs Brain-PI(1-4)-ANS correlations
     ax = axes[2]
     brain_theory_raw = raw_vals
     x_pos = np.arange(len(brain_pixel_correlations))
     width = 0.35
-    ax.bar(x_pos - width/2, brain_theory_raw, width, label='Brain–PI-ANS (raw)',
+    ax.bar(x_pos - width/2, brain_theory_raw, width, label='Brain–PI(1-4)-ANS (raw)',
            alpha=0.8, color='C0')
     ax.bar(x_pos + width/2, brain_pixel_correlations, width, label='Brain-Pixel',
            alpha=0.8, color='C3')
     ax.axhline(0, color='black', linewidth=0.8)
     ax.set_xlabel('Subject Index')
     ax.set_ylabel('Spearman r')
-    ax.set_title(f'Brain–PI-ANS vs Brain-Pixel Correlations\n(Mean Brain-Pixel r = {mean_brain_pixel_r:.3f})')
+    ax.set_title(f'Brain–PI(1-4)-ANS vs Brain-Pixel Correlations\n(Mean Brain-Pixel r = {mean_brain_pixel_r:.3f})')
     ax.legend()
     ax.grid(True, alpha=0.3, axis='y')
 
     plt.tight_layout()
-    plot_path = output_dir / "confound_comparison_plots.png"
+    plot_path = prefixed_path(run_root=run_root, kind="confounds", stem="confound_comparison_plots", ext=".png")
     fig.savefig(plot_path, dpi=300)
     plt.close(fig)
 
@@ -543,14 +606,14 @@ def run_analysis(
     ax1.scatter(raw_vals, partial_vals, alpha=0.6, s=100, color='C0', edgecolors='black', linewidth=0.5)
     ax1.plot([raw_vals.min(), raw_vals.max()], [raw_vals.min(), raw_vals.max()],
             'k--', alpha=0.5, linewidth=2, label='y=x (no change)')
-    ax1.set_xlabel('Raw Spearman r (Brain–PI-ANS)', fontsize=12)
-    ax1.set_ylabel('Partial Spearman r\n(Brain–PI-ANS, controlling pixels)', fontsize=12)
+    ax1.set_xlabel('Raw Spearman r (Brain–PI(1-4)-ANS)', fontsize=12)
+    ax1.set_ylabel('Partial Spearman r\n(Brain–PI(1-4)-ANS, controlling pixels)', fontsize=12)
     ax1.set_title('Raw vs Partial Correlations\n(n=24 subjects)', fontsize=14, weight='bold')
     ax1.legend(fontsize=10)
     ax1.grid(True, alpha=0.3)
     ax1.set_aspect('equal')
     plt.tight_layout()
-    fig1.savefig(output_dir / "plot1_raw_vs_partial_scatter.png", dpi=300)
+    fig1.savefig(prefixed_path(run_root=run_root, kind="confounds", stem="plot1_raw_vs_partial_scatter", ext=".png"), dpi=300)
     plt.close(fig1)
 
     # Individual Plot 2: Distribution histogram
@@ -567,14 +630,14 @@ def run_analysis(
     ax2.legend(fontsize=11)
     ax2.grid(True, alpha=0.3, axis='y')
     plt.tight_layout()
-    fig2.savefig(output_dir / "plot2_difference_distribution.png", dpi=300)
+    fig2.savefig(prefixed_path(run_root=run_root, kind="confounds", stem="plot2_difference_distribution", ext=".png"), dpi=300)
     plt.close(fig2)
 
-    # Individual Plot 3: Brain–PI-ANS vs Brain-Pixel comparison
+    # Individual Plot 3: Brain–PI(1-4)-ANS vs Brain-Pixel comparison
     fig3, ax3 = plt.subplots(figsize=(10, 6))
     x_pos = np.arange(len(brain_pixel_correlations))
     width = 0.35
-    ax3.bar(x_pos - width/2, raw_vals, width, label='Brain–PI-ANS (raw)',
+    ax3.bar(x_pos - width/2, raw_vals, width, label='Brain–PI(1-4)-ANS (raw)',
            alpha=0.85, color='C0', edgecolor='black', linewidth=0.5)
     ax3.bar(x_pos + width/2, brain_pixel_correlations, width, label='Brain-Pixel',
            alpha=0.85, color='C3', edgecolor='black', linewidth=0.5)
@@ -583,12 +646,12 @@ def run_analysis(
                 label=f'Mean Brain-Pixel r={mean_brain_pixel_r:.3f}')
     ax3.set_xlabel('Subject Index', fontsize=12)
     ax3.set_ylabel('Spearman r', fontsize=12)
-    ax3.set_title(f'Brain–PI-ANS vs Brain-Pixel Correlations',
+    ax3.set_title(f'Brain–PI(1-4)-ANS vs Brain-Pixel Correlations',
                   fontsize=14, weight='bold')
     ax3.legend(fontsize=11, loc='best')
     ax3.grid(True, alpha=0.3, axis='y')
     plt.tight_layout()
-    fig3.savefig(output_dir / "plot3_brain_theory_vs_pixel.png", dpi=300)
+    fig3.savefig(prefixed_path(run_root=run_root, kind="confounds", stem="plot3_brain_theory_vs_pixel", ext=".png"), dpi=300)
     plt.close(fig3)
 
     print(f"\n[analyze_rsa_confounds] Summary statistics saved to {summary_csv}")
@@ -627,7 +690,12 @@ def main() -> None:
     stimuli_csv = Path(args.stimuli_csv) if args.stimuli_csv else Path(cfg["stimuli_csv"])
     output_dir = Path(args.output_dir) if args.output_dir else Path(cfg["output_dir"])
     baseline = args.baseline if args.baseline is not None else float(cfg.get("baseline_r", 0.4))
-    codes = cfg.get("codes", DEFAULT_CODES)
+    # If the master CSV is explicitly provided, infer codes from it so landing-digit runs work
+    # without needing a separate config file.
+    if args.master_csv:
+        codes = infer_codes_from_master_csv(master_csv)
+    else:
+        codes = cfg.get("codes", DEFAULT_CODES)
     rt_summary_csv = (
         Path(args.rt_summary_csv)
         if args.rt_summary_csv

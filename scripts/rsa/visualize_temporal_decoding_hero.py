@@ -27,6 +27,7 @@ if str(PROJ_ROOT) not in sys.path:
 
 from scripts.rsa.analyze_temporal_stats import apply_fdr_correction, find_significant_clusters
 from scripts.rsa.temporal_paper_utils import mask_to_spans, sem, timepoint_edges, ttest_1samp_greater
+from scripts.rsa.naming import prefixed_path, prefixed_title
 
 
 def _ensure_cols(df: pd.DataFrame, cols: list[str]) -> None:
@@ -109,13 +110,8 @@ def run_temporal_decoding_hero(
     if peak_idx is not None:
         out_df.loc[out_df.index[peak_idx], "IsPeak"] = True
 
-    # Write artifacts
-    figures_dir = output_dir / "figures"
-    tables_dir = output_dir / "tables"
-    figures_dir.mkdir(parents=True, exist_ok=True)
-    tables_dir.mkdir(parents=True, exist_ok=True)
-
-    out_csv = tables_dir / "temporal_decoding_hero.csv"
+    run_root = output_dir
+    out_csv = prefixed_path(run_root=run_root, kind="tables", stem="temporal_decoding_hero", ext=".csv")
     out_df.to_csv(out_csv, index=False)
 
     # Plot
@@ -152,7 +148,7 @@ def run_temporal_decoding_hero(
         ax.text(peak_t + 5, peak_y, "Peak", fontsize=9, va="bottom", color="gray")
 
     # Formatting
-    ax.set_title("Temporal Decoding of Numerosity", fontsize=14, fontweight="bold")
+    ax.set_title(prefixed_title(run_root=run_root, title="Temporal Decoding of Numerosity"), fontsize=14, fontweight="bold")
     ax.set_ylabel("Decoding accuracy (%)", fontsize=11)
     ax.grid(True, alpha=0.3, linestyle=":")
     ax.set_xlim(0, 500)
@@ -179,8 +175,7 @@ def run_temporal_decoding_hero(
     ax.legend(handles, labels, loc="upper right", frameon=True, fancybox=False, edgecolor="black")
 
     fig.tight_layout()
-    out_png = figures_dir / "temporal_decoding_hero.png"
-    fig.savefig(out_png, dpi=300, bbox_inches="tight")
+    fig.savefig(prefixed_path(run_root=run_root, kind="figures", stem="temporal_decoding_hero", ext=".png"), dpi=300, bbox_inches="tight")
     plt.close(fig)
 
     return out_df

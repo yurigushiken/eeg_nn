@@ -31,6 +31,8 @@ PROJ_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJ_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJ_ROOT))
 
+from scripts.rsa.naming import analysis_id_from_run_root, prefixed_path
+
 
 def run_one_sample_ttest_per_window(
     subject_accuracies: np.ndarray,
@@ -365,11 +367,9 @@ def main():
 
     args = parser.parse_args()
 
-    # Create output directories
-    tables_dir = args.output_dir / "tables"
-    stats_dir = args.output_dir / "stats"
-    tables_dir.mkdir(parents=True, exist_ok=True)
-    stats_dir.mkdir(parents=True, exist_ok=True)
+    run_root = args.output_dir
+    run_root.mkdir(parents=True, exist_ok=True)
+    _ = analysis_id_from_run_root(run_root)  # validate/sanitize early
 
     print("="*70)
     print("  TEMPORAL RSA: STATISTICAL ANALYSIS WITH FDR CORRECTION")
@@ -394,7 +394,7 @@ def main():
     )
 
     # Save full statistical results
-    stats_output = tables_dir / "temporal_stats_all_tests.csv"
+    stats_output = prefixed_path(run_root=run_root, kind="tables", stem="temporal_stats_all_tests", ext=".csv")
     stats_df.to_csv(stats_output, index=False)
     print(f"\n[stats] Statistical results saved: {stats_output}")
 
@@ -406,7 +406,7 @@ def main():
     )
 
     if len(cluster_df) > 0:
-        cluster_output = stats_dir / "cluster_analysis.csv"
+        cluster_output = prefixed_path(run_root=run_root, kind="stats", stem="cluster_analysis", ext=".csv")
         cluster_df.to_csv(cluster_output, index=False)
         print(f"[stats] Cluster analysis saved: {cluster_output}")
         print(f"[stats] Found {len(cluster_df)} significant clusters across pairs")
@@ -414,7 +414,7 @@ def main():
         print(f"[stats] No significant clusters found (try lowering min_cluster_size)")
 
     # Save FDR correction log
-    fdr_log = stats_dir / "fdr_correction_log.txt"
+    fdr_log = prefixed_path(run_root=run_root, kind="stats", stem="fdr_correction_log", ext=".txt")
     with open(fdr_log, 'w') as f:
         f.write("FDR CORRECTION LOG\n")
         f.write("="*70 + "\n\n")
@@ -435,7 +435,7 @@ def main():
     print(f"[stats] FDR correction log saved: {fdr_log}")
 
     # Save effect sizes
-    effect_sizes_output = stats_dir / "effect_sizes.csv"
+    effect_sizes_output = prefixed_path(run_root=run_root, kind="stats", stem="effect_sizes", ext=".csv")
     stats_df[['ClassA', 'ClassB', 'TimeWindow_Center', 'cohens_d', 'Mean_Accuracy', 'significant_fdr']].to_csv(
         effect_sizes_output, index=False
     )
@@ -448,7 +448,7 @@ def main():
     print(f"  python scripts/rsa/visualize_temporal_curves.py \\")
     print(f"    --subject-data {args.subject_data} \\")
     print(f"    --stats-data {stats_output} \\")
-    print(f"    --output-dir {args.output_dir}/figures")
+    print(f"    --output-dir {args.output_dir}")
 
 
 if __name__ == "__main__":

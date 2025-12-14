@@ -34,6 +34,7 @@ from scripts.rsa.visualize_rsa import (
     plot_rdm_heatmap,
     plot_mds_scatter,
 )
+from scripts.rsa.naming import analysis_id_from_run_root, prefixed_path, prefixed_title
 try:
     from utils.seeding import determinism_banner, seed_everything
 except ModuleNotFoundError:
@@ -251,8 +252,6 @@ def main() -> None:
     base_cfg = load_base_config(Path(args.config))
 
     config_visualize = bool(base_cfg.get("rsa_visualize", False))
-    config_viz_dir = Path(base_cfg.get("rsa_visualize_output_dir", "")) if base_cfg.get("rsa_visualize_output_dir") else None
-    config_viz_prefix = base_cfg.get("rsa_visualize_prefix", "rsa_matrix")
     config_viz_metric = base_cfg.get("rsa_visualize_metric", "Accuracy")
 
     seeds: Iterable[int]
@@ -271,6 +270,7 @@ def main() -> None:
 
     output_root = Path(args.output_dir)
     ensure_directory(output_root)
+    analysis_id = analysis_id_from_run_root(output_root)
 
     # Choose condition codes: CLI overrides; else config override; else task-aware default.
     codes = (
@@ -359,22 +359,26 @@ def main() -> None:
     atomic_write_state(state_path(output_root), state)
 
     visualize = args.visualize or config_visualize
-    viz_dir = args.viz_output_dir or config_viz_dir
-    if viz_dir is None:
-        # Default to figures directory inside the run output directory
-        viz_dir = output_root / "figures"
-    viz_prefix = args.viz_prefix if args.viz_prefix else config_viz_prefix
     viz_metric = args.viz_metric if args.viz_metric else config_viz_metric
 
     if visualize:
         print("[rsa-matrix] Generating visualization assets...", flush=True)
         matrix, labels = build_accuracy_matrix(summary_path, metric=viz_metric, subject_filter="OVERALL")
         positions = compute_mds_positions(matrix, labels)
-        viz_dir.mkdir(parents=True, exist_ok=True)
-        heatmap_path = viz_dir / f"{viz_prefix}_rdm_heatmap.png"
-        scatter_path = viz_dir / f"{viz_prefix}_mds.png"
-        plot_rdm_heatmap(matrix, labels, heatmap_path)
-        plot_mds_scatter(positions, scatter_path, flip_xy=True)
+        heatmap_path = prefixed_path(run_root=output_root, kind="figures", stem="brain_rdm_heatmap", ext=".png")
+        scatter_path = prefixed_path(run_root=output_root, kind="figures", stem="mds", ext=".png")
+        plot_rdm_heatmap(
+            matrix,
+            labels,
+            heatmap_path,
+            title=prefixed_title(run_root=output_root, title="RSA Matrix (Higher = Easier to Distinguish)"),
+        )
+        plot_mds_scatter(
+            positions,
+            scatter_path,
+            flip_xy=True,
+            title=prefixed_title(run_root=output_root, title="MDS Projection of RSA Matrix"),
+        )
         print(f"[rsa-matrix] Heatmap saved to {heatmap_path.resolve()}", flush=True)
         print(f"[rsa-matrix] MDS scatter saved to {scatter_path.resolve()}", flush=True)
 

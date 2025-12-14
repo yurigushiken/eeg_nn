@@ -38,6 +38,7 @@ for path in (PROJ_ROOT, code_root):
 from engines import get as get_engine
 from tasks import get as get_task
 from tasks import rsa_binary
+from tasks import rsa_landing_binary
 
 try:
     from utils.seeding import determinism_banner, seed_everything
@@ -58,6 +59,36 @@ except ModuleNotFoundError:
 CARDINALITY_CODES = [11, 22, 33, 44, 55, 66]
 RESULTS_FILENAME = "rsa_temporal_results.csv"
 STATE_FILENAME = ".rsa_temporal_resume_state.json"
+
+
+def resolve_condition_codes(*, args_conditions: List[int] | None, cfg: Dict) -> List[int]:
+    """
+    Resolve condition codes explicitly.
+
+    Precedence:
+      1) CLI --conditions (most explicit at runtime)
+      2) YAML cfg['rsa_conditions'] (explicit, versionable)
+      3) Default CARDINALITY_CODES (backwards-compatible)
+    """
+    if args_conditions:
+        return [int(x) for x in args_conditions]
+    cfg_codes = cfg.get("rsa_conditions")
+    if isinstance(cfg_codes, list) and cfg_codes:
+        return [int(x) for x in cfg_codes]
+    return [int(x) for x in CARDINALITY_CODES]
+
+
+def set_active_pair_for_task(*, task_name: str, pair: Tuple[int, int]) -> None:
+    """
+    Set the active pair on the appropriate task module.
+
+    This is critical for tasks like `rsa_landing_binary` where the label function depends
+    on a task-specific global active pair.
+    """
+    if task_name == "rsa_landing_binary":
+        rsa_landing_binary.set_active_pair(pair)
+        return
+    rsa_binary.set_active_pair(pair)
 
 
 def generate_temporal_windows(
@@ -380,8 +411,8 @@ def main() -> None:
     output_root = Path(args.output_dir)
     ensure_directory(output_root)
 
-    # Generate pairs
-    codes = args.conditions if args.conditions else CARDINALITY_CODES
+    # Generate pairs (explicit precedence: CLI > YAML > default)
+    codes = resolve_condition_codes(args_conditions=args.conditions, cfg=base_cfg)
     pairs = generate_cross_digit_pairs(codes)
 
     print(f"[temporal-rsa] Training configuration:")
@@ -433,8 +464,8 @@ def main() -> None:
                         print(f"[temporal-rsa] Warning: Could not load {run_dir}: {e}")
                     continue
 
-                # Set active pair for rsa_binary task
-                rsa_binary.set_active_pair((class_a, class_b))
+                # Set active pair for the selected task
+                set_active_pair_for_task(task_name=str(args.task), pair=(class_a, class_b))
 
                 # Apply temporal window to config
                 cfg = apply_temporal_window_to_config(base_cfg, window_start, window_end)
@@ -476,7 +507,11 @@ def main() -> None:
                 completed_count += 1
 
     # Reset active pair
-    rsa_binary.reset_active_pair()
+    # Reset pair state for the selected task (best-effort)
+    if str(args.task) == "rsa_landing_binary":
+        rsa_landing_binary.reset_active_pair()
+    else:
+        rsa_binary.reset_active_pair()
 
     # Sort and write results
     rows = sort_temporal_results(rows)

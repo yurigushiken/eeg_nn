@@ -3,14 +3,14 @@ Paper analyses: inferential tests for temporal model fits.
 
 Outputs:
 - figures/temporal_model_fits_with_significance.png
-- figures/temporal_model_fits_partial_pi_ans_given_pixel_with_significance.png
+- figures/temporal_model_fits_partial_pi_24_ans_given_pixel_with_significance.png
 - tables/temporal_model_significance_tests.csv
 
 Statistical approach:
 - For each model × time window, compute subject-level Spearman correlations.
 - Test mean correlation > 0 using one-sample t-test on Fisher-z values (one-sided).
 - BH-FDR correction across all (timepoints × models) for raw fits.
-- Partial PI-ANS|Pixel is tested separately across timepoints (BH-FDR).
+- Partial PI(2-4)-ANS|Pixel is tested across timepoints (BH-FDR).
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ from scripts.rsa.rdm_models import (
     spearman_r,
 )
 from scripts.rsa.temporal_paper_utils import fisher_z, mask_to_spans, sem, ttest_1samp_greater
+from scripts.rsa.naming import prefixed_path, prefixed_title
 
 
 def _ensure_cols(df: pd.DataFrame, cols: list[str]) -> None:
@@ -98,12 +99,16 @@ def run_model_fit_significance(
     pairs = _pairs_from_codes(codes)
 
     # Model vectors
-    pi_rdm = build_pi_ans_rdm(codes, boundary=float(pi_ans_boundary))
+    pi14_rdm = build_pi_ans_rdm(codes, pi_min=1, pi_max=4, boundary=float(pi_ans_boundary))
+    pi13_rdm = build_pi_ans_rdm(codes, pi_min=1, pi_max=3, boundary=float(pi_ans_boundary))
+    pi24_rdm = build_pi_ans_rdm(codes, pi_min=2, pi_max=4, boundary=float(pi_ans_boundary))
     px_rdm = build_pixel_rdm_e_only(stimuli_csv, codes)
     ans_rdm = build_ans_log_ratio_rdm(codes)
     rt_rdm = build_rt_landing_rdm(rt_summary_csv, codes)
 
-    pi_vec = _model_vec_from_rdm(pi_rdm, codes, pairs)
+    pi14_vec = _model_vec_from_rdm(pi14_rdm, codes, pairs)
+    pi13_vec = _model_vec_from_rdm(pi13_rdm, codes, pairs)
+    pi24_vec = _model_vec_from_rdm(pi24_rdm, codes, pairs)
     px_vec = _model_vec_from_rdm(px_rdm, codes, pairs)
     ans_vec = _model_vec_from_rdm(ans_rdm, codes, pairs)
     rt_vec = _model_vec_from_rdm(rt_rdm, codes, pairs)
@@ -121,20 +126,28 @@ def run_model_fit_significance(
         noise_ceiling_by_time[float(t_center)] = float(noise_ceiling_loocv_lower(subj_vectors))
 
         for subj, brain_vec in subj_vectors.items():
-            r_pi = spearman_r(brain_vec, pi_vec)
+            r_pi14 = spearman_r(brain_vec, pi14_vec)
+            r_pi13 = spearman_r(brain_vec, pi13_vec)
+            r_pi24 = spearman_r(brain_vec, pi24_vec)
             r_px = spearman_r(brain_vec, px_vec)
             r_ans = spearman_r(brain_vec, ans_vec)
             r_rt = spearman_r(brain_vec, rt_vec)
-            _, r_pi_partial = partial_spearman_r(brain_vec, pi_vec, px_vec)
+            _, r_pi14_partial = partial_spearman_r(brain_vec, pi14_vec, px_vec)
+            _, r_pi13_partial = partial_spearman_r(brain_vec, pi13_vec, px_vec)
+            _, r_pi24_partial = partial_spearman_r(brain_vec, pi24_vec, px_vec)
             corr_rows.append(
                 {
                     "TimeWindow_Center": float(t_center),
                     "Subject": subj,
-                    "PI_ANS": float(r_pi),
+                    "PI_14_ANS": float(r_pi14),
+                    "PI_13_ANS": float(r_pi13),
+                    "PI_24_ANS": float(r_pi24),
                     "Pixel": float(r_px),
                     "ANS": float(r_ans),
                     "RT_Landing": float(r_rt),
-                    "PI_ANS_given_PIXEL": float(r_pi_partial),
+                    "PI_14_ANS_given_PIXEL": float(r_pi14_partial),
+                    "PI_13_ANS_given_PIXEL": float(r_pi13_partial),
+                    "PI_24_ANS_given_PIXEL": float(r_pi24_partial),
                 }
             )
 
@@ -144,10 +157,12 @@ def run_model_fit_significance(
 
     # --- Significance tests: raw models ---
     raw_models = [
-        ("PI_ANS", "PI-ANS"),
+        ("PI_14_ANS", "PI(1-4)-ANS"),
+        ("PI_13_ANS", "PI(1-3)-ANS"),
+        ("PI_24_ANS", "PI(2-4)-ANS"),
         ("Pixel", "Pixel"),
         ("ANS", "ANS"),
-        ("RT_Landing", "RT"),
+        ("RT_Landing", "RT landing"),
     ]
 
     raw_test_rows: list[dict] = []
@@ -162,7 +177,7 @@ def run_model_fit_significance(
                     "Analysis": "raw",
                     "TimeWindow_Center": float(t_center),
                     "TimeWindow": float(t_center),
-                    "Model": label if label != "PI-ANS" else "PI_ANS",
+                    "Model": col,
                     "Mean_r": float(np.nanmean(r_vals)) if r_vals.size else float("nan"),
                     "SEM": sem(r_vals),
                     "t_stat": float(t_stat),
@@ -176,40 +191,43 @@ def run_model_fit_significance(
     raw_tests["p_fdr"] = p_fdr
     raw_tests["significant"] = rejected
 
-    # --- Significance tests: partial PI-ANS|Pixel ---
+    # --- Significance tests: partial PI(2-4)-ANS|Pixel (BH-FDR across timepoints) ---
     partial_rows: list[dict] = []
     for t_center in sorted(corr_df["TimeWindow_Center"].unique()):
         g = corr_df[corr_df["TimeWindow_Center"] == t_center]
-        r_vals = g["PI_ANS_given_PIXEL"].to_numpy(dtype=float)
-        z_vals = fisher_z(r_vals)
-        t_stat, p_one, n = ttest_1samp_greater(z_vals, popmean=0.0)
-        partial_rows.append(
-            {
-                "Analysis": "partial",
-                "TimeWindow_Center": float(t_center),
-                "TimeWindow": float(t_center),
-                "Model": "PI_ANS_given_PIXEL",
-                "Mean_r": float(np.nanmean(r_vals)) if r_vals.size else float("nan"),
-                "SEM": sem(r_vals),
-                "t_stat": float(t_stat),
-                "p_value": float(p_one),
-                "N_Subjects": int(n),
-            }
-        )
-    partial_tests = pd.DataFrame(partial_rows).sort_values("TimeWindow_Center")
-    p_fdr_p, rejected_p = apply_fdr_correction(partial_tests["p_value"].to_numpy(dtype=float), alpha=fdr_alpha, method="bh")
-    partial_tests["p_fdr"] = p_fdr_p
-    partial_tests["significant"] = rejected_p
+        for col in ["PI_24_ANS_given_PIXEL"]:
+            r_vals = g[col].to_numpy(dtype=float)
+            z_vals = fisher_z(r_vals)
+            t_stat, p_one, n = ttest_1samp_greater(z_vals, popmean=0.0)
+            partial_rows.append(
+                {
+                    "Analysis": "partial",
+                    "TimeWindow_Center": float(t_center),
+                    "TimeWindow": float(t_center),
+                    "Model": col,
+                    "Mean_r": float(np.nanmean(r_vals)) if r_vals.size else float("nan"),
+                    "SEM": sem(r_vals),
+                    "t_stat": float(t_stat),
+                    "p_value": float(p_one),
+                    "N_Subjects": int(n),
+                }
+            )
+    partial_tests = pd.DataFrame(partial_rows).sort_values(["Model", "TimeWindow_Center"])
+    # Apply BH-FDR separately per partial model (across timepoints)
+    p_fdr_all = []
+    sig_all = []
+    for model_name, g in partial_tests.groupby("Model", sort=False):
+        p_fdr_p, rejected_p = apply_fdr_correction(g["p_value"].to_numpy(dtype=float), alpha=fdr_alpha, method="bh")
+        p_fdr_all.extend(list(p_fdr_p))
+        sig_all.extend(list(rejected_p))
+    partial_tests = partial_tests.copy()
+    partial_tests["p_fdr"] = np.asarray(p_fdr_all, dtype=float)
+    partial_tests["significant"] = np.asarray(sig_all, dtype=bool)
 
     all_tests = pd.concat([raw_tests, partial_tests], ignore_index=True)
 
-    # Write CSV
-    tables_dir = output_dir / "tables"
-    figures_dir = output_dir / "figures"
-    tables_dir.mkdir(parents=True, exist_ok=True)
-    figures_dir.mkdir(parents=True, exist_ok=True)
-
-    out_csv = tables_dir / "temporal_model_significance_tests.csv"
+    run_root = output_dir
+    out_csv = prefixed_path(run_root=run_root, kind="tables", stem="temporal_model_significance_tests", ext=".csv")
     all_tests.to_csv(out_csv, index=False)
 
     # ---------------- Figure: raw fits + sig bands ----------------
@@ -221,7 +239,7 @@ def run_model_fit_significance(
     x = np.sort(raw_tests["TimeWindow_Center"].unique().astype(float))
     # Map model->(mean, sem, sigmask)
     model_plot: Dict[str, Dict[str, np.ndarray]] = {}
-    for model_key in ["PI_ANS", "Pixel", "ANS", "RT"]:
+    for model_key in ["PI_14_ANS", "PI_13_ANS", "PI_24_ANS", "Pixel", "ANS", "RT_Landing"]:
         df_m = raw_tests[raw_tests["Model"] == model_key].sort_values("TimeWindow_Center")
         model_plot[model_key] = {
             "x": df_m["TimeWindow_Center"].to_numpy(dtype=float),
@@ -234,10 +252,12 @@ def run_model_fit_significance(
     nc = np.asarray([noise_ceiling_by_time.get(float(t), float("nan")) for t in x], dtype=float)
 
     colors = {
-        "PI_ANS": "#2E86AB",
+        "PI_14_ANS": "#2E86AB",
+        "PI_13_ANS": "#1B4F72",
+        "PI_24_ANS": "#0B5345",
         "Pixel": "#C0392B",
         "ANS": "#8E44AD",
-        "RT": "#27AE60",
+        "RT_Landing": "#27AE60",
     }
 
     fig = plt.figure(figsize=(10, 6.5))
@@ -245,7 +265,14 @@ def run_model_fit_significance(
     ax = fig.add_subplot(gs[0])
     ax_sig = fig.add_subplot(gs[1], sharex=ax)
 
-    for model_key, label in [("PI_ANS", "PI-ANS"), ("Pixel", "Pixel"), ("ANS", "ANS (log-ratio)"), ("RT", "RT landing")]:
+    for model_key, label in [
+        ("PI_14_ANS", "PI(1-4)-ANS"),
+        ("PI_13_ANS", "PI(1-3)-ANS"),
+        ("PI_24_ANS", "PI(2-4)-ANS"),
+        ("Pixel", "Pixel"),
+        ("ANS", "ANS (log-ratio)"),
+        ("RT_Landing", "RT landing"),
+    ]:
         dd = model_plot[model_key]
         ax.plot(dd["x"], dd["mean"], linewidth=2.2, label=label, color=colors[model_key])
         if np.isfinite(dd["sem"]).any():
@@ -253,13 +280,20 @@ def run_model_fit_significance(
 
     ax.plot(x, nc, color="gray", linestyle=":", linewidth=2.0, label="Noise ceiling (LOOCV)")
     ax.axhline(0.0, color="black", linewidth=1.0, linestyle="--", alpha=0.5)
-    ax.set_title("Model–Brain RDM Correlation Over Time", fontsize=14, fontweight="bold")
-    ax.set_ylabel("Spearman r (model–brain RDM)", fontsize=11)
+    ax.set_title(prefixed_title(run_root=run_root, title="Model-Brain RDM Correlation Over Time"), fontsize=14, fontweight="bold")
+    ax.set_ylabel("Spearman r (model-brain RDM)", fontsize=11)
     ax.grid(True, alpha=0.3, linestyle=":")
     ax.set_xlim(0, 500)
 
     # Significance bands (one row per model)
-    model_rows = [("PI_ANS", "PI-ANS"), ("Pixel", "Pixel"), ("ANS", "ANS"), ("RT", "RT")]
+    model_rows = [
+        ("PI_14_ANS", "PI(1-4)-ANS"),
+        ("PI_13_ANS", "PI(1-3)-ANS"),
+        ("PI_24_ANS", "PI(2-4)-ANS"),
+        ("Pixel", "Pixel"),
+        ("ANS", "ANS"),
+        ("RT_Landing", "RT"),
+    ]
     ax_sig.set_yticks(range(len(model_rows)))
     ax_sig.set_yticklabels([m[1] for m in model_rows], fontsize=9)
     ax_sig.set_ylim(-0.6, len(model_rows) - 0.4)
@@ -281,46 +315,56 @@ def run_model_fit_significance(
     ax.legend(handles, labels, loc="best", frameon=True, fancybox=False, edgecolor="black")
 
     fig.tight_layout()
-    out_png = figures_dir / "temporal_model_fits_with_significance.png"
-    fig.savefig(out_png, dpi=300, bbox_inches="tight")
+    fig.savefig(
+        prefixed_path(run_root=run_root, kind="figures", stem="temporal_model_fits_with_significance", ext=".png"),
+        dpi=300,
+        bbox_inches="tight",
+    )
     plt.close(fig)
 
-    # ---------------- Figure: partial PI-ANS|Pixel + sig ----------------
-    df_p = partial_tests.sort_values("TimeWindow_Center")
-    x2 = df_p["TimeWindow_Center"].to_numpy(dtype=float)
-    y2 = df_p["Mean_r"].to_numpy(dtype=float)
-    sem2 = df_p["SEM"].to_numpy(dtype=float)
-    sig2 = df_p["significant"].to_numpy(dtype=bool)
+    # ---------------- Figures: partial PI(k)-ANS|Pixel + sig (split) ----------------
+    def _write_partial_fig(model_key: str, *, title: str, out_name: str, color: str) -> None:
+        df_p = partial_tests[partial_tests["Model"] == model_key].sort_values("TimeWindow_Center")
+        x2 = df_p["TimeWindow_Center"].to_numpy(dtype=float)
+        y2 = df_p["Mean_r"].to_numpy(dtype=float)
+        sem2 = df_p["SEM"].to_numpy(dtype=float)
+        sig2 = df_p["significant"].to_numpy(dtype=bool)
 
-    fig2 = plt.figure(figsize=(10, 5.5))
-    gs2 = fig2.add_gridspec(nrows=2, ncols=1, height_ratios=[5.0, 0.7], hspace=0.05)
-    ax2 = fig2.add_subplot(gs2[0])
-    ax2_sig = fig2.add_subplot(gs2[1], sharex=ax2)
+        fig2 = plt.figure(figsize=(10, 5.5))
+        gs2 = fig2.add_gridspec(nrows=2, ncols=1, height_ratios=[5.0, 0.7], hspace=0.05)
+        ax2 = fig2.add_subplot(gs2[0])
+        ax2_sig = fig2.add_subplot(gs2[1], sharex=ax2)
 
-    ax2.plot(x2, y2, color=colors["PI_ANS"], linewidth=2.5, label="PI-ANS | Pixel (mean ± SEM)")
-    if np.isfinite(sem2).any():
-        ax2.fill_between(x2, y2 - sem2, y2 + sem2, color=colors["PI_ANS"], alpha=0.18, linewidth=0)
-    ax2.axhline(0.0, color="black", linewidth=1.0, linestyle="--", alpha=0.5)
-    ax2.set_title("Model–Brain RDM Correlation Over Time (Partial)", fontsize=14, fontweight="bold")
-    ax2.set_ylabel("Partial Spearman r", fontsize=11)
-    ax2.grid(True, alpha=0.3, linestyle=":")
-    ax2.set_xlim(0, 500)
+        ax2.plot(x2, y2, color=color, linewidth=2.5, label="mean ± SEM")
+        if np.isfinite(sem2).any():
+            ax2.fill_between(x2, y2 - sem2, y2 + sem2, color=color, alpha=0.18, linewidth=0)
+        ax2.axhline(0.0, color="black", linewidth=1.0, linestyle="--", alpha=0.5)
+        ax2.set_title(prefixed_title(run_root=run_root, title=title), fontsize=14, fontweight="bold")
+        ax2.set_ylabel("Partial Spearman r", fontsize=11)
+        ax2.grid(True, alpha=0.3, linestyle=":")
+        ax2.set_xlim(0, 500)
 
-    spans2 = mask_to_spans(x2, sig2)
-    for start, end in spans2:
-        ax2_sig.axvspan(start, end, color=colors["PI_ANS"], alpha=0.85)
-    ax2_sig.set_yticks([])
-    ax2_sig.set_ylim(0, 1)
-    ax2_sig.set_xlabel("Time relative to stimulus onset (ms)", fontsize=11)
-    for spine in ["top", "right", "left"]:
-        ax2_sig.spines[spine].set_visible(False)
+        spans2 = mask_to_spans(x2, sig2)
+        for start, end in spans2:
+            ax2_sig.axvspan(start, end, color=color, alpha=0.85)
+        ax2_sig.set_yticks([])
+        ax2_sig.set_ylim(0, 1)
+        ax2_sig.set_xlabel("Time relative to stimulus onset (ms)", fontsize=11)
+        for spine in ["top", "right", "left"]:
+            ax2_sig.spines[spine].set_visible(False)
 
-    sig_patch2 = mpatches.Patch(color=colors["PI_ANS"], label="q<0.05 (BH-FDR)")
-    ax2.legend([sig_patch2], ["q<0.05 (BH-FDR)"], loc="best", frameon=True, fancybox=False, edgecolor="black")
-    fig2.tight_layout()
-    out_png2 = figures_dir / "temporal_model_fits_partial_pi_ans_given_pixel_with_significance.png"
-    fig2.savefig(out_png2, dpi=300, bbox_inches="tight")
-    plt.close(fig2)
+        sig_patch2 = mpatches.Patch(color=color, label="q<0.05 (BH-FDR)")
+        ax2.legend([sig_patch2], ["q<0.05 (BH-FDR)"], loc="best", frameon=True, fancybox=False, edgecolor="black")
+        fig2.tight_layout()
+        fig2.savefig(prefixed_path(run_root=run_root, kind="figures", stem=Path(out_name).stem, ext=".png"), dpi=300, bbox_inches="tight")
+        plt.close(fig2)
+
+    _write_partial_fig(
+        "PI_24_ANS_given_PIXEL",
+        title="Model-Brain RDM Correlation Over Time (Partial): PI(2-4)-ANS | Pixel",
+        out_name="temporal_model_fits_partial_pi_24_ans_given_pixel_with_significance.png",
+        color=colors["PI_24_ANS"],
+    )
 
     return all_tests
 

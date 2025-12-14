@@ -6,8 +6,9 @@ Spearman correlations between each subject's brain RDM vector (pairwise decoding
 accuracies) and candidate model RDM vectors, then plot mean ± SEM over time.
 
 Models:
-- PI-ANS (project-specific): PI set 1-4 with abs distance; ANS set 5-6 uses log-ratio;
+- PI(1-4)-ANS (project-specific): PI set 1-4 with abs distance; ANS set 5-6 uses log-ratio;
   cross PI↔ANS separated by a large boundary.
+- PI(1-3)-ANS (variant): PI set 1-3 with abs distance; ANS set 4-6 uses log-ratio; (4 treated as ANS).
 - Pixel (e-only target): abs differences in white_pixel_area for 1e..6e.
 - ANS log-ratio: |log(i) - log(j)|.
 
@@ -41,6 +42,7 @@ from scripts.rsa.rdm_models import (
     partial_spearman_r,
     spearman_r,
 )
+from scripts.rsa.naming import prefixed_path, prefixed_title
 
 
 DEFAULT_CODES = [11, 22, 33, 44, 55, 66]
@@ -105,21 +107,22 @@ def run_temporal_model_fits(
     pairs = _pairs_from_codes(codes)
 
     # Build model vectors once (in the same pair order).
-    pi_ans_rdm = build_pi_ans_rdm(codes, boundary=pi_ans_boundary)
+    pi_14_rdm = build_pi_ans_rdm(codes, pi_min=1, pi_max=4, boundary=pi_ans_boundary)
+    pi_13_rdm = build_pi_ans_rdm(codes, pi_min=1, pi_max=3, boundary=pi_ans_boundary)
+    pi_24_rdm = build_pi_ans_rdm(codes, pi_min=2, pi_max=4, boundary=pi_ans_boundary)
     pixel_rdm = build_pixel_rdm_e_only(stimuli_csv, codes)
     ans_rdm = build_ans_log_ratio_rdm(codes)
     rt_rdm = build_rt_landing_rdm(rt_summary_csv, codes) if rt_summary_csv else None
 
-    pi_ans_vec = _model_vec_from_rdm(pi_ans_rdm, codes, pairs)
+    pi_14_vec = _model_vec_from_rdm(pi_14_rdm, codes, pairs)
+    pi_13_vec = _model_vec_from_rdm(pi_13_rdm, codes, pairs)
+    pi_24_vec = _model_vec_from_rdm(pi_24_rdm, codes, pairs)
     pixel_vec = _model_vec_from_rdm(pixel_rdm, codes, pairs)
     ans_vec = _model_vec_from_rdm(ans_rdm, codes, pairs)
     rt_vec = _model_vec_from_rdm(rt_rdm, codes, pairs) if rt_rdm is not None else None
 
-    # Ensure output structure
-    tables_dir = output_dir / "tables"
-    figures_dir = output_dir / "figures"
-    tables_dir.mkdir(parents=True, exist_ok=True)
-    figures_dir.mkdir(parents=True, exist_ok=True)
+    # output_dir is the run root (e.g., results/runs/rsa_temporal_v1)
+    run_root = output_dir
 
     spearman_rows: List[Dict[str, float]] = []
     partial_rows: List[Dict[str, float]] = []
@@ -129,11 +132,13 @@ def run_temporal_model_fits(
 
         # Build subject→brain vector mapping for this window
         subj_vectors: Dict[str, np.ndarray] = {}
-        pi_rs: List[float] = []
+        pi14_rs: List[float] = []
+        pi13_rs: List[float] = []
+        pi24_rs: List[float] = []
         pixel_rs: List[float] = []
         ans_rs: List[float] = []
         rt_rs: List[float] = []
-        pi_partial_rs: List[float] = []
+        pi24_partial_rs: List[float] = []
 
         for subj, group in time_df.groupby("Subject"):
             # Reduce any duplicates defensively
@@ -156,14 +161,16 @@ def run_temporal_model_fits(
             brain_vec = np.asarray([normalized[p] for p in pairs], dtype=float)
             subj_vectors[str(int(subj))] = brain_vec
 
-            pi_rs.append(spearman_r(brain_vec, pi_ans_vec))
+            pi14_rs.append(spearman_r(brain_vec, pi_14_vec))
+            pi13_rs.append(spearman_r(brain_vec, pi_13_vec))
+            pi24_rs.append(spearman_r(brain_vec, pi_24_vec))
             pixel_rs.append(spearman_r(brain_vec, pixel_vec))
             ans_rs.append(spearman_r(brain_vec, ans_vec))
             if rt_vec is not None:
                 rt_rs.append(spearman_r(brain_vec, rt_vec))
 
-            _, pi_partial = partial_spearman_r(brain_vec, pi_ans_vec, pixel_vec)
-            pi_partial_rs.append(pi_partial)
+            _, pi24_partial = partial_spearman_r(brain_vec, pi_24_vec, pixel_vec)
+            pi24_partial_rs.append(pi24_partial)
 
         if not subj_vectors:
             continue
@@ -174,8 +181,12 @@ def run_temporal_model_fits(
             {
                 "TimeWindow_Center": float(t_center),
                 "N_Subjects": float(len(subj_vectors)),
-                "PI_ANS_Mean": float(np.nanmean(pi_rs)) if pi_rs else float("nan"),
-                "PI_ANS_SEM": _sem(pi_rs),
+                "PI_14_ANS_Mean": float(np.nanmean(pi14_rs)) if pi14_rs else float("nan"),
+                "PI_14_ANS_SEM": _sem(pi14_rs),
+                "PI_13_ANS_Mean": float(np.nanmean(pi13_rs)) if pi13_rs else float("nan"),
+                "PI_13_ANS_SEM": _sem(pi13_rs),
+                "PI_24_ANS_Mean": float(np.nanmean(pi24_rs)) if pi24_rs else float("nan"),
+                "PI_24_ANS_SEM": _sem(pi24_rs),
                 "Pixel_Mean": float(np.nanmean(pixel_rs)) if pixel_rs else float("nan"),
                 "Pixel_SEM": _sem(pixel_rs),
                 "ANS_Mean": float(np.nanmean(ans_rs)) if ans_rs else float("nan"),
@@ -190,16 +201,16 @@ def run_temporal_model_fits(
             {
                 "TimeWindow_Center": float(t_center),
                 "N_Subjects": float(len(subj_vectors)),
-                "PI_ANS_given_PIXEL_Mean": float(np.nanmean(pi_partial_rs)) if pi_partial_rs else float("nan"),
-                "PI_ANS_given_PIXEL_SEM": _sem(pi_partial_rs),
+                "PI_24_ANS_given_PIXEL_Mean": float(np.nanmean(pi24_partial_rs)) if pi24_partial_rs else float("nan"),
+                "PI_24_ANS_given_PIXEL_SEM": _sem(pi24_partial_rs),
             }
         )
 
     spearman_df = pd.DataFrame(spearman_rows).sort_values("TimeWindow_Center")
     partial_df = pd.DataFrame(partial_rows).sort_values("TimeWindow_Center")
 
-    spearman_csv = tables_dir / "temporal_model_fits_spearman.csv"
-    partial_csv = tables_dir / "temporal_model_fits_partial.csv"
+    spearman_csv = prefixed_path(run_root=run_root, kind="tables", stem="temporal_model_fits_spearman", ext=".csv")
+    partial_csv = prefixed_path(run_root=run_root, kind="tables", stem="temporal_model_fits_partial", ext=".csv")
     spearman_df.to_csv(spearman_csv, index=False)
     partial_df.to_csv(partial_csv, index=False)
 
@@ -214,7 +225,9 @@ def run_temporal_model_fits(
         if np.isfinite(sem).any():
             ax.fill_between(x, y - sem, y + sem, alpha=0.15)
 
-    plot_line("PI_ANS_Mean", "PI_ANS_SEM", "PI-ANS (raw)")
+    plot_line("PI_14_ANS_Mean", "PI_14_ANS_SEM", "PI(1-4)-ANS (raw)")
+    plot_line("PI_13_ANS_Mean", "PI_13_ANS_SEM", "PI(1-3)-ANS (raw)")
+    plot_line("PI_24_ANS_Mean", "PI_24_ANS_SEM", "PI(2-4)-ANS (raw)")
     plot_line("Pixel_Mean", "Pixel_SEM", "Pixel (raw)")
     plot_line("ANS_Mean", "ANS_SEM", "ANS log-ratio (raw)")
     if "RT_Landing_Mean" in spearman_df.columns and spearman_df["RT_Landing_Mean"].notna().any():
@@ -224,37 +237,48 @@ def run_temporal_model_fits(
     ax.axhline(0.0, color="black", linewidth=1, linestyle="--", alpha=0.5)
 
     ax.set_xlabel("Time (ms)")
-    ax.set_ylabel("Spearman r (model–brain RDM)")
-    ax.set_title("Temporal RSA: Model Fit Over Time")
+    ax.set_ylabel("Spearman r (model-brain RDM)")
+    ax.set_title(prefixed_title(run_root=run_root, title="Temporal RSA: Model Fit Over Time"))
     ax.grid(True, alpha=0.3, linestyle=":")
     ax.legend(loc="best", frameon=True, fancybox=False, edgecolor="black")
     fig.tight_layout()
-    fig.savefig(figures_dir / "temporal_model_fits_spearman.png", dpi=300, bbox_inches="tight")
+    fig.savefig(prefixed_path(run_root=run_root, kind="figures", stem="temporal_model_fits_spearman", ext=".png"), dpi=300, bbox_inches="tight")
     plt.close(fig)
 
-    # Plot 2: Partial (PI-ANS | Pixel)
-    fig2, ax2 = plt.subplots(figsize=(10, 4))
+    # Plot 2: PI(2-4)-ANS raw vs partial | Pixel
     x2 = partial_df["TimeWindow_Center"].to_numpy()
-    y2 = partial_df["PI_ANS_given_PIXEL_Mean"].to_numpy()
-    sem2 = partial_df["PI_ANS_given_PIXEL_SEM"].to_numpy()
-    ax2.plot(x2, y2, linewidth=2, label="PI-ANS | Pixel")
-    if np.isfinite(sem2).any():
-        ax2.fill_between(x2, y2 - sem2, y2 + sem2, alpha=0.15)
+    y2_partial = partial_df["PI_24_ANS_given_PIXEL_Mean"].to_numpy()
+    sem2_partial = partial_df["PI_24_ANS_given_PIXEL_SEM"].to_numpy()
+    # Raw PI(2-4)-ANS (same time grid)
+    y2_raw = spearman_df["PI_24_ANS_Mean"].to_numpy()
+    sem2_raw = spearman_df["PI_24_ANS_SEM"].to_numpy()
+    fig2, ax2 = plt.subplots(figsize=(10, 4))
+    ax2.plot(x2, y2_raw, linewidth=2, label="PI(2-4)-ANS (raw)")
+    if np.isfinite(sem2_raw).any():
+        ax2.fill_between(x2, y2_raw - sem2_raw, y2_raw + sem2_raw, alpha=0.12)
+
+    ax2.plot(x2, y2_partial, linewidth=2, label="PI(2-4)-ANS | Pixel (partial)")
+    if np.isfinite(sem2_partial).any():
+        ax2.fill_between(x2, y2_partial - sem2_partial, y2_partial + sem2_partial, alpha=0.12)
     ax2.axhline(0.0, color="black", linewidth=1, linestyle="--", alpha=0.5)
     ax2.set_xlabel("Time (ms)")
-    ax2.set_ylabel("Partial Spearman r")
-    ax2.set_title("Temporal RSA: PI-ANS Fit Controlling Pixel Model")
+    ax2.set_ylabel("Correlation (raw / partial)")
+    ax2.set_title(prefixed_title(run_root=run_root, title="Temporal RSA: PI(2-4)-ANS Fit Controlling Pixel Model"))
     ax2.grid(True, alpha=0.3, linestyle=":")
     ax2.legend(loc="best", frameon=True, fancybox=False, edgecolor="black")
     fig2.tight_layout()
-    fig2.savefig(figures_dir / "temporal_model_fits_partial_pi_ans_given_pixel.png", dpi=300, bbox_inches="tight")
+    fig2.savefig(
+        prefixed_path(run_root=run_root, kind="figures", stem="temporal_model_fits_partial_pi_24_ans_given_pixel", ext=".png"),
+        dpi=300,
+        bbox_inches="tight",
+    )
     plt.close(fig2)
 
     return spearman_df, partial_df
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Temporal RSA model-fit analysis (model–brain RDM correlation over time).")
+    parser = argparse.ArgumentParser(description="Temporal RSA model-fit analysis (model-brain RDM correlation over time).")
     parser.add_argument(
         "--subject-data",
         type=Path,

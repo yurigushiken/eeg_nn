@@ -28,6 +28,9 @@ PROJ_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJ_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJ_ROOT))
 
+from scripts.rsa.naming import analysis_id_from_run_root, prefixed_path
+from scripts.rsa.temporal_peak_ratio_regression import run_peak_accuracy_ratio_loso_regression
+
 # Matplotlib settings
 plt.rcParams['font.family'] = 'sans-serif'
 plt.rcParams['font.size'] = 10
@@ -321,7 +324,8 @@ def compare_peak_to_fullepoch(
 
 def plot_peak_timing_vs_ratio(
     peaks_df: pd.DataFrame,
-    output_path: Path
+    output_path: Path,
+    analysis_id: str | None = None,
 ) -> None:
     """
     Plot peak timing vs numerical ratio.
@@ -331,6 +335,8 @@ def plot_peak_timing_vs_ratio(
         output_path: Output file path
     """
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    if analysis_id:
+        fig.suptitle(f"{analysis_id} - Temporal Peak Summary", fontsize=14, fontweight="bold", y=1.02)
 
     # Plot 1: Peak timing vs ratio
     ax1.errorbar(
@@ -388,7 +394,8 @@ def plot_peak_timing_vs_ratio(
 
 def plot_onset_latencies_boxplot(
     peaks_df: pd.DataFrame,
-    output_path: Path
+    output_path: Path,
+    analysis_id: str | None = None,
 ) -> None:
     """
     Plot onset latencies as boxplot grouped by difficulty.
@@ -447,7 +454,8 @@ def plot_onset_latencies_boxplot(
 
     ax.set_xlabel('Pair Difficulty', fontsize=11)
     ax.set_ylabel('Onset Latency (ms)', fontsize=11)
-    ax.set_title('Discrimination Onset Latencies by Difficulty', fontsize=12, fontweight='bold')
+    title = 'Discrimination Onset Latencies by Difficulty'
+    ax.set_title(f"{analysis_id} - {title}" if analysis_id else title, fontsize=12, fontweight="bold")
     ax.grid(True, alpha=0.3, linestyle=':', axis='y')
     ax.set_ylim(0, 500)
 
@@ -494,11 +502,9 @@ def main():
 
     args = parser.parse_args()
 
-    # Create output directories
-    tables_dir = args.output_dir / "tables"
-    figures_dir = args.output_dir / "figures"
-    tables_dir.mkdir(parents=True, exist_ok=True)
-    figures_dir.mkdir(parents=True, exist_ok=True)
+    run_root = args.output_dir
+    run_root.mkdir(parents=True, exist_ok=True)
+    analysis_id = analysis_id_from_run_root(run_root)
 
     print("="*70)
     print("  TEMPORAL RSA: PEAK & ONSET ANALYSIS")
@@ -526,7 +532,7 @@ def main():
     )
 
     # Save peaks summary
-    output_peaks = tables_dir / "temporal_peaks_summary.csv"
+    output_peaks = prefixed_path(run_root=run_root, kind="tables", stem="temporal_peaks_summary", ext=".csv")
     peaks_df.to_csv(output_peaks, index=False)
     print(f"[peaks] Peaks summary saved: {output_peaks}")
 
@@ -536,7 +542,7 @@ def main():
     ].copy()
 
     if len(onset_df) > 0:
-        output_onsets = tables_dir / "temporal_onset_latencies.csv"
+        output_onsets = prefixed_path(run_root=run_root, kind="tables", stem="temporal_onset_latencies", ext=".csv")
         onset_df.to_csv(output_onsets, index=False)
         print(f"[peaks] Onset latencies saved: {output_onsets}")
     else:
@@ -549,7 +555,7 @@ def main():
             fullepoch_data=fullepoch_df
         )
 
-        output_comparison = tables_dir / "temporal_peaks_vs_fullepoch.csv"
+        output_comparison = prefixed_path(run_root=run_root, kind="tables", stem="temporal_peaks_vs_fullepoch", ext=".csv")
         comparison_df.to_csv(output_comparison, index=False)
         print(f"[peaks] Comparison to full-epoch saved: {output_comparison}")
 
@@ -563,17 +569,25 @@ def main():
     print(f"\n[peaks] Creating figures...")
 
     # Peak timing vs ratio
-    output_peak_fig = figures_dir / "peak_timing_vs_ratio.png"
+    output_peak_fig = prefixed_path(run_root=run_root, kind="figures", stem="peak_timing_vs_ratio", ext=".png")
     plot_peak_timing_vs_ratio(
         peaks_df=peaks_df,
-        output_path=output_peak_fig
+        output_path=output_peak_fig,
+        analysis_id=analysis_id,
+    )
+
+    # Paper-grade LOSO regression: peak accuracy vs log2(ratio)
+    run_peak_accuracy_ratio_loso_regression(
+        subject_temporal_means_csv=args.subject_data,
+        run_root=run_root,
     )
 
     # Onset latencies boxplot
-    output_onset_fig = figures_dir / "onset_latencies_boxplot.png"
+    output_onset_fig = prefixed_path(run_root=run_root, kind="figures", stem="onset_latencies_boxplot", ext=".png")
     plot_onset_latencies_boxplot(
         peaks_df=peaks_df,
-        output_path=output_onset_fig
+        output_path=output_onset_fig,
+        analysis_id=analysis_id,
     )
 
     print("="*70)

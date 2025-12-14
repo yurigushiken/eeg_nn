@@ -27,6 +27,8 @@ PROJ_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJ_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJ_ROOT))
 
+from scripts.rsa.naming import analysis_id_from_run_root
+
 
 def run_command(cmd: list[str], description: str) -> bool:
     """
@@ -159,10 +161,12 @@ def main():
     (args.output_dir / "figures").mkdir(exist_ok=True)
     (args.output_dir / "stats").mkdir(exist_ok=True)
 
+    analysis_id = analysis_id_from_run_root(args.output_dir)
+
     # Define intermediate file paths
     subject_raw_csv = args.output_dir / "subject_temporal_accuracies.csv"
     subject_agg_csv = args.output_dir / "subject_temporal_means.csv"
-    stats_csv = args.output_dir / "tables" / "temporal_stats_all_tests.csv"
+    stats_csv = args.output_dir / "tables" / f"{analysis_id}__temporal_stats_all_tests.csv"
 
     # Track which steps succeeded
     all_success = True
@@ -225,7 +229,7 @@ def main():
         str(PROJ_ROOT / "scripts" / "rsa" / "visualize_temporal_curves.py"),
         "--subject-data", str(subject_agg_csv),
         "--stats-data", str(stats_csv),
-        "--output-dir", str(args.output_dir / "figures")
+        "--output-dir", str(args.output_dir)
     ]
 
     success = run_command(
@@ -244,7 +248,7 @@ def main():
         sys.executable,
         str(PROJ_ROOT / "scripts" / "rsa" / "visualize_temporal_rdm_evolution.py"),
         "--subject-data", str(subject_agg_csv),
-        "--output-dir", str(args.output_dir / "figures")
+        "--output-dir", str(args.output_dir)
     ]
 
     if args.create_gif:
@@ -325,10 +329,10 @@ def main():
     print(f"  Stats logs:            {args.output_dir / 'stats'}")
 
     print("\nKey results to check:")
-    print(f"  1. Temporal curves:    {args.output_dir / 'figures' / 'temporal_curves_all_pairs.png'}")
-    print(f"  2. RDM snapshots:      {args.output_dir / 'figures' / 'temporal_rdm_snapshots.png'}")
-    print(f"  3. Peak summary:       {args.output_dir / 'tables' / 'temporal_peaks_summary.csv'}")
-    print(f"  4. FDR correction:     {args.output_dir / 'stats' / 'fdr_correction_log.txt'}")
+    print(f"  1. Temporal curves:    {args.output_dir / 'figures' / f'{analysis_id}__temporal_curves_all_pairs.png'}")
+    print(f"  2. RDM snapshots:      {args.output_dir / 'figures' / f'{analysis_id}__temporal_rdm_snapshots.png'}")
+    print(f"  3. Peak summary:       {args.output_dir / 'tables' / f'{analysis_id}__temporal_peaks_summary.csv'}")
+    print(f"  4. FDR correction:     {args.output_dir / 'stats' / f'{analysis_id}__fdr_correction_log.txt'}")
 
     if args.create_gif:
         print(f"  5. RDM evolution GIF:  {args.output_dir / 'figures' / 'temporal_rdm_evolution.gif'}")
