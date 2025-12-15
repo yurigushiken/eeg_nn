@@ -24,6 +24,7 @@ if str(PROJ_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJ_ROOT))
 
 from scripts.rsa.naming import prefixed_path, prefixed_title
+from scripts.rsa.mds_3d import plot_mds_3d_html, plot_mds_3d_static_views
 
 def build_accuracy_matrix(
     csv_path: Path,
@@ -86,19 +87,24 @@ def build_accuracy_matrix(
     return matrix, labels
 
 
-def compute_mds_positions(matrix: np.ndarray, labels: Iterable[int]) -> pd.DataFrame:
+def compute_mds_positions(
+    matrix: np.ndarray, labels: Iterable[int], *, n_components: int = 2
+) -> pd.DataFrame:
     """
-    Compute a 2D MDS embedding from the accuracy matrix.
+    Compute an MDS embedding from the accuracy matrix.
 
     Args:
         matrix: Symmetric accuracy matrix.
         labels: Iterable of condition codes corresponding to matrix rows.
+        n_components: Number of embedding dimensions (2 or 3).
 
     Returns:
-        DataFrame with columns ['label', 'x', 'y'].
+        DataFrame with columns ['label', 'x', 'y'] for 2D, or ['label', 'x', 'y', 'z'] for 3D.
     """
     if matrix.shape[0] != matrix.shape[1]:
         raise ValueError("Matrix must be square for MDS.")
+    if int(n_components) not in (2, 3):
+        raise ValueError(f"n_components must be 2 or 3, got {n_components!r}")
 
     # Convert accuracy to dissimilarity: higher accuracy -> larger distance separation.
     filled = np.array(matrix, copy=True)
@@ -112,7 +118,7 @@ def compute_mds_positions(matrix: np.ndarray, labels: Iterable[int]) -> pd.DataF
     np.fill_diagonal(distances, 0.0)
 
     mds = MDS(
-        n_components=2,
+        n_components=int(n_components),
         dissimilarity="precomputed",
         random_state=42,
         n_init=10,
@@ -125,7 +131,10 @@ def compute_mds_positions(matrix: np.ndarray, labels: Iterable[int]) -> pd.DataF
             clean_labels.append(int(lbl))
         except (TypeError, ValueError):
             clean_labels.append(lbl)
-    return pd.DataFrame({"label": clean_labels, "x": coords[:, 0], "y": coords[:, 1]})
+    out = {"label": clean_labels, "x": coords[:, 0], "y": coords[:, 1]}
+    if int(n_components) == 3:
+        out["z"] = coords[:, 2]
+    return pd.DataFrame(out)
 
 
 def plot_rdm_heatmap(
@@ -274,6 +283,28 @@ def parse_args() -> argparse.Namespace:
         default="OVERALL",
         help="Subject identifier to visualize (default: OVERALL).",
     )
+    parser.add_argument(
+        "--mds-3d",
+        action="store_true",
+        help="Also write an interactive 3D MDS HTML figure alongside the 2D PNG.",
+    )
+    parser.add_argument(
+        "--mds-3d-theme",
+        default="dark",
+        choices=["dark", "light"],
+        help="Default theme for the interactive 3D MDS HTML (default: dark).",
+    )
+    parser.add_argument(
+        "--mds-3d-static",
+        action="store_true",
+        help="Also export a few fixed-angle static 3D PNG views for publication selection.",
+    )
+    parser.add_argument(
+        "--mds-3d-static-projection",
+        default="perspective",
+        choices=["perspective", "orthographic"],
+        help="Projection type for static 3D PNG exports (default: perspective).",
+    )
     return parser.parse_args()
 
 
@@ -284,7 +315,7 @@ def main() -> None:
         raise FileNotFoundError(f"CSV file not found: {csv_path}")
 
     matrix, labels = build_accuracy_matrix(csv_path, metric=args.metric, subject_filter=args.subject)
-    positions = compute_mds_positions(matrix, labels)
+    positions_2d = compute_mds_positions(matrix, labels, n_components=2)
 
     run_root = args.output_dir if args.output_dir is not None else csv_path.parent
     run_root.mkdir(parents=True, exist_ok=True)
@@ -298,7 +329,7 @@ def main() -> None:
         title=prefixed_title(run_root=run_root, title="RSA Matrix (Higher = Easier to Distinguish)"),
     )
     plot_mds_scatter(
-        positions,
+        positions_2d,
         scatter_path,
         flip_xy=True,
         title=prefixed_title(run_root=run_root, title="MDS Projection of RSA Matrix"),
@@ -306,6 +337,29 @@ def main() -> None:
 
     print(f"[visualize_rsa] Heatmap saved to {heatmap_path}")
     print(f"[visualize_rsa] MDS scatter (flipped) saved to {scatter_path}")
+
+    if args.mds_3d:
+        positions_3d = compute_mds_positions(matrix, labels, n_components=3)
+        mds_3d_path = prefixed_path(run_root=run_root, kind="figures", stem="mds_3d", ext=".html")
+        plot_mds_3d_html(
+            positions_3d,
+            mds_3d_path,
+            title=prefixed_title(run_root=run_root, title="3D MDS Projection of RSA Matrix"),
+            theme=args.mds_3d_theme,
+        )
+        print(f"[visualize_rsa] 3D MDS HTML saved to {mds_3d_path}")
+
+        if args.mds_3d_static:
+            written = plot_mds_3d_static_views(
+                positions_3d,
+                (run_root / "figures"),
+                basename=mds_3d_path.stem,
+                title=prefixed_title(run_root=run_root, title="3D MDS Projection of RSA Matrix (Static Views)"),
+                theme=args.mds_3d_theme,
+                projection=args.mds_3d_static_projection,
+            )
+            for p in written:
+                print(f"[visualize_rsa] 3D MDS static view saved to {p}")
 
 
 if __name__ == "__main__":

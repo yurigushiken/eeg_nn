@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 
 from scripts.rsa.analyze_temporal_stats import apply_fdr_correction
-from scripts.rsa.naming import prefixed_path, prefixed_title
+from scripts.rsa.naming import prefixed_path
 from scripts.rsa.temporal_paper_utils import sem, timepoint_edges, ttest_1samp_greater
 
 
@@ -223,6 +223,59 @@ def compute_generalization_matrices(
     return mean_mat, sem_mat, sig_mask, stats_df, train_times, test_times
 
 
+def _tick_times_for_centers(times: np.ndarray, *, step_ms: float = 100.0, include_last: bool = True) -> np.ndarray:
+    """
+    Choose major tick locations that align exactly with the actual time-window centers.
+
+    The temporal windows in this project overlap (stride < window), so we plot each
+    cell as a sample located at its window center. Ticks placed on those centers
+    avoid "between-cell" labels like 100/200 that don't correspond to a plotted bin.
+    """
+    t = np.asarray(times, dtype=float)
+    if t.ndim != 1 or t.size == 0:
+        return np.asarray([], dtype=float)
+    t = np.sort(t)
+    t0 = float(t[0])
+
+    step = float(step_ms)
+    if step <= 0:
+        raise ValueError("step_ms must be > 0")
+
+    chosen: list[float] = []
+    for val in t:
+        # Keep times that are exactly on the grid defined by (t0 + k*step_ms).
+        if np.isclose((val - t0) % step, 0.0, atol=1e-6) or np.isclose((val - t0) % step, step, atol=1e-6):
+            chosen.append(float(val))
+
+    if include_last:
+        last = float(t[-1])
+        if not chosen or not np.isclose(chosen[-1], last, atol=1e-6):
+            chosen.append(last)
+
+    return np.asarray(chosen, dtype=float)
+
+
+def _apply_time_axis_ticks(
+    ax: plt.Axes,
+    *,
+    x_centers: np.ndarray,
+    y_centers: np.ndarray,
+    x_edges: np.ndarray,
+    y_edges: np.ndarray,
+    step_ms: float = 100.0,
+) -> None:
+    ax.set_xticks(_tick_times_for_centers(x_centers, step_ms=step_ms, include_last=True))
+    ax.set_yticks(_tick_times_for_centers(y_centers, step_ms=step_ms, include_last=True))
+    ax.set_xticklabels([f"{int(x)}" for x in ax.get_xticks()])
+    ax.set_yticklabels([f"{int(y)}" for y in ax.get_yticks()])
+
+    # Minor ticks at cell borders to make the grid align with the binned values.
+    ax.set_xticks(x_edges, minor=True)
+    ax.set_yticks(y_edges, minor=True)
+    ax.grid(which="minor", color="white", linewidth=0.5, alpha=0.18)
+    ax.tick_params(which="minor", length=0)
+
+
 def _plot_accuracy(*, run_root: Path, mean_mat: np.ndarray, train_times: np.ndarray, test_times: np.ndarray, title: str, stem: str) -> Path:
     plt.rcParams["figure.dpi"] = 300
     plt.rcParams["font.size"] = 10
@@ -234,9 +287,10 @@ def _plot_accuracy(*, run_root: Path, mean_mat: np.ndarray, train_times: np.ndar
     fig, ax = plt.subplots(figsize=(7.5, 6.2))
     m = ax.pcolormesh(x_edges, y_edges, mean_mat, shading="auto", cmap="viridis")
     ax.plot([x_edges[0], x_edges[-1]], [y_edges[0], y_edges[-1]], color="white", linestyle="--", linewidth=1.0, alpha=0.9)
-    ax.set_title(prefixed_title(run_root=run_root, title=title), fontsize=13, fontweight="bold")
+    ax.set_title(title, fontsize=13, fontweight="bold")
     ax.set_xlabel("Training time (ms)")
     ax.set_ylabel("Test time (ms)")
+    _apply_time_axis_ticks(ax, x_centers=train_times, y_centers=test_times, x_edges=x_edges, y_edges=y_edges, step_ms=100.0)
     cbar = fig.colorbar(m, ax=ax, shrink=0.95, pad=0.02)
     cbar.set_label("Classifier accuracy (%)")
     ax.set_xlim(float(x_edges[0]), float(x_edges[-1]))
@@ -260,9 +314,10 @@ def _plot_significance(*, run_root: Path, sig_mask: np.ndarray, train_times: np.
     fig, ax = plt.subplots(figsize=(7.5, 6.2))
     m = ax.pcolormesh(x_edges, y_edges, sig_mask.astype(float), shading="auto", cmap="Reds", vmin=0.0, vmax=1.0)
     ax.plot([x_edges[0], x_edges[-1]], [y_edges[0], y_edges[-1]], color="black", linestyle="--", linewidth=1.0, alpha=0.7)
-    ax.set_title(prefixed_title(run_root=run_root, title=title), fontsize=13, fontweight="bold")
+    ax.set_title(title, fontsize=13, fontweight="bold")
     ax.set_xlabel("Training time (ms)")
     ax.set_ylabel("Test time (ms)")
+    _apply_time_axis_ticks(ax, x_centers=train_times, y_centers=test_times, x_edges=x_edges, y_edges=y_edges, step_ms=100.0)
     cbar = fig.colorbar(m, ax=ax, shrink=0.95, pad=0.02, ticks=[0, 1])
     cbar.ax.set_yticklabels(["n.s.", "q<0.05"])
     cbar.set_label("Significance (BH-FDR)")
@@ -336,8 +391,10 @@ def _plot_pair_grid_panel(
             ax.imshow(img)
             ax.axis("off")
 
-    fig.suptitle(prefixed_title(run_root=run_root, title=title), fontsize=14, fontweight="bold", y=0.995)
-    fig.subplots_adjust(wspace=0.02, hspace=0.02)
+    fig.suptitle(title, fontsize=14, fontweight="bold", y=0.995)
+    # Tighten margins: these panels can otherwise reserve too much top padding
+    # above the grid, especially when saved with bbox_inches="tight".
+    fig.subplots_adjust(left=0.01, right=0.99, bottom=0.01, top=0.97, wspace=0.02, hspace=0.02)
 
     out_path = prefixed_path(run_root=run_root, kind="figures", stem=stem, ext=".png")
     fig.savefig(out_path, dpi=300, bbox_inches="tight")
@@ -482,5 +539,3 @@ def run_temporal_generalization_analysis(
         "figures_per_pair": figs_per_pair,
         "n_rows_subject_level": int(len(subject_level)),
     }
-
-

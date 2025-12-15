@@ -11,12 +11,13 @@ crop_ms: [0, 496]
 exclude_channel_list: non_scalp
 trial_filter: acc1
 
-# Explicit condition codes (prime fixed to 1; target 4 vs 5)
-rsa_conditions: [14, 15]
+# Explicit condition codes (prime fixed to 1; targets 3 vs 4)
+# NOTE: 1→5 is not possible under ±3 constraint; 15 would be invalid.
+rsa_conditions: [13, 14]
 
-# Training schedule (short pilot)
-epochs: 8
-early_stop: 3
+# Training schedule (match full run; pilot is "small in scope", not "short in training")
+epochs: 100
+early_stop: 20
 batch_size: 128
 lr: 0.001
 inner_n_folds: 5
@@ -25,7 +26,7 @@ outer_eval_mode: ensemble
 
 weight_decay: 0.000025
 drop_prob: 0.5
-scheduler_patience: 3
+scheduler_patience: 5
 lr_warmup_frac: 0.0
 lr_warmup_init: 0.0
 

@@ -11,8 +11,9 @@ crop_ms: [0, 496]
 exclude_channel_list: non_scalp
 trial_filter: acc1
 
-# Explicit condition codes (target fixed to 5; primes 1,2,3,4,6)
-rsa_conditions: [15, 25, 35, 45, 65]
+# Explicit condition codes (target fixed to 5; primes 2,3,4,6)
+# Under the ±3 constraint, prime=1 cannot go to target 5.
+rsa_conditions: [25, 35, 45, 65]
 
 # Training schedule
 epochs: 100

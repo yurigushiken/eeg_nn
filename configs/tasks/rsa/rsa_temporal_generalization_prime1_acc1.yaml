@@ -11,8 +11,8 @@ exclude_channel_list: non_scalp
 trial_filter: acc1
 crop_ms: null
 
-# Explicit condition codes (prime fixed to 1; targets 2–6)
-rsa_conditions: [12, 13, 14, 15, 16]
+# Explicit condition codes (prime fixed to 1; targets 2–4)
+rsa_conditions: [12, 13, 14]
 
 temporal:
   epoch_ms: 500

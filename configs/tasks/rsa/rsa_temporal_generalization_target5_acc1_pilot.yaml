@@ -24,9 +24,11 @@ temporal_generalization:
   enabled: true
   write_predictions: true
 
-# Pilot schedule
-epochs: 8
-early_stop: 3
+# Pilot scope is small (1 pair / 1 window / 1 seed), but training schedule should
+# match the full run so we don't get degenerate behavior purely due to too-short
+# optimization.
+epochs: 100
+early_stop: 20
 batch_size: 128
 lr: 0.001
 inner_n_folds: 5
@@ -35,7 +37,7 @@ outer_eval_mode: ensemble
 
 weight_decay: 0.000025
 drop_prob: 0.5
-scheduler_patience: 3
+scheduler_patience: 5
 lr_warmup_frac: 0.0
 lr_warmup_init: 0.0
 
