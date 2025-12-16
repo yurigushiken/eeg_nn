@@ -66,9 +66,19 @@ def summarize_run_predictions(run_dir: Path) -> pd.DataFrame:
     if not pred_path.exists():
         raise FileNotFoundError(pred_path)
 
+    # Defensive guardrail: ensure the run directory name (ClassA/ClassB) matches the
+    # actual labels found in the prediction file. This prevents "all pairs look the same"
+    # failure modes when the training loop fails to set the active pair for a task.
+    try:
+        a_exp, b_exp, _, _, _ = parse_run_dir_name(run_dir.name)
+        expected = {int(a_exp), int(b_exp)}
+    except Exception:
+        expected = set()
+
     usecols = {
         "subject_id",
         "correct",
+        "true_label_name",
         "train_window_start",
         "train_window_end",
         "train_window_center",
@@ -80,6 +90,17 @@ def summarize_run_predictions(run_dir: Path) -> pd.DataFrame:
     missing = sorted(list(usecols - set(df.columns)))
     if missing:
         raise KeyError(f"Missing required cols in {pred_path.name}: {missing}")
+
+    if expected:
+        # `true_label_name` is stored as numbers (sometimes as strings); normalize.
+        labs = pd.to_numeric(df["true_label_name"], errors="coerce").dropna().astype(int).unique().tolist()
+        got = set(labs)
+        if got and got != expected:
+            raise ValueError(
+                f"Label mismatch for run {run_dir.name}: expected labels {sorted(expected)} "
+                f"from run dir name, but prediction CSV contains {sorted(got)}. "
+                "This usually indicates the active pair was not set correctly during training."
+            )
 
     tw = df[["train_window_start", "train_window_end", "train_window_center"]].drop_duplicates()
     if len(tw) != 1:

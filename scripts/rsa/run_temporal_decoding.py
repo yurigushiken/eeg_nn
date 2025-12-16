@@ -85,10 +85,44 @@ def set_active_pair_for_task(*, task_name: str, pair: Tuple[int, int]) -> None:
     This is critical for tasks like `rsa_landing_binary` where the label function depends
     on a task-specific global active pair.
     """
-    if task_name == "rsa_landing_binary":
+    # Accept both "rsa_landing_binary" and "tasks.rsa_landing_binary" style strings.
+    norm = str(task_name).split(".")[-1]
+    if norm == "rsa_landing_binary":
         rsa_landing_binary.set_active_pair(pair)
         return
     rsa_binary.set_active_pair(pair)
+
+
+def _validate_pair_switch(*, task_name: str, label_fn, pair: Tuple[int, int]) -> None:
+    """
+    Ultra-cheap sanity check to prevent wasting compute:
+    ensure the provided label_fn actually reflects the requested active pair.
+
+    This catches cases where the active-pair setter is not applied (or applied to the
+    wrong module) and all runs silently decode the same default pair.
+    """
+    norm = str(task_name).split(".")[-1]
+    a, b = int(pair[0]), int(pair[1])
+
+    import pandas as pd
+
+    if norm == "rsa_landing_binary":
+        # Construct change trials with landing digits a/b (source != landing).
+        # Pick sources that differ from landing to avoid being filtered out.
+        sa = 2 if a != 2 else 3
+        sb = 2 if b != 2 else 3
+        meta = pd.DataFrame({"Condition": [sa * 10 + a, sb * 10 + b, sb * 10 + a, sa * 10 + b]})
+    else:
+        meta = pd.DataFrame({"Condition": [a, b, a, b]})
+
+    labs = set(label_fn(meta).dropna().astype(str).unique().tolist())
+    expected = {str(a), str(b)}
+    if labs != expected:
+        raise RuntimeError(
+            f"[temporal-rsa] Active-pair validation failed for task={task_name!r} pair={pair}. "
+            f"Label function produced labels {sorted(labs)} but expected {sorted(expected)}. "
+            "This would cause many runs to decode the wrong pair and waste compute."
+        )
 
 
 def generate_temporal_windows(
@@ -466,6 +500,8 @@ def main() -> None:
 
                 # Set active pair for the selected task
                 set_active_pair_for_task(task_name=str(args.task), pair=(class_a, class_b))
+                # Fail fast if pair switching didn't take effect (prevents day-long wasted runs).
+                _validate_pair_switch(task_name=str(args.task), label_fn=label_fn, pair=(class_a, class_b))
 
                 # Apply temporal window to config
                 cfg = apply_temporal_window_to_config(base_cfg, window_start, window_end)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
@@ -178,10 +179,7 @@ def plot_mds_3d_static_views(
     # Default: four rotations at a single elevation (easy to compare and pick).
     if views is None:
         views = [
-            ("az045_el30", 45.0, 30.0),
             ("az135_el30", 135.0, 30.0),
-            ("az225_el30", 225.0, 30.0),
-            ("az315_el30", 315.0, 30.0),
         ]
 
     import plotly.graph_objects as go
@@ -232,5 +230,105 @@ def plot_mds_3d_static_views(
         written.append(out_path)
 
     return written
+
+
+def plot_mds_3d_orbit_gif(
+    positions_3d: pd.DataFrame,
+    output_path: Path,
+    *,
+    title: str,
+    theme: str = "dark",
+    projection: str = "perspective",
+    duration_seconds: int = 15,
+    fps: int = 10,
+    start_azim_deg: float = 135.0,
+    elev_deg: float = 30.0,
+    radius: float = 2.0,
+    width: int = 960,
+    height: int = 720,
+    scale: int = 2,
+) -> Path:
+    """
+    Render a smooth orbit animation (one full revolution) as a GIF.
+
+    We rotate the Plotly 3D camera around the z-axis at a fixed elevation,
+    rendering each frame via Kaleido, then assembling a GIF with Pillow.
+    """
+    required_cols = {"label", "x", "y", "z"}
+    missing = required_cols.difference(set(positions_3d.columns))
+    if missing:
+        raise ValueError(f"positions_3d is missing required columns: {sorted(missing)}")
+
+    proj = (projection or "").strip().lower()
+    if proj not in {"perspective", "orthographic"}:
+        raise ValueError(f"projection must be 'perspective' or 'orthographic', got {projection!r}")
+    if int(duration_seconds) <= 0:
+        raise ValueError("duration_seconds must be > 0")
+    if int(fps) <= 0:
+        raise ValueError("fps must be > 0")
+
+    # Lazy imports.
+    import numpy as np
+    import plotly.graph_objects as go
+    from PIL import Image
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    labels = [str(v) for v in positions_3d["label"].tolist()]
+    x = positions_3d["x"].to_numpy()
+    y = positions_3d["y"].to_numpy()
+    z = positions_3d["z"].to_numpy()
+
+    fig = go.Figure(
+        data=[
+            go.Scatter3d(
+                x=x,
+                y=y,
+                z=z,
+                mode="markers+text",
+                text=labels,
+                textposition="top center",
+                marker=dict(size=8, color="#2a6f97", opacity=0.95),
+                hovertemplate="Label %{text}<br>x=%{x:.3f}<br>y=%{y:.3f}<br>z=%{z:.3f}<extra></extra>",
+            )
+        ]
+    )
+    fig.update_layout(
+        title=title,
+        margin=dict(l=0, r=0, b=0, t=55),
+        **_theme_layout(theme),
+    )
+
+    n_frames = int(duration_seconds) * int(fps)
+    azims = np.linspace(float(start_azim_deg), float(start_azim_deg) + 360.0, n_frames, endpoint=False)
+
+    frames: list[Image.Image] = []
+    for az in azims:
+        eye = camera_eye_from_azim_elev(azim_deg=float(az), elev_deg=float(elev_deg), radius=float(radius))
+        fig.update_layout(
+            scene_camera=dict(
+                eye=eye,
+                projection=dict(type=proj),
+            )
+        )
+        png_bytes = fig.to_image(format="png", width=int(width), height=int(height), scale=int(scale))
+        frames.append(Image.open(BytesIO(png_bytes)))
+
+    if not frames:
+        raise RuntimeError("No frames were rendered for orbit GIF.")
+
+    frame_duration_ms = int(round(1000.0 / float(fps)))
+    first = frames[0].convert("P", palette=Image.Palette.ADAPTIVE)
+    rest = [im.convert("P", palette=Image.Palette.ADAPTIVE) for im in frames[1:]]
+
+    first.save(
+        output_path,
+        save_all=True,
+        append_images=rest,
+        duration=frame_duration_ms,
+        loop=0,
+        optimize=True,
+    )
+    return output_path
 
 

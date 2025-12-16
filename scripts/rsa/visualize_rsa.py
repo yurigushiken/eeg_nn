@@ -24,7 +24,7 @@ if str(PROJ_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJ_ROOT))
 
 from scripts.rsa.naming import prefixed_path, prefixed_title
-from scripts.rsa.mds_3d import plot_mds_3d_html, plot_mds_3d_static_views
+from scripts.rsa.mds_3d import plot_mds_3d_html, plot_mds_3d_orbit_gif, plot_mds_3d_static_views
 
 def build_accuracy_matrix(
     csv_path: Path,
@@ -305,6 +305,23 @@ def parse_args() -> argparse.Namespace:
         choices=["perspective", "orthographic"],
         help="Projection type for static 3D PNG exports (default: perspective).",
     )
+    parser.add_argument(
+        "--mds-3d-orbit",
+        action="store_true",
+        help="Also export an orbit GIF (camera circles once around the 3D MDS).",
+    )
+    parser.add_argument(
+        "--mds-3d-orbit-seconds",
+        type=int,
+        default=15,
+        help="Orbit duration in seconds (default: 15).",
+    )
+    parser.add_argument(
+        "--mds-3d-orbit-fps",
+        type=int,
+        default=10,
+        help="Orbit frames per second (default: 10).",
+    )
     return parser.parse_args()
 
 
@@ -360,6 +377,27 @@ def main() -> None:
             )
             for p in written:
                 print(f"[visualize_rsa] 3D MDS static view saved to {p}")
+
+        if args.mds_3d_orbit:
+            orbit_path = prefixed_path(
+                run_root=run_root,
+                kind="figures",
+                stem=f"mds_3d_orbit_{args.mds_3d_orbit_seconds}s",
+                ext=".gif",
+            )
+            plot_mds_3d_orbit_gif(
+                positions_3d,
+                orbit_path,
+                title=prefixed_title(run_root=run_root, title="3D MDS Projection of RSA Matrix (Orbit)"),
+                theme=args.mds_3d_theme,
+                projection=args.mds_3d_static_projection,
+                duration_seconds=args.mds_3d_orbit_seconds,
+                fps=args.mds_3d_orbit_fps,
+                start_azim_deg=135.0,
+                elev_deg=30.0,
+                radius=2.0,
+            )
+            print(f"[visualize_rsa] 3D MDS orbit GIF saved to {orbit_path}")
 
 
 if __name__ == "__main__":
