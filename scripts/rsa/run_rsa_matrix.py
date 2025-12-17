@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Sequence, Tuple, Optional, Set
 
+import pandas as pd
 import yaml
 
 PROJ_ROOT = Path(__file__).resolve().parents[2]
@@ -247,6 +248,42 @@ def tuple_key(entry: Dict[str, int]) -> Tuple[int, int, int]:
     return (int(entry["ClassA"]), int(entry["ClassB"]), int(entry["Seed"]))
 
 
+def _validate_pair_switch(*, task_name: str, label_fn, expected_pair: Tuple[int, int]) -> None:
+    """
+    Fail-fast guardrail: ensure the active-pair switch actually affects the label function.
+
+    This prevents wasting compute if a task's global active pair is not being applied
+    (e.g., silently decoding the default pair while naming the run directory differently).
+    """
+    task = str(task_name)
+    a, b = int(expected_pair[0]), int(expected_pair[1])
+
+    # For landing-digit decoding, the label_fn expects two-digit codes where source != landing.
+    if task.endswith("rsa_landing_binary"):
+        meta = pd.DataFrame({"Condition": [(a * 10 + b), (b * 10 + a), (a * 10 + a)]})
+        expected_labels = sorted([a, b])
+    else:
+        # rsa_binary: decode by exact condition code. Works for 11/22/... and 2-digit change codes.
+        meta = pd.DataFrame({"Condition": [a, b, a, b]})
+        expected_labels = sorted([a, b])
+
+    labels = label_fn(meta).dropna().unique().tolist()
+    actual_labels: List[int] = []
+    for x in labels:
+        try:
+            actual_labels.append(int(x))
+        except Exception:
+            # If labels are non-int strings, treat as mismatch.
+            actual_labels.append(-999999)
+    actual_sorted = sorted(actual_labels)
+    if actual_sorted != expected_labels:
+        raise RuntimeError(
+            f"Active-pair validation failed for task '{task_name}' with pair {expected_pair}. "
+            f"Expected labels {expected_labels} but label_fn produced {actual_sorted}. "
+            "This would cause runs to decode the wrong pair and waste compute."
+        )
+
+
 def main() -> None:
     args = parse_args()
     base_cfg = load_base_config(Path(args.config))
@@ -319,6 +356,7 @@ def main() -> None:
                 set_pair((class_a, class_b))
             else:
                 rsa_binary.set_active_pair((class_a, class_b))
+            _validate_pair_switch(task_name=str(args.task), label_fn=label_fn, expected_pair=(class_a, class_b))
             cfg = copy.deepcopy(base_cfg)
             cfg["seed"] = int(seed)
             cfg["task"] = args.task

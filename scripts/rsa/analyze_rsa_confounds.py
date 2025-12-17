@@ -319,33 +319,38 @@ def run_analysis(
     # Group stats on partial r (original test)
     vals = subj_df["Partial_Spearman_R_PI_14"].dropna().to_numpy()
     vals_ans = subj_df["Partial_Spearman_R_ANS"].dropna().to_numpy()
+    t_stat = np.nan
+    p_value = np.nan
+    n_vals = int(vals.size)
     if vals.size:
         z_vals = np.arctanh(vals)
         t_stat, p_value = ttest_1samp(z_vals, baseline)
-        summary = pd.DataFrame(
-            [
-                {
-                    "Subject": "SUMMARY",
-                    "Raw_Spearman_R_PI_14": float(np.mean(raw_vals)) if raw_vals.size else np.nan,
-                    "Partial_Spearman_R_PI_14": float(np.mean(partial_vals)) if partial_vals.size else np.nan,
+        n_vals = int(len(z_vals))
+
+    summary = pd.DataFrame(
+        [
+            {
+                "Subject": "SUMMARY",
+                "Raw_Spearman_R_PI_14": float(np.mean(raw_vals)) if raw_vals.size else np.nan,
+                "Partial_Spearman_R_PI_14": float(np.mean(partial_vals)) if partial_vals.size else np.nan,
                 "Raw_Spearman_R_ANS": float(np.mean(raw_vals_ans)) if raw_vals_ans.size else np.nan,
                 "Partial_Spearman_R_ANS": float(np.mean(partial_vals_ans)) if partial_vals_ans.size else np.nan,
-                    "Raw_Spearman_R_RT": float(np.mean(raw_vals_rt)) if raw_vals_rt.size else np.nan,
-                    "Partial_Spearman_R_RT": float(np.mean(partial_vals_rt)) if partial_vals_rt.size else np.nan,
-                    "Group_T": t_stat,
-                    "Group_P": p_value,
-                    "N": len(z_vals),
-                    "Diff_T": t_diff,
-                    "Diff_P": p_diff,
-                    "Mean_Diff": mean_diff,
+                "Raw_Spearman_R_RT": float(np.mean(raw_vals_rt)) if raw_vals_rt.size else np.nan,
+                "Partial_Spearman_R_RT": float(np.mean(partial_vals_rt)) if partial_vals_rt.size else np.nan,
+                "Group_T": t_stat,
+                "Group_P": p_value,
+                "N": n_vals,
+                "Diff_T": t_diff,
+                "Diff_P": p_diff,
+                "Mean_Diff": mean_diff,
                 "Diff_T_ANS": t_diff_ans,
                 "Diff_P_ANS": p_diff_ans,
                 "Mean_Diff_ANS": mean_diff_ans,
-                    "Brain_Pixel_R": mean_brain_pixel_r,
-                }
-            ]
-        )
-        subj_df = pd.concat([subj_df, summary], ignore_index=True)
+                "Brain_Pixel_R": mean_brain_pixel_r,
+            }
+        ]
+    )
+    subj_df = pd.concat([subj_df, summary], ignore_index=True)
 
     # Optional: group stats on ANS partial (same baseline)
     if vals_ans.size:
@@ -541,8 +546,11 @@ def run_analysis(
 
     plt.title('Confound Control Analysis Summary', fontsize=14, weight='bold', pad=20)
 
-    # Add footnote
-    footnote = "*** p<0.001  ** p<0.01  * p<0.05\nn=24 subjects, 15 numerosity pairs (1-6)"
+    # Add footnote (dynamic so change-condition runs remain accurate)
+    n_subj = len(brain_rdms)
+    n_codes = len(codes)
+    n_pairs = int(n_codes * (n_codes - 1) / 2)
+    footnote = f"*** p<0.001  ** p<0.01  * p<0.05\\nn={n_subj} subjects, {n_pairs} pairs"
     fig_table.text(0.5, 0.02, footnote, ha='center', fontsize=9, style='italic', color='gray')
 
     plt.tight_layout()
@@ -552,111 +560,117 @@ def run_analysis(
 
     print(f"[analyze_rsa_confounds] Summary table saved to {table_path}")
 
-    # Generate comparison plot: Raw vs Partial correlations
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    # Generate comparison plots only when correlations are defined (need >= 2 pairwise entries).
+    if raw_vals.size and partial_vals.size:
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
-    # Plot 1: Scatter plot of raw vs partial
-    ax = axes[0]
-    ax.scatter(raw_vals, partial_vals, alpha=0.6, s=80, color='C0')
-    ax.plot([raw_vals.min(), raw_vals.max()], [raw_vals.min(), raw_vals.max()],
-            'k--', alpha=0.5, label='y=x (no change)')
-    ax.set_xlabel('Raw Spearman r (Brain–PI(1-4)-ANS)')
-    ax.set_ylabel('Partial Spearman r (Brain–PI(1-4)-ANS, controlling pixels)')
-    ax.set_title('Raw vs Partial Correlations\n(n=24 subjects)')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    ax.set_aspect('equal')
+        # Plot 1: Scatter plot of raw vs partial
+        ax = axes[0]
+        ax.scatter(raw_vals, partial_vals, alpha=0.6, s=80, color='C0')
+        ax.plot([raw_vals.min(), raw_vals.max()], [raw_vals.min(), raw_vals.max()],
+                'k--', alpha=0.5, label='y=x (no change)')
+        ax.set_xlabel('Raw Spearman r (Brain–PI(1-4)-ANS)')
+        ax.set_ylabel('Partial Spearman r (Brain–PI(1-4)-ANS, controlling pixels)')
+        ax.set_title(f'Raw vs Partial Correlations\\n(n={n_subj} subjects)')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        ax.set_aspect('equal')
 
-    # Plot 2: Distribution of differences
-    ax = axes[1]
-    ax.hist(diff_vals, bins=15, alpha=0.7, color='C1', edgecolor='black')
-    ax.axvline(0, color='red', linestyle='--', linewidth=2, label='No difference')
-    ax.axvline(mean_diff, color='green', linestyle='-', linewidth=2,
-               label=f'Mean diff = {mean_diff:.3f}')
-    ax.set_xlabel('Difference (Partial - Raw)')
-    ax.set_ylabel('Number of Subjects')
-    ax.set_title(f'Distribution of Correlation Differences\nt={t_diff:.2f}, p={p_diff:.4f}')
-    ax.legend()
-    ax.grid(True, alpha=0.3, axis='y')
+        # Plot 2: Distribution of differences
+        ax = axes[1]
+        ax.hist(diff_vals, bins=15, alpha=0.7, color='C1', edgecolor='black')
+        ax.axvline(0, color='red', linestyle='--', linewidth=2, label='No difference')
+        ax.axvline(mean_diff, color='green', linestyle='-', linewidth=2,
+                   label=f'Mean diff = {mean_diff:.3f}')
+        ax.set_xlabel('Difference (Partial - Raw)')
+        ax.set_ylabel('Number of Subjects')
+        ax.set_title(f'Distribution of Correlation Differences\\nt={t_diff:.2f}, p={p_diff:.4f}')
+        ax.legend()
+        ax.grid(True, alpha=0.3, axis='y')
 
-    # Plot 3: Brain-Pixel vs Brain-PI(1-4)-ANS correlations
-    ax = axes[2]
-    brain_theory_raw = raw_vals
-    x_pos = np.arange(len(brain_pixel_correlations))
-    width = 0.35
-    ax.bar(x_pos - width/2, brain_theory_raw, width, label='Brain–PI(1-4)-ANS (raw)',
-           alpha=0.8, color='C0')
-    ax.bar(x_pos + width/2, brain_pixel_correlations, width, label='Brain-Pixel',
-           alpha=0.8, color='C3')
-    ax.axhline(0, color='black', linewidth=0.8)
-    ax.set_xlabel('Subject Index')
-    ax.set_ylabel('Spearman r')
-    ax.set_title(f'Brain–PI(1-4)-ANS vs Brain-Pixel Correlations\n(Mean Brain-Pixel r = {mean_brain_pixel_r:.3f})')
-    ax.legend()
-    ax.grid(True, alpha=0.3, axis='y')
+        # Plot 3: Brain-Pixel vs Brain-PI(1-4)-ANS correlations
+        ax = axes[2]
+        brain_theory_raw = raw_vals
+        x_pos = np.arange(len(brain_pixel_correlations))
+        width = 0.35
+        ax.bar(x_pos - width/2, brain_theory_raw, width, label='Brain–PI(1-4)-ANS (raw)',
+               alpha=0.8, color='C0')
+        ax.bar(x_pos + width/2, brain_pixel_correlations, width, label='Brain-Pixel',
+               alpha=0.8, color='C3')
+        ax.axhline(0, color='black', linewidth=0.8)
+        ax.set_xlabel('Subject Index')
+        ax.set_ylabel('Spearman r')
+        ax.set_title(f'Brain–PI(1-4)-ANS vs Brain-Pixel Correlations\\n(Mean Brain-Pixel r = {mean_brain_pixel_r:.3f})')
+        ax.legend()
+        ax.grid(True, alpha=0.3, axis='y')
 
-    plt.tight_layout()
-    plot_path = prefixed_path(run_root=run_root, kind="confounds", stem="confound_comparison_plots", ext=".png")
-    fig.savefig(plot_path, dpi=300)
-    plt.close(fig)
+        plt.tight_layout()
+        plot_path = prefixed_path(run_root=run_root, kind="confounds", stem="confound_comparison_plots", ext=".png")
+        fig.savefig(plot_path, dpi=300)
+        plt.close(fig)
 
-    # Save individual plots as well
-    # Individual Plot 1: Raw vs Partial scatter
-    fig1, ax1 = plt.subplots(figsize=(6, 6))
-    ax1.scatter(raw_vals, partial_vals, alpha=0.6, s=100, color='C0', edgecolors='black', linewidth=0.5)
-    ax1.plot([raw_vals.min(), raw_vals.max()], [raw_vals.min(), raw_vals.max()],
-            'k--', alpha=0.5, linewidth=2, label='y=x (no change)')
-    ax1.set_xlabel('Raw Spearman r (Brain–PI(1-4)-ANS)', fontsize=12)
-    ax1.set_ylabel('Partial Spearman r\n(Brain–PI(1-4)-ANS, controlling pixels)', fontsize=12)
-    ax1.set_title('Raw vs Partial Correlations\n(n=24 subjects)', fontsize=14, weight='bold')
-    ax1.legend(fontsize=10)
-    ax1.grid(True, alpha=0.3)
-    ax1.set_aspect('equal')
-    plt.tight_layout()
-    fig1.savefig(prefixed_path(run_root=run_root, kind="confounds", stem="plot1_raw_vs_partial_scatter", ext=".png"), dpi=300)
-    plt.close(fig1)
+        # Save individual plots as well
+        # Individual Plot 1: Raw vs Partial scatter
+        fig1, ax1 = plt.subplots(figsize=(6, 6))
+        ax1.scatter(raw_vals, partial_vals, alpha=0.6, s=100, color='C0', edgecolors='black', linewidth=0.5)
+        ax1.plot([raw_vals.min(), raw_vals.max()], [raw_vals.min(), raw_vals.max()],
+                'k--', alpha=0.5, linewidth=2, label='y=x (no change)')
+        ax1.set_xlabel('Raw Spearman r (Brain–PI(1-4)-ANS)', fontsize=12)
+        ax1.set_ylabel('Partial Spearman r\n(Brain–PI(1-4)-ANS, controlling pixels)', fontsize=12)
+        ax1.set_title(f'Raw vs Partial Correlations\\n(n={n_subj} subjects)', fontsize=14, weight='bold')
+        ax1.legend(fontsize=10)
+        ax1.grid(True, alpha=0.3)
+        ax1.set_aspect('equal')
+        plt.tight_layout()
+        fig1.savefig(prefixed_path(run_root=run_root, kind="confounds", stem="plot1_raw_vs_partial_scatter", ext=".png"), dpi=300)
+        plt.close(fig1)
 
-    # Individual Plot 2: Distribution histogram
-    fig2, ax2 = plt.subplots(figsize=(8, 6))
-    ax2.hist(diff_vals, bins=15, alpha=0.7, color='C1', edgecolor='black', linewidth=1.5)
-    ax2.axvline(0, color='red', linestyle='--', linewidth=3, label='No difference', alpha=0.8)
-    ax2.axvline(mean_diff, color='green', linestyle='-', linewidth=3,
-               label=f'Mean diff = {mean_diff:.3f}', alpha=0.8)
-    ax2.set_xlabel('Difference (Partial - Raw)', fontsize=12)
-    ax2.set_ylabel('Number of Subjects', fontsize=12)
-    p_sig = "n.s." if p_diff >= 0.05 else ("*" if p_diff < 0.05 else "**")
-    ax2.set_title(f'Distribution of Correlation Differences\nt={t_diff:.2f}, p={p_diff:.4f} {p_sig}',
-                  fontsize=14, weight='bold')
-    ax2.legend(fontsize=11)
-    ax2.grid(True, alpha=0.3, axis='y')
-    plt.tight_layout()
-    fig2.savefig(prefixed_path(run_root=run_root, kind="confounds", stem="plot2_difference_distribution", ext=".png"), dpi=300)
-    plt.close(fig2)
+        # Individual Plot 2: Distribution histogram
+        fig2, ax2 = plt.subplots(figsize=(8, 6))
+        ax2.hist(diff_vals, bins=15, alpha=0.7, color='C1', edgecolor='black', linewidth=1.5)
+        ax2.axvline(0, color='red', linestyle='--', linewidth=3, label='No difference', alpha=0.8)
+        ax2.axvline(mean_diff, color='green', linestyle='-', linewidth=3,
+                   label=f'Mean diff = {mean_diff:.3f}', alpha=0.8)
+        ax2.set_xlabel('Difference (Partial - Raw)', fontsize=12)
+        ax2.set_ylabel('Number of Subjects', fontsize=12)
+        p_sig = "n.s." if p_diff >= 0.05 else ("*" if p_diff < 0.05 else "**")
+        ax2.set_title(f'Distribution of Correlation Differences\\nt={t_diff:.2f}, p={p_diff:.4f} {p_sig}',
+                      fontsize=14, weight='bold')
+        ax2.legend(fontsize=11)
+        ax2.grid(True, alpha=0.3, axis='y')
+        plt.tight_layout()
+        fig2.savefig(prefixed_path(run_root=run_root, kind="confounds", stem="plot2_difference_distribution", ext=".png"), dpi=300)
+        plt.close(fig2)
 
-    # Individual Plot 3: Brain–PI(1-4)-ANS vs Brain-Pixel comparison
-    fig3, ax3 = plt.subplots(figsize=(10, 6))
-    x_pos = np.arange(len(brain_pixel_correlations))
-    width = 0.35
-    ax3.bar(x_pos - width/2, raw_vals, width, label='Brain–PI(1-4)-ANS (raw)',
-           alpha=0.85, color='C0', edgecolor='black', linewidth=0.5)
-    ax3.bar(x_pos + width/2, brain_pixel_correlations, width, label='Brain-Pixel',
-           alpha=0.85, color='C3', edgecolor='black', linewidth=0.5)
-    ax3.axhline(0, color='black', linewidth=1.2)
-    ax3.axhline(mean_brain_pixel_r, color='C3', linestyle='--', linewidth=2, alpha=0.5,
-                label=f'Mean Brain-Pixel r={mean_brain_pixel_r:.3f}')
-    ax3.set_xlabel('Subject Index', fontsize=12)
-    ax3.set_ylabel('Spearman r', fontsize=12)
-    ax3.set_title(f'Brain–PI(1-4)-ANS vs Brain-Pixel Correlations',
-                  fontsize=14, weight='bold')
-    ax3.legend(fontsize=11, loc='best')
-    ax3.grid(True, alpha=0.3, axis='y')
-    plt.tight_layout()
-    fig3.savefig(prefixed_path(run_root=run_root, kind="confounds", stem="plot3_brain_theory_vs_pixel", ext=".png"), dpi=300)
-    plt.close(fig3)
+        # Individual Plot 3: Brain–PI(1-4)-ANS vs Brain-Pixel comparison
+        fig3, ax3 = plt.subplots(figsize=(10, 6))
+        x_pos = np.arange(len(brain_pixel_correlations))
+        width = 0.35
+        ax3.bar(x_pos - width/2, raw_vals, width, label='Brain–PI(1-4)-ANS (raw)',
+               alpha=0.85, color='C0', edgecolor='black', linewidth=0.5)
+        ax3.bar(x_pos + width/2, brain_pixel_correlations, width, label='Brain-Pixel',
+               alpha=0.85, color='C3', edgecolor='black', linewidth=0.5)
+        ax3.axhline(0, color='black', linewidth=1.2)
+        ax3.axhline(mean_brain_pixel_r, color='C3', linestyle='--', linewidth=2, alpha=0.5,
+                    label=f'Mean Brain-Pixel r={mean_brain_pixel_r:.3f}')
+        ax3.set_xlabel('Subject Index', fontsize=12)
+        ax3.set_ylabel('Spearman r', fontsize=12)
+        ax3.set_title('Brain–PI(1-4)-ANS vs Brain-Pixel Correlations',
+                      fontsize=14, weight='bold')
+        ax3.legend(fontsize=11, loc='best')
+        ax3.grid(True, alpha=0.3, axis='y')
+        plt.tight_layout()
+        fig3.savefig(prefixed_path(run_root=run_root, kind="confounds", stem="plot3_brain_theory_vs_pixel", ext=".png"), dpi=300)
+        plt.close(fig3)
 
-    print(f"\n[analyze_rsa_confounds] Summary statistics saved to {summary_csv}")
-    print(f"[analyze_rsa_confounds] Comparison plots saved to {plot_path}")
-    print(f"[analyze_rsa_confounds] Individual plots saved (plot1, plot2, plot3)")
+        print(f"\n[analyze_rsa_confounds] Summary statistics saved to {summary_csv}")
+        print(f"[analyze_rsa_confounds] Comparison plots saved to {plot_path}")
+        print(f"[analyze_rsa_confounds] Individual plots saved (plot1, plot2, plot3)")
+    else:
+        print(
+            "\n[analyze_rsa_confounds] Note: Not enough valid correlation values to render comparison plots "
+            f"(need >=2 pairs; got n_pairs={n_pairs}). Skipping plot panel outputs."
+        )
 
     return subj_df
 

@@ -37,12 +37,18 @@ def code_to_numerosity(code: Code) -> int:
     Supports:
     - 11,22,...,66  -> 1..6  (cardinality codes)
     - 1..6          -> 1..6  (digit codes)
+    - 12..66        -> 1..6  (change codes, mapped by landing/target digit)
     """
     c = _to_int(code)
     if 1 <= c <= 9:
         return c
     if c % 11 == 0:
         return c // 11
+    # Change-condition codes (prime→target): map to target digit for numerosity models.
+    if 11 <= c <= 99:
+        target = c % 10
+        if 1 <= target <= 6:
+            return target
     raise ValueError(f"Unsupported code for numerosity conversion: {code}")
 
 
@@ -79,12 +85,16 @@ def build_pixel_rdm_e_only(stimuli_csv: Path, codes: Sequence[Code]) -> np.ndarr
     df["code"] = df["dot_count"].astype(int) * 11
     area_map: Dict[int, float] = df.set_index("code")["white_pixel_area"].astype(float).to_dict()
 
-    # Resolve codes in either 11/22 form or 1..6 digit form.
+    # Resolve codes in either 11/22 form, 1..6 digit form, or 2-digit change-code form.
     resolved_codes: list[int] = []
     for c in codes:
         ci = _to_int(c)
         if 1 <= ci <= 9:
             ci = ci * 11
+        elif 11 <= ci <= 99 and (ci % 11 != 0):
+            # Change-condition codes like 32: map to target digit for e-only pixel model.
+            target = ci % 10
+            ci = target * 11
         resolved_codes.append(ci)
 
     missing = [c for c in resolved_codes if c not in area_map]
